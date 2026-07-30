@@ -22,6 +22,7 @@ public class ModelProfileEntity {
     private String baseUrl;
     private String modelName;
     private String credentialRef;
+    private String apiKey;
 
     @ElementCollection(fetch = FetchType.EAGER)
     @Enumerated(EnumType.STRING)
@@ -39,6 +40,7 @@ public class ModelProfileEntity {
             String baseUrl,
             String modelName,
             String credentialRef,
+            String apiKey,
             Set<ModelCapability> capabilities,
             boolean enabled,
             Instant createdAt) {
@@ -47,6 +49,7 @@ public class ModelProfileEntity {
         this.baseUrl = baseUrl;
         this.modelName = modelName;
         this.credentialRef = credentialRef;
+        this.apiKey = apiKey;
         this.capabilities = capabilities == null ? EnumSet.noneOf(ModelCapability.class) : EnumSet.copyOf(capabilities);
         this.enabled = enabled;
         this.createdAt = createdAt;
@@ -57,7 +60,27 @@ public class ModelProfileEntity {
     public String baseUrl() { return baseUrl; }
     public String modelName() { return modelName; }
     public String credentialRef() { return credentialRef; }
+    public String apiKey() { return apiKey; }
     public Set<ModelCapability> capabilities() { return Set.copyOf(capabilities); }
     public boolean enabled() { return enabled; }
     public Instant createdAt() { return createdAt; }
+
+    public void update(
+            ProviderType providerType,
+            String baseUrl,
+            String modelName,
+            String credentialRef,
+            String apiKey,
+            Set<ModelCapability> capabilities,
+            boolean enabled) {
+        this.providerType = providerType;
+        this.baseUrl = baseUrl;
+        this.modelName = modelName;
+        this.credentialRef = credentialRef;
+        if (apiKey != null && !apiKey.isBlank()) {
+            this.apiKey = apiKey;
+        }
+        this.capabilities = capabilities == null ? EnumSet.noneOf(ModelCapability.class) : EnumSet.copyOf(capabilities);
+        this.enabled = enabled;
+    }
 }

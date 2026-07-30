@@ -8,9 +8,9 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * Public model catalog.
  *
- * <p>The catalog stores provider metadata and a credential reference. The raw
- * key stays outside the database, which prevents accidental exposure through
- * API responses, backups, SQL consoles, or logs.
+ * <p>The catalog stores provider metadata and, when configured from the studio
+ * UI, the provider API key. API responses never expose the raw key; callers see
+ * only whether a key exists and a short masked preview for review.
  */
 @Service
 public class ModelCatalog {
@@ -28,15 +28,25 @@ public class ModelCatalog {
 
     @Transactional
     public ModelProfileView save(UpsertModelProfileCommand command) {
-        var entity = new ModelProfileEntity(
-                command.id(),
+        var entity = repository.findById(command.id())
+                .orElseGet(() -> new ModelProfileEntity(
+                        command.id(),
+                        command.providerType(),
+                        command.baseUrl(),
+                        command.modelName(),
+                        command.credentialRef(),
+                        command.apiKey(),
+                        command.capabilities(),
+                        command.enabled(),
+                        Instant.now()));
+        entity.update(
                 command.providerType(),
                 command.baseUrl(),
                 command.modelName(),
                 command.credentialRef(),
+                command.apiKey(),
                 command.capabilities(),
-                command.enabled(),
-                Instant.now());
+                command.enabled());
         return ModelProfileView.from(repository.save(entity));
     }
 }

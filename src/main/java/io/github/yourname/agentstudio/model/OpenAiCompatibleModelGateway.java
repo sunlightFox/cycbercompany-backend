@@ -41,10 +41,14 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
             throw new ModelGatewayException("Provider is not implemented yet: " + profile.providerType());
         }
 
-        String apiKey = System.getenv(profile.credentialRef());
+        String apiKey = profile.apiKey();
         if (apiKey == null || apiKey.isBlank()) {
-            throw new ModelGatewayException("Missing model API key. Set environment variable " + profile.credentialRef());
+            apiKey = System.getenv(profile.credentialRef());
         }
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new ModelGatewayException("Missing model API key. Save it on the selected model profile or set environment variable " + profile.credentialRef());
+        }
+        String bearerToken = apiKey;
 
         try {
             Map<String, Object> payload = new HashMap<>();
@@ -59,7 +63,7 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
                     .post()
                     .uri("/chat/completions")
                     .contentType(MediaType.APPLICATION_JSON)
-                    .headers(headers -> headers.setBearerAuth(apiKey))
+                    .headers(headers -> headers.setBearerAuth(bearerToken))
                     .body(payload)
                     .retrieve()
                     .body(OpenAiChatCompletionResponse.class);

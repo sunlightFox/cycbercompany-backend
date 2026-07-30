@@ -17,8 +17,7 @@ import org.springframework.transaction.annotation.Transactional;
  * Creates the local demo defaults once.
  *
  * <p>Keeping this in code rather than a migration makes the first learning pass
- * easier: the user can see exactly which runtime defaults exist and why they do
- * not contain any raw API keys.
+ * easier: the user can see exactly which runtime defaults exist.
  */
 @Component
 class DataSeeder implements ApplicationRunner {
@@ -54,17 +53,34 @@ class DataSeeder implements ApplicationRunner {
         AppProperties.DefaultModelProfile configured = ai == null ? fallbackProfile() : ai.defaultProfile();
         String defaultModelProfileId = ai == null ? configured.id() : ai.defaultModelProfileId();
 
-        if ((ai == null || ai.seedDefaultProfile())
-                && modelProfiles.findById(configured.id()).isEmpty()) {
-            modelProfiles.save(new ModelProfileEntity(
+        if (ai == null || ai.seedDefaultProfile()) {
+            var storedProfile = modelProfiles.findById(configured.id());
+            if (storedProfile.isEmpty()) {
+                modelProfiles.save(new ModelProfileEntity(
                     configured.id(),
                     configured.providerType(),
                     configured.baseUrl(),
                     configured.modelName(),
                     configured.credentialRef(),
+                    System.getenv(configured.credentialRef()),
                     configured.capabilities(),
                     true,
                     Instant.now()));
+            } else if (storedProfile.get().apiKey() == null || storedProfile.get().apiKey().isBlank()) {
+                String apiKey = System.getenv(configured.credentialRef());
+                if (apiKey != null && !apiKey.isBlank()) {
+                    ModelProfileEntity profile = storedProfile.get();
+                    profile.update(
+                            configured.providerType(),
+                            configured.baseUrl(),
+                            configured.modelName(),
+                            configured.credentialRef(),
+                            apiKey,
+                            configured.capabilities(),
+                            profile.enabled());
+                    modelProfiles.save(profile);
+                }
+            }
         }
 
         var defaultAssistant = agents.findById(DEFAULT_ASSISTANT_ID);

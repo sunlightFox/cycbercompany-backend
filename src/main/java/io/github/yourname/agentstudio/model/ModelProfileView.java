@@ -8,6 +8,8 @@ public record ModelProfileView(
         String baseUrl,
         String modelName,
         String credentialRef,
+        boolean apiKeyConfigured,
+        String apiKeyPreview,
         Set<ModelCapability> capabilities,
         boolean enabled) {
 
@@ -18,7 +20,19 @@ public record ModelProfileView(
                 entity.baseUrl(),
                 entity.modelName(),
                 entity.credentialRef(),
+                entity.apiKey() != null && !entity.apiKey().isBlank(),
+                maskKey(entity.apiKey()),
                 entity.capabilities(),
                 entity.enabled());
+    }
+
+    private static String maskKey(String apiKey) {
+        if (apiKey == null || apiKey.isBlank()) {
+            return null;
+        }
+        if (apiKey.length() <= 8) {
+            return "****";
+        }
+        return apiKey.substring(0, 3) + "****" + apiKey.substring(apiKey.length() - 4);
     }
 }

@@ -11,6 +11,7 @@ public record UpsertModelProfileCommand(
         @NotBlank String baseUrl,
         @NotBlank String modelName,
         @NotBlank String credentialRef,
+        String apiKey,
         @NotEmpty Set<ModelCapability> capabilities,
         boolean enabled) {
 }
