@@ -1,0 +1,50 @@
+spring:
+  application:
+    name: spring-agent-studio
+  datasource:
+    url: jdbc:h2:file:${APP_DATA_DIR:./data}/db/agent-studio;AUTO_SERVER=TRUE
+    username: sa
+    password:
+  flyway:
+    enabled: false
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+  threads:
+    virtual:
+      enabled: true
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 25MB
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+server:
+  port: ${PORT:8080}
+
+app:
+  data-dir: ${APP_DATA_DIR:./data}
+  run:
+    timeout-seconds: 120
+  ai:
+    default-model-profile-id: minimax-m3
+    seed-default-profile: true
+    default-profile:
+      id: minimax-m3
+      provider-type: OPENAI_COMPATIBLE
+      base-url: ${EDGEFN_BASE_URL:https://api.edgefn.net/v1}
+      model-name: ${EDGEFN_MODEL:MiniMax-M3}
+      credential-ref: EDGEFN_API_KEY
+      capabilities:
+        - TEXT
+        - JSON_OUTPUT

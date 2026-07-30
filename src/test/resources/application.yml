@@ -1,0 +1,8 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:agent-studio-test;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
