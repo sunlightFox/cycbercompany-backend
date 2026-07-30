@@ -11,9 +11,14 @@ public record ModelProfileView(
         boolean apiKeyConfigured,
         String apiKeyPreview,
         Set<ModelCapability> capabilities,
-        boolean enabled) {
+        boolean enabled,
+        boolean defaultProfile) {
 
     public static ModelProfileView from(ModelProfileEntity entity) {
+        return from(entity, false);
+    }
+
+    public static ModelProfileView from(ModelProfileEntity entity, boolean defaultProfile) {
         return new ModelProfileView(
                 entity.id(),
                 entity.providerType(),
@@ -23,7 +28,8 @@ public record ModelProfileView(
                 entity.apiKey() != null && !entity.apiKey().isBlank(),
                 maskKey(entity.apiKey()),
                 entity.capabilities(),
-                entity.enabled());
+                entity.enabled(),
+                defaultProfile);
     }
 
     private static String maskKey(String apiKey) {

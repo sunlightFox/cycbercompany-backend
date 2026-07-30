@@ -40,6 +40,13 @@ app:
     enabled: ${WEB_SEARCH_ENABLED:true}
     max-results: ${WEB_SEARCH_MAX_RESULTS:5}
     endpoint: ${WEB_SEARCH_ENDPOINT:https://html.duckduckgo.com/html/}
+  skills:
+    install-dir: ${SKILL_INSTALL_DIR:${APP_DATA_DIR:./data}/skills}
+    max-archive-bytes: ${SKILL_MAX_ARCHIVE_BYTES:15728640}
+    max-files: ${SKILL_MAX_FILES:300}
+    max-file-bytes: ${SKILL_MAX_FILE_BYTES:1048576}
+  mcp:
+    config-dir: ${MCP_CONFIG_DIR:${APP_DATA_DIR:./data}/mcp-connections}
   ai:
     default-model-profile-id: minimax-m3
     seed-default-profile: true

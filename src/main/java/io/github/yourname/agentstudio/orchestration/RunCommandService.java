@@ -8,6 +8,9 @@ import io.github.yourname.agentstudio.knowledge.EvidenceBundle;
 import io.github.yourname.agentstudio.knowledge.KnowledgeQueryService;
 import io.github.yourname.agentstudio.knowledge.KnowledgeSearchCommand;
 import io.github.yourname.agentstudio.model.ModelGateway;
+import io.github.yourname.agentstudio.model.ModelCatalog;
+import io.github.yourname.agentstudio.mcp.McpConnectionService;
+import io.github.yourname.agentstudio.mcp.McpToolCallResult;
 import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.tool.WebSearchCommand;
 import io.github.yourname.agentstudio.tool.WebSearchResult;
@@ -53,6 +56,8 @@ public class RunCommandService {
     private final AgentCatalog agents;
     private final KnowledgeQueryService knowledge;
     private final WebSearchService webSearch;
+    private final McpConnectionService mcpConnections;
+    private final ModelCatalog models;
     private final ModelGateway modelGateway;
     private final RunEventPublisher events;
 
@@ -63,6 +68,8 @@ public class RunCommandService {
             AgentCatalog agents,
             KnowledgeQueryService knowledge,
             WebSearchService webSearch,
+            McpConnectionService mcpConnections,
+            ModelCatalog models,
             ModelGateway modelGateway,
             RunEventPublisher events) {
         this.properties = properties;
@@ -71,6 +78,8 @@ public class RunCommandService {
         this.agents = agents;
         this.knowledge = knowledge;
         this.webSearch = webSearch;
+        this.mcpConnections = mcpConnections;
+        this.models = models;
         this.modelGateway = modelGateway;
         this.events = events;
     }
@@ -79,7 +88,7 @@ public class RunCommandService {
     public CreateRunResponse create(CreateRunCommand command, ActorContext actor) {
         conversations.append(command.conversationId(), MessageRole.USER, command.text(), null, actor);
         String agentId = blankToDefault(command.agentId(), "default-assistant");
-        String modelId = blankToDefault(command.modelProfileId(), properties.ai().defaultModelProfileId());
+        String modelId = blankToDefault(command.modelProfileId(), models.defaultModelProfileId());
         var run = runs.save(new AgentRunEntity(
                 UUID.randomUUID().toString(),
                 actor.tenantId(),
@@ -109,6 +118,7 @@ public class RunCommandService {
             String webQuery = webSearchQuery(command.text());
             String webRetrievalNote = "";
             List<WebSearchResult> webResults = List.of();
+            List<McpToolCallResult> mcpResults = List.of();
             if (shouldSearchWeb(command)) {
                 try {
                     webResults = webSearch.search(new WebSearchCommand(webQuery, 5));
@@ -116,11 +126,15 @@ public class RunCommandService {
                     webRetrievalNote = "Web search was requested but failed: " + safeErrorMessage(searchFailure);
                 }
             }
+            if (shouldUseSelectedMcpSearch(command)) {
+                mcpResults = mcpConnections.callLikelySearchTools(command.mcpServerIds(), webQuery.isBlank() ? command.text() : webQuery);
+            }
             events.publish(
                     runId,
                     RunEventType.RETRIEVAL_COMPLETED,
                     "knowledge=" + evidence.evidence().size()
                             + ", web=" + webResults.size()
+                            + ", mcp=" + mcpResults.size()
                             + (webResults.isEmpty() && webRetrievalNote.isBlank() ? "" : ", query=" + webQuery)
                             + (webRetrievalNote.isBlank() ? "" : ", note=" + webRetrievalNote),
                     actor);
@@ -128,7 +142,7 @@ public class RunCommandService {
             List<ModelGateway.ModelMessage> messages = new ArrayList<>();
             messages.add(new ModelGateway.ModelMessage(
                     "system",
-                    buildSystemPrompt(agent.systemPrompt(), command, evidence, webResults, webQuery, webRetrievalNote)));
+                    buildSystemPrompt(agent.systemPrompt(), command, evidence, webResults, mcpResults, webQuery, webRetrievalNote)));
             conversations.history(run.conversationId(), actor).forEach(message ->
                     messages.add(new ModelGateway.ModelMessage(message.role().name().toLowerCase(), message.content())));
 
@@ -157,11 +171,13 @@ public class RunCommandService {
             CreateRunCommand command,
             EvidenceBundle evidence,
             List<WebSearchResult> webResults,
+            List<McpToolCallResult> mcpResults,
             String webQuery,
             String webRetrievalNote) {
         String capabilityContext = buildCapabilityContext(command);
         if (evidence.isEmpty()
                 && webResults.isEmpty()
+                && mcpResults.isEmpty()
                 && webRetrievalNote.isBlank()
                 && capabilityContext.isBlank()) {
             return agentPrompt;
@@ -189,6 +205,14 @@ public class RunCommandService {
             builder.append("- title: ").append(item.title()).append('\n')
                     .append("  snippet: ").append(item.snippet()).append('\n')
                     .append("  url: ").append(item.url()).append('\n');
+        }
+        if (!mcpResults.isEmpty()) {
+            builder.append("\nMCP tool results. Treat them as external tool evidence and cite the MCP server/tool name when relevant:\n");
+            for (McpToolCallResult result : mcpResults) {
+                builder.append("- mcp: ").append(result.connectionId()).append('/').append(result.toolName()).append('\n');
+                builder.append("  error: ").append(result.error()).append('\n');
+                builder.append("  text: ").append(truncate(result.text(), 1800)).append('\n');
+            }
         }
         if (!webResults.isEmpty()) {
             builder.append("\nWhen using web evidence, include source URLs in the answer when they materially support a claim.\n");
@@ -225,6 +249,12 @@ public class RunCommandService {
                 || normalized.contains("today")
                 || normalized.contains("news")
                 || normalized.contains("search");
+    }
+
+    private static boolean shouldUseSelectedMcpSearch(CreateRunCommand command) {
+        return command.mcpServerIds() != null
+                && !command.mcpServerIds().isEmpty()
+                && shouldSearchWeb(command);
     }
 
     private static String buildCapabilityContext(CreateRunCommand command) {
@@ -296,6 +326,13 @@ public class RunCommandService {
             return ex.getClass().getSimpleName();
         }
         return message.length() > 180 ? message.substring(0, 180) + "..." : message;
+    }
+
+    private static String truncate(String value, int maxLength) {
+        if (value == null) {
+            return "";
+        }
+        return value.length() <= maxLength ? value : value.substring(0, maxLength) + "...";
     }
 
     private static String sanitizeModelOutput(String content) {

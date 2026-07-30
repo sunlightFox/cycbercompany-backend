@@ -1,2 +1,2 @@
-@org.springframework.modulith.ApplicationModule(allowedDependencies = "security")
+@org.springframework.modulith.ApplicationModule(allowedDependencies = {"config", "security"})
 package io.github.yourname.agentstudio.skill;
