@@ -109,7 +109,7 @@ public class RunCommandService {
             String webQuery = webSearchQuery(command.text());
             String webRetrievalNote = "";
             List<WebSearchResult> webResults = List.of();
-            if (shouldSearchWeb(command.text())) {
+            if (shouldSearchWeb(command)) {
                 try {
                     webResults = webSearch.search(new WebSearchCommand(webQuery, 5));
                 } catch (Exception searchFailure) {
@@ -128,7 +128,7 @@ public class RunCommandService {
             List<ModelGateway.ModelMessage> messages = new ArrayList<>();
             messages.add(new ModelGateway.ModelMessage(
                     "system",
-                    buildSystemPrompt(agent.systemPrompt(), evidence, webResults, webQuery, webRetrievalNote)));
+                    buildSystemPrompt(agent.systemPrompt(), command, evidence, webResults, webQuery, webRetrievalNote)));
             conversations.history(run.conversationId(), actor).forEach(message ->
                     messages.add(new ModelGateway.ModelMessage(message.role().name().toLowerCase(), message.content())));
 
@@ -154,19 +154,27 @@ public class RunCommandService {
 
     private static String buildSystemPrompt(
             String agentPrompt,
+            CreateRunCommand command,
             EvidenceBundle evidence,
             List<WebSearchResult> webResults,
             String webQuery,
             String webRetrievalNote) {
-        if (evidence.isEmpty() && webResults.isEmpty() && webRetrievalNote.isBlank()) {
+        String capabilityContext = buildCapabilityContext(command);
+        if (evidence.isEmpty()
+                && webResults.isEmpty()
+                && webRetrievalNote.isBlank()
+                && capabilityContext.isBlank()) {
             return agentPrompt;
         }
 
         StringBuilder builder = new StringBuilder(agentPrompt)
                 .append("\n\nRuntime context:\n")
                 .append("- Current server time: ").append(SERVER_TIME_FORMAT.format(Instant.now())).append('\n')
-                .append("- Tool calls are orchestrated by the backend. Do not emit raw tool-call XML or pseudo tool-call markup in the final answer.\n")
-                .append("\nRetrieved evidence:\n");
+                .append("- Tool calls are orchestrated by the backend. Do not emit raw tool-call XML or pseudo tool-call markup in the final answer.\n");
+        if (!capabilityContext.isBlank()) {
+            builder.append(capabilityContext);
+        }
+        builder.append("\nRetrieved evidence:\n");
         for (EvidenceBundle.Evidence item : evidence.evidence()) {
             builder.append("- [")
                     .append(item.sourceName()).append("#").append(item.chunkIndex())
@@ -192,7 +200,14 @@ public class RunCommandService {
         return builder.toString();
     }
 
-    private static boolean shouldSearchWeb(String text) {
+    private static boolean shouldSearchWeb(CreateRunCommand command) {
+        boolean requestScopedCapabilities = command.toolNames() != null || command.skillIds() != null;
+        if (requestScopedCapabilities
+                && !isCapabilitySelected(command.toolNames(), "web_search")
+                && !isCapabilitySelected(command.skillIds(), "web-research")) {
+            return false;
+        }
+        String text = command.text();
         String normalized = text == null ? "" : text.toLowerCase(Locale.ROOT);
         return normalized.contains("\u8054\u7f51")
                 || normalized.contains("\u641c\u7d22")
@@ -210,6 +225,28 @@ public class RunCommandService {
                 || normalized.contains("today")
                 || normalized.contains("news")
                 || normalized.contains("search");
+    }
+
+    private static String buildCapabilityContext(CreateRunCommand command) {
+        StringBuilder builder = new StringBuilder();
+        appendCapabilityLine(builder, "Selected skill IDs", command.skillIds());
+        appendCapabilityLine(builder, "Selected MCP server IDs", command.mcpServerIds());
+        appendCapabilityLine(builder, "Selected tool names", command.toolNames());
+        if (!builder.isEmpty()) {
+            builder.append("- Use only selected tools for backend-orchestrated retrieval. If a selected MCP server is not connected yet, say it is selected in the workspace but has no live executor attached.\n");
+        }
+        return builder.toString();
+    }
+
+    private static void appendCapabilityLine(StringBuilder builder, String label, List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return;
+        }
+        builder.append("- ").append(label).append(": ").append(String.join(", ", values)).append('\n');
+    }
+
+    private static boolean isCapabilitySelected(List<String> selected, String capabilityId) {
+        return selected != null && selected.contains(capabilityId);
     }
 
     /**

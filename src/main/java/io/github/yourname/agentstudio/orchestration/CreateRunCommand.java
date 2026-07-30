@@ -8,5 +8,8 @@ public record CreateRunCommand(
         @NotBlank String text,
         String modelProfileId,
         String agentId,
-        List<String> knowledgeBaseIds) {
+        List<String> knowledgeBaseIds,
+        List<String> skillIds,
+        List<String> mcpServerIds,
+        List<String> toolNames) {
 }
