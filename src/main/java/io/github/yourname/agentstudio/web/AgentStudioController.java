@@ -153,6 +153,10 @@ class AgentStudioController {
         var emitter = new SseEmitter(0L);
         for (var event : runEvents.replay(id, lastEventId == null ? 0 : lastEventId, actor)) {
             emitter.send(SseEmitter.event().id(Long.toString(event.sequence())).name(event.type().name()).data(event));
+            if (runEvents.isTerminal(event.type())) {
+                emitter.complete();
+                return emitter;
+            }
         }
         runEvents.register(id, emitter);
         return emitter;

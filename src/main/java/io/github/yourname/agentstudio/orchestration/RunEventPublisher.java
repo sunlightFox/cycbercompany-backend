@@ -60,10 +60,20 @@ public class RunEventPublisher {
                         .id(Long.toString(event.sequence()))
                         .name(event.type().name())
                         .data(event));
+                if (isTerminal(event.type())) {
+                    emitter.complete();
+                    remove(runId, emitter);
+                }
             } catch (Exception ignored) {
                 remove(runId, emitter);
             }
         }
+    }
+
+    public boolean isTerminal(RunEventType type) {
+        return type == RunEventType.FINAL_ANSWER
+                || type == RunEventType.RUN_FAILED
+                || type == RunEventType.RUN_CANCELLED;
     }
 
     private void remove(String runId, SseEmitter emitter) {

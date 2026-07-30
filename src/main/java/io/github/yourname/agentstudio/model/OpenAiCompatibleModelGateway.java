@@ -1,8 +1,11 @@
 package io.github.yourname.agentstudio.model;
 
+import java.net.http.HttpClient;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
@@ -18,6 +21,9 @@ import org.springframework.web.client.RestClientException;
  */
 @Service
 class OpenAiCompatibleModelGateway implements ModelGateway {
+
+    private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
+    private static final Duration READ_TIMEOUT = Duration.ofSeconds(45);
 
     private final ModelProfileRepository profiles;
     private final RestClient.Builder restClientBuilder;
@@ -59,6 +65,7 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
 
             var response = restClientBuilder
                     .baseUrl(trimTrailingSlash(profile.baseUrl()))
+                    .requestFactory(timeoutRequestFactory())
                     .build()
                     .post()
                     .uri("/chat/completions")
@@ -78,6 +85,15 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
         } catch (RestClientException ex) {
             throw new ModelGatewayException("Model provider call failed: " + ex.getMessage(), ex);
         }
+    }
+
+    private static JdkClientHttpRequestFactory timeoutRequestFactory() {
+        var client = HttpClient.newBuilder()
+                .connectTimeout(CONNECT_TIMEOUT)
+                .build();
+        var factory = new JdkClientHttpRequestFactory(client);
+        factory.setReadTimeout(READ_TIMEOUT);
+        return factory;
     }
 
     private static String trimTrailingSlash(String value) {
