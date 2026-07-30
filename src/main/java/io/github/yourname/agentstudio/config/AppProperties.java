@@ -14,9 +14,12 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * without turning configuration files into a credential leak surface.
  */
 @ConfigurationProperties(prefix = "app")
-public record AppProperties(Path dataDir, Ai ai, Run run) {
+public record AppProperties(Path dataDir, Ai ai, Run run, WebSearch webSearch) {
 
     public record Run(long timeoutSeconds) {
+    }
+
+    public record WebSearch(boolean enabled, int maxResults, String endpoint) {
     }
 
     public record Ai(

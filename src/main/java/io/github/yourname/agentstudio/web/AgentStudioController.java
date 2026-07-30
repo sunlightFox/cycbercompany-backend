@@ -16,6 +16,8 @@ import io.github.yourname.agentstudio.orchestration.RunEventPublisher;
 import io.github.yourname.agentstudio.orchestration.RunQueryService;
 import io.github.yourname.agentstudio.security.CurrentActorProvider;
 import io.github.yourname.agentstudio.tool.ToolCatalog;
+import io.github.yourname.agentstudio.tool.WebSearchCommand;
+import io.github.yourname.agentstudio.tool.WebSearchService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.io.IOException;
@@ -40,6 +42,7 @@ class AgentStudioController {
     private final ModelCatalog models;
     private final AgentCatalog agents;
     private final ToolCatalog tools;
+    private final WebSearchService webSearch;
     private final KnowledgeCommandService knowledgeCommands;
     private final KnowledgeQueryService knowledgeQueries;
     private final RunCommandService runCommands;
@@ -52,6 +55,7 @@ class AgentStudioController {
             ModelCatalog models,
             AgentCatalog agents,
             ToolCatalog tools,
+            WebSearchService webSearch,
             KnowledgeCommandService knowledgeCommands,
             KnowledgeQueryService knowledgeQueries,
             RunCommandService runCommands,
@@ -62,6 +66,7 @@ class AgentStudioController {
         this.models = models;
         this.agents = agents;
         this.tools = tools;
+        this.webSearch = webSearch;
         this.knowledgeCommands = knowledgeCommands;
         this.knowledgeQueries = knowledgeQueries;
         this.runCommands = runCommands;
@@ -99,6 +104,11 @@ class AgentStudioController {
     @GetMapping("/tools")
     Object listTools() {
         return tools.list();
+    }
+
+    @PostMapping("/web-search")
+    Object searchWeb(@Valid @RequestBody WebSearchCommand command) {
+        return webSearch.search(command);
     }
 
     @PostMapping("/knowledge-bases")

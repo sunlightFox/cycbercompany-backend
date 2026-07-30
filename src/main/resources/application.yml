@@ -36,6 +36,10 @@ app:
   data-dir: ${APP_DATA_DIR:./data}
   run:
     timeout-seconds: 120
+  web-search:
+    enabled: ${WEB_SEARCH_ENABLED:true}
+    max-results: ${WEB_SEARCH_MAX_RESULTS:5}
+    endpoint: ${WEB_SEARCH_ENDPOINT:https://html.duckduckgo.com/html/}
   ai:
     default-model-profile-id: minimax-m3
     seed-default-profile: true
