@@ -99,21 +99,28 @@ public class RunCommandService {
                     actor);
 
             String webQuery = webSearchQuery(command.text());
-            List<WebSearchResult> webResults = shouldSearchWeb(command.text())
-                    ? webSearch.search(new WebSearchCommand(webQuery, 5))
-                    : List.of();
+            String webRetrievalNote = "";
+            List<WebSearchResult> webResults = List.of();
+            if (shouldSearchWeb(command.text())) {
+                try {
+                    webResults = webSearch.search(new WebSearchCommand(webQuery, 5));
+                } catch (Exception searchFailure) {
+                    webRetrievalNote = "Web search was requested but failed: " + safeErrorMessage(searchFailure);
+                }
+            }
             events.publish(
                     runId,
                     RunEventType.RETRIEVAL_COMPLETED,
                     "knowledge=" + evidence.evidence().size()
                             + ", web=" + webResults.size()
-                            + (webResults.isEmpty() ? "" : ", query=" + webQuery),
+                            + (webResults.isEmpty() && webRetrievalNote.isBlank() ? "" : ", query=" + webQuery)
+                            + (webRetrievalNote.isBlank() ? "" : ", note=" + webRetrievalNote),
                     actor);
 
             List<ModelGateway.ModelMessage> messages = new ArrayList<>();
             messages.add(new ModelGateway.ModelMessage(
                     "system",
-                    buildSystemPrompt(agent.systemPrompt(), evidence, webResults, webQuery)));
+                    buildSystemPrompt(agent.systemPrompt(), evidence, webResults, webQuery, webRetrievalNote)));
             conversations.history(run.conversationId(), actor).forEach(message ->
                     messages.add(new ModelGateway.ModelMessage(message.role().name().toLowerCase(), message.content())));
 
@@ -140,8 +147,9 @@ public class RunCommandService {
             String agentPrompt,
             EvidenceBundle evidence,
             List<WebSearchResult> webResults,
-            String webQuery) {
-        if (evidence.isEmpty() && webResults.isEmpty()) {
+            String webQuery,
+            String webRetrievalNote) {
+        if (evidence.isEmpty() && webResults.isEmpty() && webRetrievalNote.isBlank()) {
             return agentPrompt;
         }
 
@@ -164,6 +172,10 @@ public class RunCommandService {
         if (!webResults.isEmpty()) {
             builder.append("\nWhen using web evidence, include source URLs in the answer when they materially support a claim.\n");
         }
+        if (!webRetrievalNote.isBlank()) {
+            builder.append("\n").append(webRetrievalNote)
+                    .append("\nIf current information is required, explain that live search is temporarily unavailable and ask the user to retry or narrow the query.\n");
+        }
         return builder.toString();
     }
 
@@ -176,6 +188,7 @@ public class RunCommandService {
                 || normalized.contains("\u6700\u65b0")
                 || normalized.contains("\u4eca\u5929")
                 || normalized.contains("\u65b0\u95fb")
+                || normalized.contains("\u8d44\u8baf")
                 || normalized.contains("\u4ef7\u683c")
                 || normalized.contains("\u5b98\u7f51")
                 || normalized.contains("github")
@@ -190,7 +203,7 @@ public class RunCommandService {
      * Converts an instruction-like user message into a compact search query.
      *
      * <p>Search engines perform better with the subject than with the whole
-     * instruction. For example, "搜索一下 assistant-ui GitHub 是什么，回答时带来源链接"
+     * instruction. For example, "search assistant-ui GitHub and cite sources"
      * should search for "assistant-ui GitHub".
      */
     private static String webSearchQuery(String text) {
@@ -222,9 +235,17 @@ public class RunCommandService {
                 .replace("\u5e26\u94fe\u63a5", " ")
                 .replace("\u8bf7", " ")
                 .replace("\u5e2e\u6211", " ")
-                .replaceAll("[，。！？、,.!?]", " ")
+                .replaceAll("[\\p{Punct}\\p{IsPunctuation}]", " ")
                 .replaceAll("\\s+", " ")
                 .trim();
+    }
+
+    private static String safeErrorMessage(Exception ex) {
+        String message = ex.getMessage();
+        if (message == null || message.isBlank()) {
+            return ex.getClass().getSimpleName();
+        }
+        return message.length() > 180 ? message.substring(0, 180) + "..." : message;
     }
 
     private static List<String> tokenBatches(String content) {
