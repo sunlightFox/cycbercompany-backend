@@ -23,6 +23,20 @@ import org.springframework.transaction.annotation.Transactional;
 @Component
 class DataSeeder implements ApplicationRunner {
 
+    private static final String DEFAULT_ASSISTANT_ID = "default-assistant";
+    private static final String DEFAULT_ASSISTANT_TOOLS = "local_time,knowledge_search,web_search";
+    private static final String DEFAULT_ASSISTANT_PROMPT = """
+            You are Spring Agent Studio's default assistant.
+
+            Runtime capabilities available through the backend:
+            - local_time: read the server's current time.
+            - knowledge_search: search tenant-scoped local knowledge bases when the user provides or selects them.
+            - web_search: search the public web for current or external information.
+
+            Answer clearly. When web or knowledge evidence is retrieved, use only relevant evidence and cite source URLs
+            or knowledge references when they materially support a claim. If evidence is missing or inconclusive, say so.
+            """;
+
     private final AppProperties properties;
     private final ModelProfileRepository modelProfiles;
     private final AgentDefinitionRepository agents;
@@ -53,20 +67,29 @@ class DataSeeder implements ApplicationRunner {
                     Instant.now()));
         }
 
-        if (agents.findById("default-assistant").isEmpty()) {
+        var defaultAssistant = agents.findById(DEFAULT_ASSISTANT_ID);
+        if (defaultAssistant.isEmpty()) {
             agents.save(new AgentDefinitionEntity(
-                    "default-assistant",
+                    DEFAULT_ASSISTANT_ID,
                     "Default Assistant",
                     "A careful single-agent assistant for local demos.",
-                    """
-                    You are Spring Agent Studio's default assistant.
-                    Answer clearly, cite retrieved knowledge when available, and say when evidence is missing.
-                    """,
+                    DEFAULT_ASSISTANT_PROMPT,
                     defaultModelProfileId,
-                    "local_time,knowledge_search",
+                    DEFAULT_ASSISTANT_TOOLS,
                     true,
                     Instant.now()));
+        } else if (isLegacyDefaultAssistant(defaultAssistant.get())) {
+            AgentDefinitionEntity assistant = defaultAssistant.get();
+            assistant.updateRuntimeDefaults(DEFAULT_ASSISTANT_PROMPT, DEFAULT_ASSISTANT_TOOLS);
+            agents.save(assistant);
         }
+    }
+
+    private static boolean isLegacyDefaultAssistant(AgentDefinitionEntity assistant) {
+        return assistant.toolAllowList() == null
+                || !assistant.toolAllowList().contains("web_search")
+                || assistant.systemPrompt() == null
+                || !assistant.systemPrompt().contains("web_search");
     }
 
     private static AppProperties.DefaultModelProfile fallbackProfile() {

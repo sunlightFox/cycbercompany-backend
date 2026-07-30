@@ -49,4 +49,17 @@ public class AgentDefinitionEntity {
     public String toolAllowList() { return toolAllowList; }
     public boolean enabled() { return enabled; }
     public Instant createdAt() { return createdAt; }
+
+    /**
+     * Updates safe, user-visible defaults for the built-in demo assistant.
+     *
+     * <p>The entity keeps most fields immutable from the outside so regular
+     * application code does not accidentally rewrite agent definitions. The
+     * local seed/migration code is the one place where changing defaults is
+     * expected, because older local H2 databases keep the first-seeded values.
+     */
+    public void updateRuntimeDefaults(String systemPrompt, String toolAllowList) {
+        this.systemPrompt = systemPrompt;
+        this.toolAllowList = toolAllowList;
+    }
 }
