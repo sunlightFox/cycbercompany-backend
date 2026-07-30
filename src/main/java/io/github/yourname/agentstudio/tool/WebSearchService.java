@@ -9,6 +9,9 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -65,11 +68,11 @@ public class WebSearchService {
 
         List<Exception> failures = new ArrayList<>();
         if (isNewsLikeQuery(query)) {
-            List<WebSearchResult> newsResults = tryProvider(() -> searchBingNews(query, limit), failures);
+            List<WebSearchResult> newsResults = tryProvider(() -> searchBingNews(query, limit, true), failures);
             if (!newsResults.isEmpty()) {
                 return newsResults;
             }
-            List<WebSearchResult> genericNewsResults = tryProvider(() -> searchBingNews("latest news", limit), failures);
+            List<WebSearchResult> genericNewsResults = tryProvider(() -> searchBingNews("latest news", limit, true), failures);
             if (!genericNewsResults.isEmpty()) {
                 return genericNewsResults;
             }
@@ -85,7 +88,7 @@ public class WebSearchService {
             return webResults;
         }
 
-        List<WebSearchResult> fallbackNewsResults = tryProvider(() -> searchBingNews(query, limit), failures);
+        List<WebSearchResult> fallbackNewsResults = tryProvider(() -> searchBingNews(query, limit, false), failures);
         if (!fallbackNewsResults.isEmpty()) {
             return fallbackNewsResults;
         }
@@ -129,19 +132,19 @@ public class WebSearchService {
                 .toList();
     }
 
-    private List<WebSearchResult> searchBingNews(String query, int limit) {
+    private List<WebSearchResult> searchBingNews(String query, int limit, boolean freshOnly) {
         String rss = get(BING_NEWS_RSS_ENDPOINT
                 + "?q=" + URLEncoder.encode(query, StandardCharsets.UTF_8)
                 + "&format=rss");
 
-        return parseRss(rss, limit);
+        return parseRss(rss, limit, freshOnly);
     }
 
     private List<WebSearchResult> searchCuratedNewsFeeds(int limit) {
         Map<String, WebSearchResult> deduplicated = new LinkedHashMap<>();
         for (var feed : CURATED_NEWS_FEEDS.entrySet()) {
             try {
-                for (WebSearchResult result : parseRss(get(feed.getValue()), limit)) {
+                for (WebSearchResult result : parseRss(get(feed.getValue()), limit, true)) {
                     String snippet = result.snippet().isBlank()
                             ? "source=" + feed.getKey()
                             : result.snippet() + ", source=" + feed.getKey();
@@ -158,7 +161,7 @@ public class WebSearchService {
         return List.copyOf(deduplicated.values());
     }
 
-    private List<WebSearchResult> parseRss(String rss, int limit) {
+    private List<WebSearchResult> parseRss(String rss, int limit, boolean freshOnly) {
 
         if (rss == null || rss.isBlank()) {
             return List.of();
@@ -170,11 +173,14 @@ public class WebSearchService {
                     String url = item.selectFirst("link") == null ? "" : item.selectFirst("link").text();
                     String source = item.selectFirst("source") == null ? "" : item.selectFirst("source").text();
                     String pubDate = item.selectFirst("pubDate") == null ? "" : item.selectFirst("pubDate").text();
+                    if (freshOnly && !isFreshPublicationDate(pubDate)) {
+                        return null;
+                    }
                     String snippet = (source.isBlank() ? "" : "source=" + source)
                             + (pubDate.isBlank() ? "" : (source.isBlank() ? "" : ", ") + "published=" + pubDate);
                     return new WebSearchResult(title, url, snippet);
                 })
-                .filter(item -> !item.title().isBlank() && !item.url().isBlank())
+                .filter(item -> item != null && !item.title().isBlank() && !item.url().isBlank())
                 .limit(limit)
                 .toList();
     }
@@ -216,6 +222,18 @@ public class WebSearchService {
                 || normalized.contains("news")
                 || normalized.contains("latest")
                 || normalized.contains("today");
+    }
+
+    private static boolean isFreshPublicationDate(String pubDate) {
+        if (pubDate == null || pubDate.isBlank()) {
+            return false;
+        }
+        try {
+            Instant publishedAt = DateTimeFormatter.RFC_1123_DATE_TIME.parse(pubDate, Instant::from);
+            return !publishedAt.isBefore(Instant.now().minus(Duration.ofHours(48)));
+        } catch (DateTimeParseException ex) {
+            return false;
+        }
     }
 
     private static List<WebSearchResult> tryProvider(SearchProvider provider, List<Exception> failures) {
