@@ -13,6 +13,8 @@ import io.github.yourname.agentstudio.tool.WebSearchCommand;
 import io.github.yourname.agentstudio.tool.WebSearchResult;
 import io.github.yourname.agentstudio.tool.WebSearchService;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -38,6 +40,12 @@ public class RunCommandService {
      */
     private static final Pattern LATIN_SEARCH_TOKEN =
             Pattern.compile("[A-Za-z0-9][A-Za-z0-9._:/#@+\\-]{1,}");
+    private static final Pattern TOOL_CALL_BLOCK =
+            Pattern.compile("(?is)<tool_call>.*?</tool_call>");
+    private static final Pattern TOOL_RESULT_BLOCK =
+            Pattern.compile("(?is)<tool_result>.*?</tool_result>");
+    private static final DateTimeFormatter SERVER_TIME_FORMAT =
+            DateTimeFormatter.ISO_OFFSET_DATE_TIME.withZone(ZoneId.systemDefault());
 
     private final AppProperties properties;
     private final AgentRunRepository runs;
@@ -125,15 +133,16 @@ public class RunCommandService {
                     messages.add(new ModelGateway.ModelMessage(message.role().name().toLowerCase(), message.content())));
 
             var answer = modelGateway.complete(new ModelGateway.ModelCompletionRequest(run.modelProfileId(), messages));
-            for (String part : tokenBatches(answer.content())) {
+            String answerContent = sanitizeModelOutput(answer.content());
+            for (String part : tokenBatches(answerContent)) {
                 events.publish(runId, RunEventType.TOKEN_DELTA, part, actor);
             }
 
-            conversations.append(run.conversationId(), MessageRole.ASSISTANT, answer.content(), runId, actor);
-            run.succeed(answer.content());
+            conversations.append(run.conversationId(), MessageRole.ASSISTANT, answerContent, runId, actor);
+            run.succeed(answerContent);
             runs.save(run);
             events.publish(runId, RunEventType.STEP_COMPLETED, "single-agent", actor);
-            events.publish(runId, RunEventType.FINAL_ANSWER, answer.content(), actor);
+            events.publish(runId, RunEventType.FINAL_ANSWER, answerContent, actor);
         } catch (Exception ex) {
             runs.findByIdAndTenantId(runId, actor.tenantId()).ifPresent(run -> {
                 run.fail(ex.getMessage());
@@ -153,7 +162,11 @@ public class RunCommandService {
             return agentPrompt;
         }
 
-        StringBuilder builder = new StringBuilder(agentPrompt).append("\n\nRetrieved evidence:\n");
+        StringBuilder builder = new StringBuilder(agentPrompt)
+                .append("\n\nRuntime context:\n")
+                .append("- Current server time: ").append(SERVER_TIME_FORMAT.format(Instant.now())).append('\n')
+                .append("- Tool calls are orchestrated by the backend. Do not emit raw tool-call XML or pseudo tool-call markup in the final answer.\n")
+                .append("\nRetrieved evidence:\n");
         for (EvidenceBundle.Evidence item : evidence.evidence()) {
             builder.append("- [")
                     .append(item.sourceName()).append("#").append(item.chunkIndex())
@@ -246,6 +259,17 @@ public class RunCommandService {
             return ex.getClass().getSimpleName();
         }
         return message.length() > 180 ? message.substring(0, 180) + "..." : message;
+    }
+
+    private static String sanitizeModelOutput(String content) {
+        if (content == null || content.isBlank()) {
+            return "";
+        }
+        return TOOL_RESULT_BLOCK.matcher(TOOL_CALL_BLOCK.matcher(content).replaceAll(""))
+                .replaceAll("")
+                .replaceAll("(?m)^\\s*\\]<\\]minimax\\[>.*$", "")
+                .replaceAll("\\n{3,}", "\n\n")
+                .trim();
     }
 
     private static List<String> tokenBatches(String content) {
