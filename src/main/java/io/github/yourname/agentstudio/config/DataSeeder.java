@@ -66,11 +66,15 @@ class DataSeeder implements ApplicationRunner {
                     configured.capabilities(),
                     true,
                     Instant.now()));
-            } else if (storedProfile.get().apiKey() == null || storedProfile.get().apiKey().isBlank()) {
+            } else {
+                ModelProfileEntity profile = storedProfile.get();
+                if (profile.addMissingCapabilities(configured.capabilities())) {
+                    modelProfiles.save(profile);
+                }
+                if (profile.apiKey() == null || profile.apiKey().isBlank()) {
                 // 旧数据不覆盖用户手动保存的密钥；只在数据库为空时从当前环境变量补一次。
                 String apiKey = System.getenv(configured.credentialRef());
                 if (apiKey != null && !apiKey.isBlank()) {
-                    ModelProfileEntity profile = storedProfile.get();
                     profile.update(
                             configured.providerType(),
                             configured.baseUrl(),
@@ -80,6 +84,7 @@ class DataSeeder implements ApplicationRunner {
                             configured.capabilities(),
                             profile.enabled());
                     modelProfiles.save(profile);
+                }
                 }
             }
         }
@@ -117,6 +122,6 @@ class DataSeeder implements ApplicationRunner {
                 "https://api.edgefn.net/v1",
                 "MiniMax-M3",
                 "EDGEFN_API_KEY",
-                EnumSet.of(ModelCapability.TEXT, ModelCapability.JSON_OUTPUT));
+                EnumSet.of(ModelCapability.TEXT, ModelCapability.JSON_OUTPUT, ModelCapability.TOOLS));
     }
 }

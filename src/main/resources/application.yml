@@ -64,3 +64,4 @@ app:
       capabilities:
         - TEXT
         - JSON_OUTPUT
+        - TOOLS

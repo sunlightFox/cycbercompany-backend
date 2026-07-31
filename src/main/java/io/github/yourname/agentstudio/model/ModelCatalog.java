@@ -53,7 +53,7 @@ public class ModelCatalog {
         Set<ModelCapability> embedding = Set.of(ModelCapability.EMBEDDING);
         return List.of(
                 new ModelPresetView("edgefn-minimax-m3", "EdgeFn / MiniMax", "MiniMax-M3", ProviderType.OPENAI_COMPATIBLE,
-                        "https://api.edgefn.net/v1", "MiniMax-M3", "EDGEFN_API_KEY", textJson,
+                        "https://api.edgefn.net/v1", "MiniMax-M3", "EDGEFN_API_KEY", textJsonTools,
                         "Current project default from the user-provided EdgeFn OpenAI-compatible endpoint."),
                 new ModelPresetView("openai-gpt-4o-mini", "OpenAI", "GPT-4o mini", ProviderType.OPENAI_COMPATIBLE,
                         "https://api.openai.com/v1", "gpt-4o-mini", "OPENAI_API_KEY", textJsonTools,

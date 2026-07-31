@@ -83,4 +83,12 @@ public class ModelProfileEntity {
         this.capabilities = capabilities == null ? EnumSet.noneOf(ModelCapability.class) : EnumSet.copyOf(capabilities);
         this.enabled = enabled;
     }
+
+    /** Adds capabilities from a newer built-in default without replacing user-managed profile fields. */
+    public boolean addMissingCapabilities(Set<ModelCapability> requiredCapabilities) {
+        if (requiredCapabilities == null || requiredCapabilities.isEmpty()) {
+            return false;
+        }
+        return capabilities.addAll(requiredCapabilities);
+    }
 }
