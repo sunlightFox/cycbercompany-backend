@@ -56,6 +56,8 @@ public class CodingToolAdapter {
                 || "process.stop".equals(name)
                 || "git.status".equals(name)
                 || "git.diff".equals(name)
+                || "git.stage".equals(name)
+                || "git.commit".equals(name)
                 || "browser.open".equals(name)
                 || "browser.snapshot".equals(name)
                 || "browser.wait".equals(name)
@@ -166,6 +168,9 @@ public class CodingToolAdapter {
         if (("git.diff".equals(toolName) || "browser.screenshot".equals(toolName)) && scoped.containsKey("path")) {
             scopeArgument(scoped, "path", workspaceScope);
         }
+        if ("git.stage".equals(toolName)) {
+            scopePathList(scoped, "paths", workspaceScope);
+        }
         if ("shell.run".equals(toolName) || "process.start".equals(toolName)) {
             scopeArgument(scoped, "cwd", workspaceScope);
         }
@@ -178,6 +183,22 @@ public class CodingToolAdapter {
             throw new IllegalArgumentException("Node tool argument '" + name + "' must be a string.");
         }
         arguments.put(name, workspaceScope.resolve((String) value));
+    }
+
+    /** 每个待暂存文件都必须单独落在本次编码任务选择的项目范围内。 */
+    private static void scopePathList(Map<String, Object> arguments, String name, CodingWorkspaceScope workspaceScope) {
+        Object value = arguments.get(name);
+        if (!(value instanceof List<?> values)) {
+            throw new IllegalArgumentException("Node tool argument '" + name + "' must be an array of strings.");
+        }
+        List<String> scoped = new java.util.ArrayList<>();
+        for (Object item : values) {
+            if (!(item instanceof String path)) {
+                throw new IllegalArgumentException("Node tool argument '" + name + "' must be an array of strings.");
+            }
+            scoped.add(workspaceScope.resolve(path));
+        }
+        arguments.put(name, scoped);
     }
 
     private Map<String, Object> readSchema(String schemaJson) {

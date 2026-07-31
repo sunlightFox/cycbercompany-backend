@@ -58,6 +58,19 @@ class ToolRegistryTest {
     }
 
     @Test
+    void keepsGitWritingToolsDisabledAndApprovalProtected() throws Exception {
+        ToolRegistry registry = new ToolRegistry(HttpClient.newHttpClient(), Files.createTempDirectory("agent-studio-tools"));
+
+        var stage = registry.capabilities().stream().filter(item -> "git.stage".equals(item.name())).findFirst().orElseThrow();
+        var commit = registry.capabilities().stream().filter(item -> "git.commit".equals(item.name())).findFirst().orElseThrow();
+
+        // 注册能力不代表自动放权：管理员还必须显式启用，运行时还必须逐次审批。
+        assertTrue(!stage.enabled() && stage.requiresApproval());
+        assertTrue(!commit.enabled() && commit.requiresApproval());
+        registry.close();
+    }
+
+    @Test
     void acceptsTheBackendOnlyBrowserSessionCleanupCommand() throws Exception {
         ToolRegistry registry = new ToolRegistry(HttpClient.newHttpClient(), Files.createTempDirectory("agent-studio-tools"));
 

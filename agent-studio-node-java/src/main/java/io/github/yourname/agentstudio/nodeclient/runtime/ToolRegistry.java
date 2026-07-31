@@ -48,6 +48,20 @@ public class ToolRegistry {
                         "git.diff", "Show the current Git diff, optionally for one workspace-relative path.", "LOW", gitTool != null, false,
                         objectSchema(Map.of("path", Map.of("type", "string")))),
                 new NodeCapability(
+                        "git.stage",
+                        "Stage explicit workspace-relative files for a later Git commit. Requires human approval.",
+                        "HIGH",
+                        false,
+                        true,
+                        objectSchema(Map.of("paths", Map.of("type", "array", "items", Map.of("type", "string"))), "paths")),
+                new NodeCapability(
+                        "git.commit",
+                        "Create a Git commit from already staged changes. Requires human approval.",
+                        "HIGH",
+                        false,
+                        true,
+                        objectSchema(Map.of("message", Map.of("type", "string")), "message")),
+                new NodeCapability(
                         "project.inspect",
                         "Detect the workspace project type and return manifest-backed build, test, and start command recommendations without executing them.",
                         "LOW",
@@ -267,6 +281,12 @@ public class ToolRegistry {
         }
         if ("git.diff".equals(toolName)) {
             return gitTool == null ? ToolExecutionResult.failure("git.diff is unavailable because this node has no configured workspace.") : gitTool.diff(arguments);
+        }
+        if ("git.stage".equals(toolName)) {
+            return gitTool == null ? ToolExecutionResult.failure("git.stage is unavailable because this node has no configured workspace.") : gitTool.stage(arguments);
+        }
+        if ("git.commit".equals(toolName)) {
+            return gitTool == null ? ToolExecutionResult.failure("git.commit is unavailable because this node has no configured workspace.") : gitTool.commit(arguments);
         }
         if ("browser.open".equals(toolName)) {
             return browserTool.open(executionSessionId, arguments);
