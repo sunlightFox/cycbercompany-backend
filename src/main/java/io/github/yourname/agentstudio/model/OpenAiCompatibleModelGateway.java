@@ -4,15 +4,20 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.http.HttpClient;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 
 /**
  * OpenAI 兼容聊天接口的最小实现。
@@ -84,10 +89,9 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
                                         "description", tool.description(),
                                         "parameters", tool.inputSchema())))
                         .toList());
-                // Every current native-tool caller is an autonomous coding run.
-                // Require the first model response to take an observable action;
-                // the loop accepts a normal final response after tool results.
-                payload.put("tool_choice", "required");
+                if (request.toolChoice() == ToolChoice.REQUIRED) {
+                    payload.put("tool_choice", "required");
+                }
             }
 
             var response = restClientBuilder
@@ -117,8 +121,37 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
                     response.model(),
                     parseToolCalls(choice.message().tool_calls()),
                     choice.finish_reason() == null ? "stop" : choice.finish_reason());
+        } catch (RestClientResponseException ex) {
+            if (ex.getStatusCode().value() == 429) {
+                throw new ModelRateLimitException(
+                        "Model provider rate limited the request: " + ex.getMessage(),
+                        retryAfter(ex.getResponseHeaders()),
+                        ex);
+            }
+            throw new ModelGatewayException("Model provider call failed: " + ex.getMessage(), ex);
         } catch (RestClientException ex) {
             throw new ModelGatewayException("Model provider call failed: " + ex.getMessage(), ex);
+        }
+    }
+
+    private static Duration retryAfter(HttpHeaders headers) {
+        if (headers == null) {
+            return null;
+        }
+        String value = headers.getFirst(HttpHeaders.RETRY_AFTER);
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return Duration.ofSeconds(Math.max(0, Long.parseLong(value.trim())));
+        } catch (NumberFormatException ignored) {
+            try {
+                Instant retryAt = ZonedDateTime.parse(value, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant();
+                Duration delay = Duration.between(Instant.now(), retryAt);
+                return delay.isNegative() ? Duration.ZERO : delay;
+            } catch (Exception ignoredDate) {
+                return null;
+            }
         }
     }
 

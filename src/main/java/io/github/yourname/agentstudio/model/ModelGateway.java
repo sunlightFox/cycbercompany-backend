@@ -7,11 +7,25 @@ public interface ModelGateway {
 
     ModelAnswer complete(ModelCompletionRequest request);
 
-    record ModelCompletionRequest(String modelProfileId, List<ModelMessage> messages, List<ModelTool> tools) {
+    record ModelCompletionRequest(
+            String modelProfileId,
+            List<ModelMessage> messages,
+            List<ModelTool> tools,
+            ToolChoice toolChoice) {
+
+        public ModelCompletionRequest(String modelProfileId, List<ModelMessage> messages, List<ModelTool> tools) {
+            this(modelProfileId, messages, tools, ToolChoice.AUTO);
+        }
 
         public ModelCompletionRequest(String modelProfileId, List<ModelMessage> messages) {
-            this(modelProfileId, messages, List.of());
+            this(modelProfileId, messages, List.of(), ToolChoice.AUTO);
         }
+    }
+
+    /** Whether an OpenAI-compatible provider must emit a function call on this turn. */
+    enum ToolChoice {
+        AUTO,
+        REQUIRED
     }
 
     record ModelMessage(

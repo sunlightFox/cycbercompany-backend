@@ -1,13 +1,16 @@
 package io.github.yourname.agentstudio.orchestration;
 
 import io.github.yourname.agentstudio.model.ModelGateway;
+import io.github.yourname.agentstudio.model.ModelRateLimitException;
 import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.tool.CodingToolAdapter;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /** A bounded native-tool loop for repository editing and verification work. */
@@ -16,15 +19,29 @@ class CodingAgentLoop {
 
     private static final int MAX_MODEL_TURNS = 16;
     private static final int MAX_TOOL_CALLS = 32;
+    private static final int MAX_RATE_LIMIT_RETRIES = 3;
+    private static final Duration INITIAL_RATE_LIMIT_DELAY = Duration.ofSeconds(15);
+    private static final Duration MAX_RATE_LIMIT_DELAY = Duration.ofSeconds(45);
 
     private final ModelGateway modelGateway;
     private final CodingToolAdapter tools;
     private final RunEventPublisher events;
+    private final RetrySleeper retrySleeper;
 
+    @Autowired
     CodingAgentLoop(ModelGateway modelGateway, CodingToolAdapter tools, RunEventPublisher events) {
+        this(modelGateway, tools, events, Thread::sleep);
+    }
+
+    CodingAgentLoop(
+            ModelGateway modelGateway,
+            CodingToolAdapter tools,
+            RunEventPublisher events,
+            RetrySleeper retrySleeper) {
         this.modelGateway = modelGateway;
         this.tools = tools;
         this.events = events;
+        this.retrySleeper = retrySleeper;
     }
 
     String execute(
@@ -47,7 +64,14 @@ class CodingAgentLoop {
         int executedCalls = 0;
 
         for (int turn = 1; turn <= MAX_MODEL_TURNS; turn++) {
-            var answer = modelGateway.complete(new ModelGateway.ModelCompletionRequest(modelProfileId, messages, modelTools));
+            var answer = completeWithRateLimitRetry(
+                    runId,
+                    actor,
+                    new ModelGateway.ModelCompletionRequest(
+                            modelProfileId,
+                            messages,
+                            modelTools,
+                            turn == 1 ? ModelGateway.ToolChoice.REQUIRED : ModelGateway.ToolChoice.AUTO));
             List<ModelGateway.ModelToolCall> calls = normalizeCalls(answer.toolCalls());
             if (calls.isEmpty()) {
                 if (executedCalls == 0) {
@@ -84,7 +108,45 @@ class CodingAgentLoop {
                 }
             }
         }
-        throw new IllegalStateException("Coding run reached its maximum of " + MAX_MODEL_TURNS + " model turns.");
+        throw new IllegalStateException(
+                "Coding run reached its maximum of " + MAX_MODEL_TURNS
+                        + " model turns without a final answer. The model kept requesting tools.");
+    }
+
+    private ModelGateway.ModelAnswer completeWithRateLimitRetry(
+            String runId,
+            ActorContext actor,
+            ModelGateway.ModelCompletionRequest request) {
+        for (int retry = 0; ; retry++) {
+            try {
+                return modelGateway.complete(request);
+            } catch (ModelRateLimitException ex) {
+                if (retry >= MAX_RATE_LIMIT_RETRIES) {
+                    throw new IllegalStateException(
+                            "Model provider continued rate limiting after " + MAX_RATE_LIMIT_RETRIES + " retries.", ex);
+                }
+                Duration delay = rateLimitDelay(ex.retryAfter(), retry);
+                events.publish(
+                        runId,
+                        RunEventType.MODEL_RATE_LIMITED,
+                        "retry=" + (retry + 1) + ", delaySeconds=" + delay.toSeconds(),
+                        actor);
+                try {
+                    retrySleeper.sleep(delay);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("Coding run was interrupted while waiting for model rate limit recovery.", interrupted);
+                }
+            }
+        }
+    }
+
+    private static Duration rateLimitDelay(Duration providerDelay, int retry) {
+        if (providerDelay != null && !providerDelay.isNegative() && !providerDelay.isZero()) {
+            return providerDelay.compareTo(MAX_RATE_LIMIT_DELAY) > 0 ? MAX_RATE_LIMIT_DELAY : providerDelay;
+        }
+        Duration exponential = INITIAL_RATE_LIMIT_DELAY.multipliedBy(retry + 1L);
+        return exponential.compareTo(MAX_RATE_LIMIT_DELAY) > 0 ? MAX_RATE_LIMIT_DELAY : exponential;
     }
 
     private static List<ModelGateway.ModelToolCall> normalizeCalls(List<ModelGateway.ModelToolCall> calls) {
@@ -103,5 +165,10 @@ class CodingAgentLoop {
         return toolResult != null
                 && (toolResult.contains("Node is not connected")
                         || toolResult.contains("Node is not online or enabled"));
+    }
+
+    @FunctionalInterface
+    interface RetrySleeper {
+        void sleep(Duration duration) throws InterruptedException;
     }
 }
