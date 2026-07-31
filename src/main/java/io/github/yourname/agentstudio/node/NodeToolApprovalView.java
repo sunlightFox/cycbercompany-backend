@@ -26,7 +26,8 @@ public record NodeToolApprovalView(
                 entity.toolName(),
                 entity.runId(),
                 entity.toolCallId(),
-                entity.argumentsJson(),
+                // 审批页面应能看清操作意图，但不能把命令中的密钥原样显示出来。
+                SensitiveValueMasker.mask(entity.argumentsJson()),
                 entity.timeoutSeconds(),
                 entity.status(),
                 entity.requestedBy(),
@@ -35,7 +36,7 @@ public record NodeToolApprovalView(
                 entity.decidedAt(),
                 entity.executedAt(),
                 entity.executionStatus(),
-                entity.resultJson(),
-                entity.errorMessage());
+                SensitiveValueMasker.mask(entity.resultJson()),
+                SensitiveValueMasker.mask(entity.errorMessage()));
     }
 }

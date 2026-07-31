@@ -24,9 +24,10 @@ public record NodeToolInvocationView(
                 entity.nodeId(),
                 entity.toolName(),
                 entity.status(),
-                entity.argumentsJson(),
-                entity.resultJson(),
-                entity.errorMessage(),
+                // API 阅读审计记录不需要看到真实密钥；执行时仍从受控持久化记录读取原始参数。
+                SensitiveValueMasker.mask(entity.argumentsJson()),
+                SensitiveValueMasker.mask(entity.resultJson()),
+                SensitiveValueMasker.mask(entity.errorMessage()),
                 entity.createdAt(),
                 entity.startedAt(),
                 entity.finishedAt());
