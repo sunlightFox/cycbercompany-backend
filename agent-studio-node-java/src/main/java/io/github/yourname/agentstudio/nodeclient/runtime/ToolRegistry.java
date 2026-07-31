@@ -3,6 +3,7 @@ package io.github.yourname.agentstudio.nodeclient.runtime;
 import io.github.yourname.agentstudio.nodeclient.protocol.NodeCapability;
 import io.github.yourname.agentstudio.nodeclient.tools.BrowserTool;
 import io.github.yourname.agentstudio.nodeclient.tools.FileTool;
+import io.github.yourname.agentstudio.nodeclient.tools.GitTool;
 import io.github.yourname.agentstudio.nodeclient.tools.ShellTool;
 import java.net.http.HttpClient;
 import java.nio.file.Path;
@@ -22,16 +23,24 @@ public class ToolRegistry {
     private final BrowserTool browserTool;
     private final FileTool fileTool;
     private final ShellTool shellTool;
+    private final GitTool gitTool;
 
     public ToolRegistry(HttpClient httpClient, Path workspaceRoot) {
         this.browserTool = new BrowserTool(httpClient);
         this.fileTool = workspaceRoot == null ? null : new FileTool(workspaceRoot);
         this.shellTool = workspaceRoot == null ? null : new ShellTool(workspaceRoot);
+        this.gitTool = workspaceRoot == null ? null : new GitTool(workspaceRoot);
     }
 
     public List<NodeCapability> capabilities() {
         // HIGH 风险 shell.run 默认禁用且要求审批；上报能力不等于绕过服务端授权。
         List<NodeCapability> capabilities = new ArrayList<>(List.of(
+                new NodeCapability(
+                        "git.status", "Show concise Git branch and worktree status.", "LOW", gitTool != null, false,
+                        objectSchema(Map.of())),
+                new NodeCapability(
+                        "git.diff", "Show the current Git diff, optionally for one workspace-relative path.", "LOW", gitTool != null, false,
+                        objectSchema(Map.of("path", Map.of("type", "string")))),
                 new NodeCapability(
                         "fs.list",
                         "List files under an allowed workspace path.",
@@ -159,6 +168,12 @@ public class ToolRegistry {
             return shellTool == null
                     ? ToolExecutionResult.failure("shell.run is unavailable because this node has no configured workspace.")
                     : shellTool.run(arguments);
+        }
+        if ("git.status".equals(toolName)) {
+            return gitTool == null ? ToolExecutionResult.failure("git.status is unavailable because this node has no configured workspace.") : gitTool.status();
+        }
+        if ("git.diff".equals(toolName)) {
+            return gitTool == null ? ToolExecutionResult.failure("git.diff is unavailable because this node has no configured workspace.") : gitTool.diff(arguments);
         }
         if ("browser.open".equals(toolName)) {
             return browserTool.open(arguments);
