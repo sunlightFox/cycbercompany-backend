@@ -4,6 +4,7 @@ import io.github.yourname.agentstudio.nodeclient.protocol.NodeCapability;
 import io.github.yourname.agentstudio.nodeclient.tools.BrowserTool;
 import io.github.yourname.agentstudio.nodeclient.tools.FileTool;
 import io.github.yourname.agentstudio.nodeclient.tools.GitTool;
+import io.github.yourname.agentstudio.nodeclient.tools.ManagedProcessTool;
 import io.github.yourname.agentstudio.nodeclient.tools.ShellTool;
 import java.net.http.HttpClient;
 import java.nio.file.Path;
@@ -24,12 +25,14 @@ public class ToolRegistry {
     private final FileTool fileTool;
     private final ShellTool shellTool;
     private final GitTool gitTool;
+    private final ManagedProcessTool managedProcessTool;
 
     public ToolRegistry(HttpClient httpClient, Path workspaceRoot) {
         this.browserTool = new BrowserTool(httpClient);
         this.fileTool = workspaceRoot == null ? null : new FileTool(workspaceRoot);
         this.shellTool = workspaceRoot == null ? null : new ShellTool(workspaceRoot);
         this.gitTool = workspaceRoot == null ? null : new GitTool(workspaceRoot);
+        this.managedProcessTool = workspaceRoot == null ? null : new ManagedProcessTool(workspaceRoot);
     }
 
     public List<NodeCapability> capabilities() {
@@ -86,6 +89,31 @@ public class ToolRegistry {
                                 "command", Map.of("type", "string"),
                                 "cwd", Map.of("type", "string"),
                                 "timeoutSeconds", Map.of("type", "integer")), "command")),
+                new NodeCapability(
+                        "process.start",
+                        "Start a workspace development process under a managed handle. Use a foreground command; do not use Start-Process or nohup.",
+                        "HIGH",
+                        false,
+                        true,
+                        objectSchema(Map.of(
+                                "command", Map.of("type", "string"),
+                                "cwd", Map.of("type", "string"),
+                                "stdoutPath", Map.of("type", "string"),
+                                "stderrPath", Map.of("type", "string")), "command")),
+                new NodeCapability(
+                        "process.status",
+                        "Inspect a node-managed development process by processId.",
+                        "LOW",
+                        managedProcessTool != null,
+                        false,
+                        objectSchema(Map.of("processId", Map.of("type", "string")), "processId")),
+                new NodeCapability(
+                        "process.stop",
+                        "Stop a node-managed development process and its descendants by processId.",
+                        "HIGH",
+                        false,
+                        true,
+                        objectSchema(Map.of("processId", Map.of("type", "string")), "processId")),
                 new NodeCapability(
                         "browser.open",
                         "Open a URL with Playwright on this node.",
@@ -169,6 +197,21 @@ public class ToolRegistry {
                     ? ToolExecutionResult.failure("shell.run is unavailable because this node has no configured workspace.")
                     : shellTool.run(arguments);
         }
+        if ("process.start".equals(toolName)) {
+            return managedProcessTool == null
+                    ? ToolExecutionResult.failure("process.start is unavailable because this node has no configured workspace.")
+                    : managedProcessTool.start(arguments);
+        }
+        if ("process.status".equals(toolName)) {
+            return managedProcessTool == null
+                    ? ToolExecutionResult.failure("process.status is unavailable because this node has no configured workspace.")
+                    : managedProcessTool.status(arguments);
+        }
+        if ("process.stop".equals(toolName)) {
+            return managedProcessTool == null
+                    ? ToolExecutionResult.failure("process.stop is unavailable because this node has no configured workspace.")
+                    : managedProcessTool.stop(arguments);
+        }
         if ("git.status".equals(toolName)) {
             return gitTool == null ? ToolExecutionResult.failure("git.status is unavailable because this node has no configured workspace.") : gitTool.status();
         }
@@ -191,5 +234,11 @@ public class ToolRegistry {
             return browserTool.type(arguments);
         }
         return ToolExecutionResult.failure("Unsupported node tool: " + toolName);
+    }
+
+    public void close() {
+        if (managedProcessTool != null) {
+            managedProcessTool.close();
+        }
     }
 }

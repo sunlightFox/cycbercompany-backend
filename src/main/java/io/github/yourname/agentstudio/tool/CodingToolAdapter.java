@@ -52,6 +52,9 @@ public class CodingToolAdapter {
                 || "fs.write".equals(name)
                 || "fs.apply_patch".equals(name)
                 || "shell.run".equals(name)
+                || "process.start".equals(name)
+                || "process.status".equals(name)
+                || "process.stop".equals(name)
                 || "git.status".equals(name)
                 || "git.diff".equals(name);
     }

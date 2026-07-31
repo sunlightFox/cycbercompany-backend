@@ -58,6 +58,7 @@ public class NodeWebSocketClient implements WebSocket.Listener {
             // 先停止心跳，再发送关闭帧，降低服务端长期显示 ONLINE 的概率。
             stopping = true;
             cancelHeartbeat();
+            toolRegistry.close();
             if (webSocket != null) {
                 webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "node shutdown");
             }
@@ -80,6 +81,7 @@ public class NodeWebSocketClient implements WebSocket.Listener {
                 retrySeconds = Math.min(retrySeconds * 2, 30);
             }
         }
+        toolRegistry.close();
     }
 
     @Override
