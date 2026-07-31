@@ -193,7 +193,8 @@ class AgentStudioController {
 
     @PostMapping("/web-search")
     Object searchWeb(@Valid @RequestBody WebSearchCommand command) {
-        return webSearch.search(command);
+        var response = webSearch.searchDetailed(command);
+        return Boolean.TRUE.equals(command.trace()) ? response : response.results();
     }
 
     @GetMapping("/skills")
@@ -557,6 +558,14 @@ class AgentStudioController {
         // 必须先按当前租户查询任务。否则仅凭猜测 runId 就可能枚举其他租户的摘要。
         runQueries.get(id, actor);
         return nodes.codingEvidence(id, actor);
+    }
+
+    @GetMapping("/runs/{id}/coding-quality")
+    Object codingQuality(@PathVariable String id, HttpServletRequest request) {
+        var actor = actors.current(request);
+        // 与证据接口使用同一层租户校验，防止通过评分结果枚举别人的任务。
+        runQueries.get(id, actor);
+        return nodes.codingQuality(id, actor);
     }
 
     @GetMapping(path = "/runs/{id}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)

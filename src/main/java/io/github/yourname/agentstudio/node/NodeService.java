@@ -250,6 +250,70 @@ public class NodeService {
     }
 
     /**
+     * 根据已持久化的交付证据计算一个可解释评分。
+     *
+     * <p>浏览器验证是可选项：纯后端或命令行项目不会因为没有浏览器工具而扣分；
+     * 一旦实际尝试了浏览器验证，它会成为额外的、可追踪的验证项。
+     */
+    @Transactional(readOnly = true)
+    public CodingRunQualityView codingQuality(String runId, ActorContext actor) {
+        CodingRunEvidenceView evidence = codingEvidence(runId, actor);
+        List<CodingRunQualityView.CodingQualityCheckView> checks = new java.util.ArrayList<>();
+        checks.add(qualityCheck(
+                "changed-files",
+                25,
+                !evidence.changedFiles().isEmpty(),
+                "至少成功写入或修补一个项目文件。"));
+        checks.add(qualityCheck(
+                "command-verification",
+                45,
+                evidence.verificationTools().contains("shell.run"),
+                "至少成功执行一次构建、测试或其他命令验证。"));
+        checks.add(qualityCheck(
+                "clean-tool-run",
+                20,
+                evidence.failedTools().isEmpty(),
+                "本次记录中没有失败的节点工具调用。"));
+
+        boolean attemptedBrowser = evidence.browserVerified()
+                || evidence.failedTools().stream().anyMatch(name -> name.startsWith("browser."));
+        if (attemptedBrowser) {
+            checks.add(qualityCheck(
+                    "browser-verification",
+                    10,
+                    evidence.browserVerified(),
+                    "已尝试浏览器验证时，至少应有一次浏览器工具成功。"));
+        }
+        int maximum = checks.stream().mapToInt(CodingRunQualityView.CodingQualityCheckView::maximumPoints).sum();
+        int earned = checks.stream().mapToInt(CodingRunQualityView.CodingQualityCheckView::earnedPoints).sum();
+        int score = maximum == 0 ? 0 : Math.round(earned * 100.0f / maximum);
+        List<String> recommendations = checks.stream()
+                .filter(check -> !check.passed())
+                .map(CodingRunQualityView.CodingQualityCheckView::explanation)
+                .toList();
+        return new CodingRunQualityView(runId, score, qualityGrade(score), checks, recommendations);
+    }
+
+    private static CodingRunQualityView.CodingQualityCheckView qualityCheck(
+            String name, int maximumPoints, boolean passed, String explanation) {
+        return new CodingRunQualityView.CodingQualityCheckView(
+                name, passed ? maximumPoints : 0, maximumPoints, passed, explanation);
+    }
+
+    private static String qualityGrade(int score) {
+        if (score >= 90) {
+            return "excellent";
+        }
+        if (score >= 70) {
+            return "good";
+        }
+        if (score >= 40) {
+            return "needs-verification";
+        }
+        return "incomplete";
+    }
+
+    /**
      * 从一次文件写入调用中取出可安全展示的工作区相对路径。
      *
      * <p>这不是文件系统权限校验（真正的权限校验在节点工具中完成），而是“展示层兜底”：

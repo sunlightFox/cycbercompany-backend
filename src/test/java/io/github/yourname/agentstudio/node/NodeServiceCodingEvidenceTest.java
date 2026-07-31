@@ -71,6 +71,28 @@ class NodeServiceCodingEvidenceTest {
         assertThat(service().codingEvidence("run-a", ACTOR).changedFiles()).containsExactly("src/Main.java");
     }
 
+    @Test
+    void scoresCompleteEvidenceAndExplainsMissingVerification() {
+        NodeToolInvocationEntity write = successful("fs.write", "{\"path\":\"src/App.java\"}");
+        NodeToolInvocationEntity command = successful("shell.run", "{\"command\":\"./gradlew test\"}");
+        NodeToolInvocationEntity browser = successful("browser.open", "{\"url\":\"http://localhost:8080\"}");
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(write, command, browser));
+
+        CodingRunQualityView complete = service().codingQuality("run-a", ACTOR);
+        assertThat(complete.score()).isEqualTo(100);
+        assertThat(complete.grade()).isEqualTo("excellent");
+        assertThat(complete.recommendations()).isEmpty();
+
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(write));
+        CodingRunQualityView incomplete = service().codingQuality("run-a", ACTOR);
+        // 仅修改文件仍保留“没有工具失败”的 20 分，因此得分是 (25 + 20) / 90 = 50。
+        assertThat(incomplete.score()).isEqualTo(50);
+        assertThat(incomplete.grade()).isEqualTo("needs-verification");
+        assertThat(incomplete.recommendations()).contains("至少成功执行一次构建、测试或其他命令验证。");
+    }
+
     private NodeService service() {
         return new NodeService(nodes, tokens, tools, invocations, approvals, sessions, new ObjectMapper());
     }
