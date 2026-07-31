@@ -67,27 +67,8 @@ public final class ProjectTool {
     public ToolExecutionResult discover(Map<String, Object> arguments) {
         try {
             Path root = resolveDirectory(stringValue(arguments, "cwd"));
-            List<Map<String, Object>> projects = new ArrayList<>();
-            Files.walkFileTree(root, java.util.Set.of(), MAX_DISCOVERY_DEPTH, new SimpleFileVisitor<>() {
-                @Override
-                public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attributes) {
-                    if (!directory.equals(root) && ignoredDirectory(directory)) {
-                        return FileVisitResult.SKIP_SUBTREE;
-                    }
-                    ProjectInspection inspection = detect(directory);
-                    if (!"unknown".equals(inspection.projectType())) {
-                        Map<String, Object> project = new LinkedHashMap<>();
-                        project.put("path", workspaceRelative(directory));
-                        project.put("projectType", inspection.projectType());
-                        project.put("manifests", inspection.manifests());
-                        projects.add(project);
-                        return projects.size() >= MAX_DISCOVERED_PROJECTS
-                                ? FileVisitResult.TERMINATE
-                                : FileVisitResult.SKIP_SUBTREE;
-                    }
-                    return FileVisitResult.CONTINUE;
-                }
-            });
+            List<DiscoveredProject> discovered = discoverProjects(root);
+            List<Map<String, Object>> projects = discovered.stream().map(this::projectSummary).toList();
             return ToolExecutionResult.success(Map.of(
                     "directory", workspaceRelative(root),
                     "projects", projects,
@@ -97,6 +78,61 @@ public final class ProjectTool {
         } catch (IllegalArgumentException ex) {
             return ToolExecutionResult.failure(ex.getMessage());
         }
+    }
+
+    /**
+     * 为已有代码仓库生成“先读哪里”的结构地图，而不是读取或上传全部源码。
+     *
+     * <p>地图只列出已经存在的约定目录和配置文件；模型仍需用 fs.read/fs.search 精读具体实现。
+     */
+    public ToolExecutionResult map(Map<String, Object> arguments) {
+        try {
+            Path root = resolveDirectory(stringValue(arguments, "cwd"));
+            List<Map<String, Object>> modules = discoverProjects(root).stream().map(project -> {
+                Map<String, Object> item = projectSummary(project);
+                Path directory = project.directory();
+                item.put("sourceRoots", existingDirectories(directory, "src/main/java", "src/main/kotlin", "src", "app", "pages"));
+                item.put("testRoots", existingDirectories(directory, "src/test/java", "src/test/kotlin", "test", "tests", "__tests__"));
+                item.put("configurationFiles", existing(directory,
+                        "application.yml", "application.yaml", "application.properties", "package.json", "pom.xml", "build.gradle", "build.gradle.kts", ".env.example"));
+                return item;
+            }).toList();
+            return ToolExecutionResult.success(Map.of(
+                    "directory", workspaceRelative(root),
+                    "modules", modules,
+                    "guidance", "Inspect the relevant module manifest first, then search only its sourceRoots and testRoots before editing."));
+        } catch (IOException ex) {
+            return ToolExecutionResult.failure("project.map failed: " + ex.getMessage());
+        } catch (IllegalArgumentException ex) {
+            return ToolExecutionResult.failure(ex.getMessage());
+        }
+    }
+
+    private List<DiscoveredProject> discoverProjects(Path root) throws IOException {
+        List<DiscoveredProject> projects = new ArrayList<>();
+        Files.walkFileTree(root, java.util.Set.of(), MAX_DISCOVERY_DEPTH, new SimpleFileVisitor<>() {
+            @Override
+            public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attributes) {
+                if (!directory.equals(root) && ignoredDirectory(directory)) {
+                    return FileVisitResult.SKIP_SUBTREE;
+                }
+                ProjectInspection inspection = detect(directory);
+                if (!"unknown".equals(inspection.projectType())) {
+                    projects.add(new DiscoveredProject(directory, inspection));
+                    return projects.size() >= MAX_DISCOVERED_PROJECTS ? FileVisitResult.TERMINATE : FileVisitResult.SKIP_SUBTREE;
+                }
+                return FileVisitResult.CONTINUE;
+            }
+        });
+        return projects;
+    }
+
+    private Map<String, Object> projectSummary(DiscoveredProject project) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("path", workspaceRelative(project.directory()));
+        item.put("projectType", project.inspection().projectType());
+        item.put("manifests", project.inspection().manifests());
+        return item;
     }
 
     private ProjectInspection detect(Path directory) {
@@ -228,6 +264,22 @@ public final class ProjectTool {
         return found;
     }
 
+    private List<String> existingDirectories(Path directory, String... names) {
+        List<Path> found = new ArrayList<>();
+        for (String name : names) {
+            Path candidate = directory.resolve(name);
+            if (Files.isDirectory(candidate)) {
+                found.add(candidate);
+            }
+        }
+        // 同时存在 src 与 src/main/java 时，后者才是更有价值的阅读起点。
+        // 去掉父目录可以让模型少读无关文件，也让地图保持简洁。
+        return found.stream()
+                .filter(path -> found.stream().noneMatch(other -> !other.equals(path) && other.startsWith(path)))
+                .map(this::workspaceRelative)
+                .toList();
+    }
+
     private static Map<String, String> command(String name, String value, String purpose) {
         Map<String, String> result = new LinkedHashMap<>();
         result.put("name", name);
@@ -290,5 +342,9 @@ public final class ProjectTool {
             List<String> manifests,
             List<Map<String, String>> commands,
             String guidance) {
+    }
+
+    /** 内部记录发现到的模块位置和其清单解析结果，避免 discover 与 map 重复扫描逻辑。 */
+    private record DiscoveredProject(Path directory, ProjectInspection inspection) {
     }
 }

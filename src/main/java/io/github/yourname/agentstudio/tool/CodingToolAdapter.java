@@ -46,6 +46,7 @@ public class CodingToolAdapter {
     private static boolean isCodingTool(String name) {
         return "project.inspect".equals(name)
                 || "project.discover".equals(name)
+                || "project.map".equals(name)
                 || "fs.list".equals(name)
                 || "fs.read".equals(name)
                 || "fs.search".equals(name)
@@ -163,7 +164,7 @@ public class CodingToolAdapter {
                 || "fs.apply_patch".equals(toolName)) {
             scopeArgument(scoped, "path", workspaceScope);
         }
-        if ("project.inspect".equals(toolName) || "project.discover".equals(toolName)) {
+        if ("project.inspect".equals(toolName) || "project.discover".equals(toolName) || "project.map".equals(toolName)) {
             scopeArgument(scoped, "cwd", workspaceScope);
         }
         if (("git.diff".equals(toolName) || "browser.screenshot".equals(toolName)) && scoped.containsKey("path")) {

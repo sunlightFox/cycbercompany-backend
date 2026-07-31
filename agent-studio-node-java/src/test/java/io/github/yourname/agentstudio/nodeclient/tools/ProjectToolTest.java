@@ -70,4 +70,25 @@ class ProjectToolTest {
         assertEquals(List.of("apps/frontend", "services/backend"), projects.stream().map(project -> project.get("path")).sorted().toList());
         assertFalse(projects.stream().anyMatch(project -> project.get("path").toString().contains("node_modules")));
     }
+
+    @Test
+    void mapsExistingSourceTestAndConfigurationLocationsForAnUnfamiliarRepository() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-project");
+        Path backend = Files.createDirectories(workspace.resolve("backend/src/main/java"));
+        Files.createDirectories(workspace.resolve("backend/src/test/java"));
+        Files.writeString(workspace.resolve("backend/pom.xml"), "<project/>\n");
+        Files.writeString(workspace.resolve("backend/application.yml"), "server:\n  port: 8080\n");
+
+        var result = new ProjectTool(workspace).map(Map.of());
+
+        assertTrue(result.success());
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> modules = (List<Map<String, Object>>) result.result().get("modules");
+        assertEquals(1, modules.size());
+        assertEquals("backend", modules.getFirst().get("path"));
+        assertEquals(List.of("backend/src/main/java"), modules.getFirst().get("sourceRoots"));
+        assertEquals(List.of("backend/src/test/java"), modules.getFirst().get("testRoots"));
+        assertTrue(((List<?>) modules.getFirst().get("configurationFiles")).contains("pom.xml"));
+        assertTrue(backend.toString().contains("backend"));
+    }
 }

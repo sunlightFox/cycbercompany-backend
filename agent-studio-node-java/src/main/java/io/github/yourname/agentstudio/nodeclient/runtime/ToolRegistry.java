@@ -76,6 +76,13 @@ public class ToolRegistry {
                         false,
                         objectSchema(Map.of("cwd", Map.of("type", "string")))),
                 new NodeCapability(
+                        "project.map",
+                        "Map discovered modules to existing source roots, test roots, and configuration files without reading full source files.",
+                        "LOW",
+                        projectTool != null,
+                        false,
+                        objectSchema(Map.of("cwd", Map.of("type", "string")))),
+                new NodeCapability(
                         "fs.list",
                         "List files under an allowed workspace path.",
                         "LOW",
@@ -246,6 +253,11 @@ public class ToolRegistry {
             return projectTool == null
                     ? ToolExecutionResult.failure("project.discover is unavailable because this node has no configured workspace.")
                     : projectTool.discover(arguments);
+        }
+        if ("project.map".equals(toolName)) {
+            return projectTool == null
+                    ? ToolExecutionResult.failure("project.map is unavailable because this node has no configured workspace.")
+                    : projectTool.map(arguments);
         }
         if ("fs.read".equals(toolName)) {
             return fileTool == null

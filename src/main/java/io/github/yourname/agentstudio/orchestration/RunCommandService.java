@@ -17,6 +17,7 @@ import io.github.yourname.agentstudio.node.NodeToolApprovalDecisionView;
 import io.github.yourname.agentstudio.node.NodeService;
 import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.tool.WebSearchCommand;
+import io.github.yourname.agentstudio.tool.WebSearchResponse;
 import io.github.yourname.agentstudio.tool.WebSearchResult;
 import io.github.yourname.agentstudio.tool.WebSearchService;
 import io.github.yourname.agentstudio.tool.CodingWorkspaceScope;
@@ -158,11 +159,20 @@ public class RunCommandService {
 
             String webQuery = webSearchQuery(command.text());
             String webRetrievalNote = "";
+            String webRetrievalTrace = "";
             List<WebSearchResult> webResults = List.of();
             List<McpToolCallResult> mcpResults = List.of();
             if (shouldSearchWeb(command)) {
                 try {
-                    webResults = webSearch.search(new WebSearchCommand(webQuery, 5));
+                    WebSearchResponse response = webSearch.searchDetailed(new WebSearchCommand(webQuery, 5));
+                    webResults = response.results();
+                    webRetrievalTrace = response.trace().summary();
+                    boolean everyProviderFailed = !response.trace().providers().isEmpty()
+                            && response.trace().providers().stream()
+                                    .allMatch(provider -> "FAILED".equals(provider.status()));
+                    if (everyProviderFailed) {
+                        webRetrievalNote = "Web search providers were unavailable: " + webRetrievalTrace;
+                    }
                 } catch (Exception searchFailure) {
                     webRetrievalNote = "Web search was requested but failed: " + safeErrorMessage(searchFailure);
                 }
@@ -177,6 +187,7 @@ public class RunCommandService {
                             + ", web=" + webResults.size()
                             + ", mcp=" + mcpResults.size()
                             + (webResults.isEmpty() && webRetrievalNote.isBlank() ? "" : ", query=" + webQuery)
+                            + (webRetrievalTrace.isBlank() ? "" : ", " + webRetrievalTrace)
                             + (webRetrievalNote.isBlank() ? "" : ", note=" + webRetrievalNote),
                     actor);
 
@@ -449,7 +460,7 @@ public class RunCommandService {
         builder.append("""
                 - You are working in a developer workspace through native tools. You MUST call a relevant native tool before giving any final answer. Never claim a command or test passed unless its tool result says so.
                 - Follow the coding workflow strictly: treat any target directory named by the user as the only project scope. If it does not exist, create that directory and its required parents; do not inspect unrelated samples, previous experiments, or sibling projects.
-                - Start with only the minimum inspection needed for the requested files. If the target may contain separate frontend, backend, or modules, call project.discover once; then call project.inspect for the specific module before choosing build, test, package-manager, or start commands. Use only manifest-backed recommendations unless later inspection proves a different command is required. Once the target is known, use fs.search to locate symbols or error text and then read only the matching files inside it. For a large file, use fs.read with startLine and endLine instead of consuming its entire content. Do not repeatedly inspect the workspace root or browse unrelated README files for inspiration.
+                - Start with only the minimum inspection needed for the requested files. For an existing or unfamiliar repository, call project.map once to identify module, source, test, and configuration boundaries. If the target may contain separate frontend, backend, or modules, call project.discover once; then call project.inspect for the specific module before choosing build, test, package-manager, or start commands. Use only manifest-backed recommendations unless later inspection proves a different command is required. Once the target is known, use fs.search to locate symbols or error text and then read only the matching files inside it. For a large file, use fs.read with startLine and endLine instead of consuming its entire content. Do not repeatedly inspect the workspace root or browse unrelated README files for inspiration.
                 - Work in coherent stages: create or edit the implementation, run the smallest relevant compile/test command, then start a managed development process only when live verification is needed. If a command fails, use its structured stdout/stderr and exit code as the diagnosis input before changing code. Use HTTP or browser tools to validate the user-facing path before reporting completion. For browser verification, call browser.snapshot to get visible controls and their selectors, use browser.wait after asynchronous transitions, then interact and snapshot again to prove the result.
                 - When a check fails, first read the returned diagnosis (failedTests, sourceLocations, suggestedSearchTerms) and the relevant error output. Use fs.search or fs.read on those reported files, make one focused correction, then repeat the same check. Do not make unrelated edits before reproducing the failure. Prefer direct file writes for new files and focused patches for changes. Keep tool calls purposeful because each coding run has a finite tool budget.
                 - In the final answer, state the files changed, the concrete verification performed, any process URL that remains running, and any limitation that was not verified.
