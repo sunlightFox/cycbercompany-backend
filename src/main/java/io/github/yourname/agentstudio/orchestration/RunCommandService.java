@@ -14,6 +14,7 @@ import io.github.yourname.agentstudio.model.ModelCatalog;
 import io.github.yourname.agentstudio.mcp.McpConnectionService;
 import io.github.yourname.agentstudio.mcp.McpToolCallResult;
 import io.github.yourname.agentstudio.node.NodeToolApprovalDecisionView;
+import io.github.yourname.agentstudio.node.NodeService;
 import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.tool.WebSearchCommand;
 import io.github.yourname.agentstudio.tool.WebSearchResult;
@@ -69,6 +70,8 @@ public class RunCommandService {
     private final ModelCatalog models;
     private final ModelGateway modelGateway;
     private final CodingAgentLoop codingAgentLoop;
+    private final NodeService nodes;
+    private final RunExecutionRegistry executions;
     private final RunEventPublisher events;
     private final ObjectMapper objectMapper;
 
@@ -84,6 +87,8 @@ public class RunCommandService {
             ModelCatalog models,
             ModelGateway modelGateway,
             CodingAgentLoop codingAgentLoop,
+            NodeService nodes,
+            RunExecutionRegistry executions,
             RunEventPublisher events,
             ObjectMapper objectMapper) {
         this.properties = properties;
@@ -97,6 +102,8 @@ public class RunCommandService {
         this.models = models;
         this.modelGateway = modelGateway;
         this.codingAgentLoop = codingAgentLoop;
+        this.nodes = nodes;
+        this.executions = executions;
         this.events = events;
         this.objectMapper = objectMapper;
     }
@@ -118,8 +125,21 @@ public class RunCommandService {
 
         // The worker reads the run back from the database. Schedule it only after this
         // transaction commits; otherwise a fast worker can observe no run yet.
-        scheduleAfterCommit(() -> execute(run.id(), command, actor));
+        scheduleAfterCommit(() -> executions.submit(run.id(), () -> execute(run.id(), command, actor)));
         return new CreateRunResponse(run.id(), RunStatus.CREATED, "/api/v1/runs/" + run.id() + "/events");
+    }
+
+    @Transactional
+    public RunView cancel(String runId, ActorContext actor) {
+        AgentRunEntity run = runs.findByIdAndTenantId(runId, actor.tenantId())
+                .orElseThrow(() -> new IllegalArgumentException("Run not found: " + runId));
+        run.cancel();
+        continuations.findByRunIdAndTenantId(runId, actor.tenantId()).ifPresent(continuations::delete);
+        runs.save(run);
+        executions.cancel(runId);
+        codingAgentLoop.cleanupManagedProcesses(runId, actor);
+        events.publish(runId, RunEventType.RUN_CANCELLED, "Run cancelled by user.", actor);
+        return RunView.from(run);
     }
 
     private void execute(String runId, CreateRunCommand command, ActorContext actor) {
@@ -194,11 +214,7 @@ public class RunCommandService {
         } catch (CodingApprovalRequiredException approvalRequired) {
             suspendForApproval(runId, command.nodeId(), command.workingDirectory(), approvalRequired, actor);
         } catch (Exception ex) {
-            runs.findByIdAndTenantId(runId, actor.tenantId()).ifPresent(run -> {
-                run.fail(ex.getMessage());
-                runs.save(run);
-            });
-            events.publish(runId, RunEventType.RUN_FAILED, ex.getMessage(), actor);
+            failUnlessCancelled(runId, ex, actor);
         }
     }
 
@@ -232,12 +248,12 @@ public class RunCommandService {
         run.resume();
         runs.save(run);
         events.publish(run.id(), RunEventType.RUN_RESUMED, "approvalId=" + approval.id(), actor);
-        scheduleAfterCommit(() -> executeResumedCoding(
+        scheduleAfterCommit(() -> executions.submit(run.id(), () -> executeResumedCoding(
                 run.id(),
                 continuation.nodeId(),
                 continuation.workingDirectory(),
                 messages,
-                actor));
+                actor)));
     }
 
     private void executeResumedCoding(
@@ -271,11 +287,7 @@ public class RunCommandService {
         } catch (CodingApprovalRequiredException approvalRequired) {
             suspendForApproval(runId, nodeId, workingDirectory, approvalRequired, actor);
         } catch (Exception ex) {
-            runs.findByIdAndTenantId(runId, actor.tenantId()).ifPresent(run -> {
-                run.fail(ex.getMessage());
-                runs.save(run);
-            });
-            events.publish(runId, RunEventType.RUN_FAILED, ex.getMessage(), actor);
+            failUnlessCancelled(runId, ex, actor);
         }
     }
 
@@ -305,6 +317,20 @@ public class RunCommandService {
                 RunEventType.RUN_WAITING_APPROVAL,
                 "approvalId=" + approvalRequired.approvalId(),
                 actor);
+    }
+
+    private void failUnlessCancelled(String runId, Exception ex, ActorContext actor) {
+        boolean cancelled = runs.findByIdAndTenantId(runId, actor.tenantId()).map(run -> {
+            if (run.status() == RunStatus.CANCELLED) {
+                return true;
+            }
+            run.fail(ex.getMessage());
+            runs.save(run);
+            return false;
+        }).orElse(false);
+        if (!cancelled) {
+            events.publish(runId, RunEventType.RUN_FAILED, ex.getMessage(), actor);
+        }
     }
 
     private String approvalResult(NodeToolApprovalDecisionView decision) {

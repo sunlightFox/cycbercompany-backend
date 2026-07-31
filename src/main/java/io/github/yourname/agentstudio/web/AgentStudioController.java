@@ -532,6 +532,11 @@ class AgentStudioController {
         return runCommands.create(command, actors.current(request));
     }
 
+    @PostMapping("/runs/{id}/cancel")
+    Object cancelRun(@PathVariable String id, HttpServletRequest request) {
+        return runCommands.cancel(id, actors.current(request));
+    }
+
     @GetMapping("/runs/{id}")
     Object getRun(@PathVariable String id, HttpServletRequest request) {
         return runQueries.get(id, actors.current(request));

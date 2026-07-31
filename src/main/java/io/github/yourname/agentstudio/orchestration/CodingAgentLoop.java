@@ -187,7 +187,7 @@ class CodingAgentLoop {
         }
     }
 
-    private void cleanupManagedProcesses(String runId, ActorContext actor) {
+    void cleanupManagedProcesses(String runId, ActorContext actor) {
         try {
             for (CodingToolAdapter.CleanupResult result : tools.cleanupRun(runId, actor)) {
                 events.publish(runId, RunEventType.TOOL_CALL_STARTED, "tool=process.stop cleanup", actor);

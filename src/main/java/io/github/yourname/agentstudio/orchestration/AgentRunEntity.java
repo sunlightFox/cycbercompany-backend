@@ -68,6 +68,14 @@ public class AgentRunEntity {
         this.finishedAt = Instant.now();
     }
 
+    public void cancel() {
+        if (status != RunStatus.CREATED && status != RunStatus.RUNNING && status != RunStatus.WAITING_APPROVAL) {
+            throw new IllegalStateException("Run cannot be cancelled from status: " + status);
+        }
+        this.status = RunStatus.CANCELLED;
+        this.finishedAt = Instant.now();
+    }
+
     public String id() { return id; }
     public String tenantId() { return tenantId; }
     public String userId() { return userId; }

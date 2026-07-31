@@ -21,6 +21,7 @@ import io.github.yourname.agentstudio.node.NodeToolApprovalDecisionView;
 import io.github.yourname.agentstudio.node.NodeToolApprovalStatus;
 import io.github.yourname.agentstudio.node.NodeToolApprovalView;
 import io.github.yourname.agentstudio.node.NodeToolCallResult;
+import io.github.yourname.agentstudio.node.NodeService;
 import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.tool.WebSearchService;
 import java.time.Instant;
@@ -105,6 +106,28 @@ class RunCommandServiceApprovalResumeTest {
         assertThat(run.status()).isEqualTo(RunStatus.SUCCEEDED);
     }
 
+    @Test
+    void cancellationMarksRunTerminalAndCleansUpItsProcesses() {
+        AgentRunRepository runs = mock(AgentRunRepository.class);
+        CodingRunContinuationRepository continuations = mock(CodingRunContinuationRepository.class);
+        ConversationService conversations = mock(ConversationService.class);
+        CodingAgentLoop codingLoop = mock(CodingAgentLoop.class);
+        RunEventPublisher events = mock(RunEventPublisher.class);
+        RunCommandService service = service(runs, continuations, conversations, codingLoop, events, new ObjectMapper());
+        AgentRunEntity run = new AgentRunEntity(
+                "run-cancel", ACTOR.tenantId(), ACTOR.userId(), "conversation-1", "model-1", "agent-1", Instant.now());
+        run.start();
+        when(runs.findByIdAndTenantId(run.id(), ACTOR.tenantId())).thenReturn(Optional.of(run));
+        when(continuations.findByRunIdAndTenantId(run.id(), ACTOR.tenantId())).thenReturn(Optional.empty());
+
+        RunView view = service.cancel(run.id(), ACTOR);
+
+        assertThat(view.status()).isEqualTo(RunStatus.CANCELLED);
+        assertThat(run.status()).isEqualTo(RunStatus.CANCELLED);
+        verify(codingLoop).cleanupManagedProcesses(run.id(), ACTOR);
+        verify(events).publish(run.id(), RunEventType.RUN_CANCELLED, "Run cancelled by user.", ACTOR);
+    }
+
     private static RunCommandService service(
             AgentRunRepository runs,
             CodingRunContinuationRepository continuations,
@@ -124,6 +147,8 @@ class RunCommandServiceApprovalResumeTest {
                 mock(ModelCatalog.class),
                 mock(ModelGateway.class),
                 codingLoop,
+                mock(NodeService.class),
+                new RunExecutionRegistry(),
                 events,
                 mapper);
     }
