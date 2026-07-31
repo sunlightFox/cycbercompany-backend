@@ -67,7 +67,7 @@ class NodeServiceManagedProcessCleanupTest {
         when(approvals.findByTenantIdAndRunId(ACTOR.tenantId(), "run-a")).thenReturn(List.of());
         when(invocations.save(any(NodeToolInvocationEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(sessions.isConnected("node-a")).thenReturn(true);
-        when(sessions.invoke(eq("node-a"), eq("process.stop"), any(), eq(Duration.ofSeconds(30))))
+        when(sessions.invoke(eq("node-a"), eq("process.stop"), any(), eq(Duration.ofSeconds(30)), eq("run-a")))
                 .thenReturn(new NodeToolCallResult(
                         "remote-invocation", "node-a", "process.stop", "SUCCEEDED", Map.of("stopped", true), null));
 
@@ -79,7 +79,7 @@ class NodeServiceManagedProcessCleanupTest {
             assertThat(result.toolName()).isEqualTo("process.stop");
         });
         ArgumentCaptor<Map<String, Object>> arguments = ArgumentCaptor.forClass(Map.class);
-        verify(sessions).invoke(eq("node-a"), eq("process.stop"), arguments.capture(), eq(Duration.ofSeconds(30)));
+        verify(sessions).invoke(eq("node-a"), eq("process.stop"), arguments.capture(), eq(Duration.ofSeconds(30)), eq("run-a"));
         assertThat(arguments.getValue()).containsEntry("processId", "proc-owned");
     }
 
@@ -105,7 +105,7 @@ class NodeServiceManagedProcessCleanupTest {
         when(approvals.findByTenantIdAndRunId(ACTOR.tenantId(), "run-a")).thenReturn(List.of(approval));
         when(invocations.save(any(NodeToolInvocationEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
         when(sessions.isConnected("node-a")).thenReturn(true);
-        when(sessions.invoke(eq("node-a"), eq("process.stop"), any(), eq(Duration.ofSeconds(30))))
+        when(sessions.invoke(eq("node-a"), eq("process.stop"), any(), eq(Duration.ofSeconds(30)), eq("run-a")))
                 .thenReturn(new NodeToolCallResult(
                         "remote-invocation", "node-a", "process.stop", "SUCCEEDED", Map.of("stopped", true), null));
 
@@ -114,7 +114,7 @@ class NodeServiceManagedProcessCleanupTest {
         assertThat(service.cleanupManagedProcessesForRun("run-a", ACTOR)).singleElement()
                 .extracting(NodeToolCallResult::status).isEqualTo("SUCCEEDED");
         ArgumentCaptor<Map<String, Object>> arguments = ArgumentCaptor.forClass(Map.class);
-        verify(sessions).invoke(eq("node-a"), eq("process.stop"), arguments.capture(), eq(Duration.ofSeconds(30)));
+        verify(sessions).invoke(eq("node-a"), eq("process.stop"), arguments.capture(), eq(Duration.ofSeconds(30)), eq("run-a"));
         assertThat(arguments.getValue()).containsEntry("processId", "proc-approved");
     }
 }

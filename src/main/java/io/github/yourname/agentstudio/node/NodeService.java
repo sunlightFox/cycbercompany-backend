@@ -166,7 +166,7 @@ public class NodeService {
 
     @Transactional
     public NodeToolCallResult callTool(String nodeId, String toolName, CallNodeToolCommand command, ActorContext actor) {
-        return executeTool(nodeId, toolName, command, actor, false);
+        return executeTool(nodeId, toolName, command, actor, false, null);
     }
 
     @Transactional(noRollbackFor = Exception.class)
@@ -190,7 +190,7 @@ public class NodeService {
         invocation.start(now);
         invocations.save(invocation);
         try {
-            NodeToolCallResult result = executeTool(nodeId, toolName, command, actor, false);
+            NodeToolCallResult result = executeTool(nodeId, toolName, command, actor, false, runId);
             if ("SUCCEEDED".equalsIgnoreCase(result.status())) {
                 invocation.succeed(toJson(result.result()), Instant.now());
             } else if ("APPROVAL_REQUIRED".equalsIgnoreCase(result.status())) {
@@ -308,7 +308,8 @@ public class NodeService {
                     approval.toolName(),
                     new CallNodeToolCommand(readArguments(approval.argumentsJson()), approval.timeoutSeconds()),
                     actor,
-                    true);
+                    true,
+                    approval.runId());
             approval.recordExecution(
                     execution.status(),
                     toJson(execution.result()),
@@ -333,7 +334,8 @@ public class NodeService {
             String toolName,
             CallNodeToolCommand command,
             ActorContext actor,
-            boolean bypassApproval) {
+            boolean bypassApproval,
+            String executionSessionId) {
         NodeConnectionEntity node = requireNode(nodeId, actor);
         NodeToolEntity tool = tools.findByTenantIdAndNodeIdAndName(actor.tenantId(), nodeId, toolName)
                 .orElseThrow(() -> new IllegalArgumentException("Node tool not found: " + toolName));
@@ -354,11 +356,19 @@ public class NodeService {
             throw new IllegalArgumentException("Node is not online or enabled: " + nodeId);
         }
         int timeoutSeconds = timeoutSeconds(command);
+        if (executionSessionId == null || executionSessionId.isBlank()) {
+            return sessions.invoke(
+                    nodeId,
+                    toolName,
+                    command == null ? null : command.arguments(),
+                    Duration.ofSeconds(timeoutSeconds));
+        }
         return sessions.invoke(
                 nodeId,
                 toolName,
                 command == null ? null : command.arguments(),
-                Duration.ofSeconds(timeoutSeconds));
+                Duration.ofSeconds(timeoutSeconds),
+                executionSessionId);
     }
 
     private void linkApprovalToRun(NodeToolCallResult result, String runId, String toolCallId, ActorContext actor) {
@@ -391,7 +401,8 @@ public class NodeService {
                     "process.stop",
                     new CallNodeToolCommand(Map.of("processId", target.processId()), 30),
                     actor,
-                    true);
+                    true,
+                    runId);
             if ("SUCCEEDED".equalsIgnoreCase(result.status())) {
                 invocation.succeed(toJson(result.result()), Instant.now());
             } else {

@@ -34,17 +34,24 @@ class BrowserToolIntegrationTest {
         server.start();
         try (BrowserTool tool = new BrowserTool(HttpClient.newHttpClient())) {
             int port = server.getAddress().getPort();
-            assertTrue(tool.open(Map.of("url", "http://127.0.0.1:" + port + "/")).success());
-            assertTrue(tool.waitFor(Map.of("selector", "#loaded", "timeoutMs", 5_000)).success());
+            assertTrue(tool.open("run-a", Map.of("url", "http://127.0.0.1:" + port + "/")).success());
+            assertTrue(tool.waitFor("run-a", Map.of("selector", "#loaded", "timeoutMs", 5_000)).success());
 
-            var snapshot = tool.snapshot(Map.of());
+            var snapshot = tool.snapshot("run-a", Map.of());
             assertTrue(snapshot.success());
             assertTrue(snapshot.result().get("interactiveElements").toString().contains("#task-title"));
             assertTrue(snapshot.result().get("interactiveElements").toString().contains("#submit"));
 
-            assertTrue(tool.type(Map.of("selector", "#task-title", "text", "Browser E2E")).success());
-            assertTrue(tool.click(Map.of("selector", "#submit")).success());
-            assertTrue(tool.snapshot(Map.of()).result().get("textPreview").toString().contains("Saved Browser E2E"));
+            assertTrue(tool.type("run-a", Map.of("selector", "#task-title", "text", "Browser E2E")).success());
+            assertTrue(tool.click("run-a", Map.of("selector", "#submit")).success());
+            assertTrue(tool.snapshot("run-a", Map.of()).result().get("textPreview").toString().contains("Saved Browser E2E"));
+
+            assertTrue(tool.open("run-b", Map.of("url", "http://127.0.0.1:" + port + "/")).success());
+            assertTrue(tool.waitFor("run-b", Map.of("selector", "#loaded", "timeoutMs", 5_000)).success());
+            assertTrue(tool.type("run-b", Map.of("selector", "#task-title", "text", "Other run")).success());
+            assertTrue(tool.click("run-b", Map.of("selector", "#submit")).success());
+            assertTrue(tool.snapshot("run-b", Map.of()).result().get("textPreview").toString().contains("Saved Other run"));
+            assertTrue(tool.snapshot("run-a", Map.of()).result().get("textPreview").toString().contains("Saved Browser E2E"));
         } finally {
             server.stop(0);
         }

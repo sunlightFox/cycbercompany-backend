@@ -191,6 +191,11 @@ public class ToolRegistry {
     }
 
     public ToolExecutionResult execute(String toolName, Map<String, Object> arguments) {
+        return execute(toolName, arguments, null);
+    }
+
+    /** executionSessionId is transport metadata used only by stateful local tools. */
+    public ToolExecutionResult execute(String toolName, Map<String, Object> arguments, String executionSessionId) {
         if ("fs.list".equals(toolName)) {
             return fileTool == null
                     ? ToolExecutionResult.failure("fs.list is unavailable because this node has no configured workspace.")
@@ -244,22 +249,22 @@ public class ToolRegistry {
             return gitTool == null ? ToolExecutionResult.failure("git.diff is unavailable because this node has no configured workspace.") : gitTool.diff(arguments);
         }
         if ("browser.open".equals(toolName)) {
-            return browserTool.open(arguments);
+            return browserTool.open(executionSessionId, arguments);
         }
         if ("browser.snapshot".equals(toolName)) {
-            return browserTool.snapshot(arguments);
+            return browserTool.snapshot(executionSessionId, arguments);
         }
         if ("browser.wait".equals(toolName)) {
-            return browserTool.waitFor(arguments);
+            return browserTool.waitFor(executionSessionId, arguments);
         }
         if ("browser.screenshot".equals(toolName)) {
-            return browserTool.screenshot(arguments);
+            return browserTool.screenshot(executionSessionId, arguments);
         }
         if ("browser.click".equals(toolName)) {
-            return browserTool.click(arguments);
+            return browserTool.click(executionSessionId, arguments);
         }
         if ("browser.type".equals(toolName)) {
-            return browserTool.type(arguments);
+            return browserTool.type(executionSessionId, arguments);
         }
         return ToolExecutionResult.failure("Unsupported node tool: " + toolName);
     }

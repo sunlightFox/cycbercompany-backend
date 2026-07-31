@@ -114,10 +114,11 @@ public class NodeWebSocketClient implements WebSocket.Listener {
             } else if ("tool.invoke".equals(type)) {
                 String invocationId = root.path("invocationId").asText();
                 String toolName = root.path("toolName").asText();
+                String executionSessionId = root.path("executionSessionId").asText(null);
                 Map<String, Object> arguments = objectMapper.convertValue(root.path("arguments"), Map.class);
                 toolExecutor.submit(() -> {
                     try {
-                        handleToolInvoke(invocationId, toolName, arguments);
+                        handleToolInvoke(invocationId, toolName, arguments, executionSessionId);
                     } catch (Exception ex) {
                         System.err.println("Tool invocation failed: " + ex.getMessage());
                     }
@@ -173,9 +174,16 @@ public class NodeWebSocketClient implements WebSocket.Listener {
         send(payload);
     }
 
-    private void handleToolInvoke(String invocationId, String toolName, Map<String, Object> arguments) throws Exception {
+    private void handleToolInvoke(
+            String invocationId,
+            String toolName,
+            Map<String, Object> arguments,
+            String executionSessionId) throws Exception {
         // 原样带回 invocationId，服务端才能完成正确的 Future。
-        var execution = toolRegistry.execute(toolName, arguments == null ? Collections.emptyMap() : arguments);
+        var execution = toolRegistry.execute(
+                toolName,
+                arguments == null ? Collections.emptyMap() : arguments,
+                executionSessionId);
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type", "tool.result");
         payload.put("timestamp", Instant.now().toString());

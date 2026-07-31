@@ -27,6 +27,7 @@ public class BrowserTool implements AutoCloseable {
 
     private static final int MAX_INTERACTIVE_ELEMENTS = 40;
     private static final int MAX_INTERACTIVE_TEXT_LENGTH = 160;
+    private static final String DEFAULT_SESSION_ID = "default";
     private static final String INTERACTIVE_ELEMENTS_SCRIPT = """
             () => {
               const visible = (element) => {
@@ -77,22 +78,24 @@ public class BrowserTool implements AutoCloseable {
 
     // 本工具运行在节点本机，且复用一个浏览器/页面会话，适合连续执行 open -> click -> type。
 
-    private Playwright playwright;
-    private Browser browser;
-    private Page page;
+    private final Map<String, BrowserSession> sessions = new LinkedHashMap<>();
 
     public BrowserTool(HttpClient httpClient) {
         // 保留构造参数是为了 ToolRegistry 统一注入；Playwright 本身不复用 HttpClient。
     }
 
     public synchronized ToolExecutionResult open(Map<String, Object> arguments) {
+        return open(null, arguments);
+    }
+
+    public synchronized ToolExecutionResult open(String executionSessionId, Map<String, Object> arguments) {
         // synchronized 保护单页面会话，避免并发调用同时导航同一个 page。
         String url = value(arguments, "url");
         if (url == null || url.isBlank()) {
             return ToolExecutionResult.failure("Missing required argument: url");
         }
         try {
-            Page current = ensurePage(arguments);
+            Page current = ensurePage(session(executionSessionId), arguments);
             current.navigate(url, new Page.NavigateOptions()
                     .setTimeout(number(arguments, "timeoutMs", 30_000)));
             current.waitForLoadState(LoadState.DOMCONTENTLOADED);
@@ -103,8 +106,12 @@ public class BrowserTool implements AutoCloseable {
     }
 
     public synchronized ToolExecutionResult snapshot(Map<String, Object> arguments) {
+        return snapshot(null, arguments);
+    }
+
+    public synchronized ToolExecutionResult snapshot(String executionSessionId, Map<String, Object> arguments) {
         try {
-            Page current = requirePage();
+            Page current = requirePage(session(executionSessionId));
             return ToolExecutionResult.success(pageState(current));
         } catch (Exception ex) {
             return ToolExecutionResult.failure(playwrightError("browser.snapshot", ex));
@@ -113,12 +120,16 @@ public class BrowserTool implements AutoCloseable {
 
     /** Waits for a visible element before returning the inspectable page state. */
     public synchronized ToolExecutionResult waitFor(Map<String, Object> arguments) {
+        return waitFor(null, arguments);
+    }
+
+    public synchronized ToolExecutionResult waitFor(String executionSessionId, Map<String, Object> arguments) {
         String selector = value(arguments, "selector");
         if (selector == null || selector.isBlank()) {
             return ToolExecutionResult.failure("Missing required argument: selector");
         }
         try {
-            Page current = requirePage();
+            Page current = requirePage(session(executionSessionId));
             current.waitForSelector(selector, new Page.WaitForSelectorOptions()
                     .setState(WaitForSelectorState.VISIBLE)
                     .setTimeout(number(arguments, "timeoutMs", 10_000)));
@@ -129,8 +140,12 @@ public class BrowserTool implements AutoCloseable {
     }
 
     public synchronized ToolExecutionResult screenshot(Map<String, Object> arguments) {
+        return screenshot(null, arguments);
+    }
+
+    public synchronized ToolExecutionResult screenshot(String executionSessionId, Map<String, Object> arguments) {
         try {
-            Page current = requirePage();
+            Page current = requirePage(session(executionSessionId));
             boolean fullPage = bool(arguments, "fullPage", true);
             Path outputPath = screenshotPath(arguments);
             // 调用方可指定输出位置；生产版还应限制到节点允许写入的目录。
@@ -149,12 +164,16 @@ public class BrowserTool implements AutoCloseable {
     }
 
     public synchronized ToolExecutionResult click(Map<String, Object> arguments) {
+        return click(null, arguments);
+    }
+
+    public synchronized ToolExecutionResult click(String executionSessionId, Map<String, Object> arguments) {
         String selector = value(arguments, "selector");
         if (selector == null || selector.isBlank()) {
             return ToolExecutionResult.failure("Missing required argument: selector");
         }
         try {
-            Page current = requirePage();
+            Page current = requirePage(session(executionSessionId));
             current.click(selector, new Page.ClickOptions().setTimeout(number(arguments, "timeoutMs", 10_000)));
             return ToolExecutionResult.success(pageState(current));
         } catch (Exception ex) {
@@ -163,6 +182,10 @@ public class BrowserTool implements AutoCloseable {
     }
 
     public synchronized ToolExecutionResult type(Map<String, Object> arguments) {
+        return type(null, arguments);
+    }
+
+    public synchronized ToolExecutionResult type(String executionSessionId, Map<String, Object> arguments) {
         String selector = value(arguments, "selector");
         String text = value(arguments, "text");
         if (selector == null || selector.isBlank()) {
@@ -172,7 +195,7 @@ public class BrowserTool implements AutoCloseable {
             return ToolExecutionResult.failure("Missing required argument: text");
         }
         try {
-            Page current = requirePage();
+            Page current = requirePage(session(executionSessionId));
             current.fill(selector, text, new Page.FillOptions().setTimeout(number(arguments, "timeoutMs", 10_000)));
             return ToolExecutionResult.success(pageState(current));
         } catch (Exception ex) {
@@ -182,37 +205,51 @@ public class BrowserTool implements AutoCloseable {
 
     @Override
     public synchronized void close() {
-        if (page != null) {
+        for (BrowserSession session : sessions.values()) {
+            closeSession(session);
+        }
+        sessions.clear();
+    }
+
+    private BrowserSession session(String executionSessionId) {
+        String key = executionSessionId == null || executionSessionId.isBlank()
+                ? DEFAULT_SESSION_ID
+                : executionSessionId;
+        return sessions.computeIfAbsent(key, ignored -> new BrowserSession());
+    }
+
+    private static void closeSession(BrowserSession session) {
+        if (session.page != null) {
             try {
-                page.close();
+                session.page.close();
             } catch (Exception ignored) {
                 // Closing a detached page must not prevent the node from shutting down.
             }
-            page = null;
+            session.page = null;
         }
-        if (browser != null) {
+        if (session.browser != null) {
             try {
-                browser.close();
+                session.browser.close();
             } catch (Exception ignored) {
                 // The browser may already have been closed externally.
             }
-            browser = null;
+            session.browser = null;
         }
-        if (playwright != null) {
+        if (session.playwright != null) {
             try {
-                playwright.close();
+                session.playwright.close();
             } catch (Exception ignored) {
                 // Playwright owns native resources; best-effort cleanup is sufficient here.
             }
-            playwright = null;
+            session.playwright = null;
         }
     }
 
-    private Page ensurePage(Map<String, Object> arguments) {
-        if (playwright == null) {
-            playwright = Playwright.create();
+    private Page ensurePage(BrowserSession session, Map<String, Object> arguments) {
+        if (session.playwright == null) {
+            session.playwright = Playwright.create();
         }
-        if (browser == null || !browser.isConnected()) {
+        if (session.browser == null || !session.browser.isConnected()) {
             // 首次真正需要时才启动 Chromium，避免空闲节点持续占用资源。
             BrowserType.LaunchOptions options = new BrowserType.LaunchOptions()
                     .setHeadless(bool(arguments, "headless", true));
@@ -220,19 +257,19 @@ public class BrowserTool implements AutoCloseable {
             if (channel != null && !channel.isBlank()) {
                 options.setChannel(channel);
             }
-            browser = playwright.chromium().launch(options);
+            session.browser = session.playwright.chromium().launch(options);
         }
-        if (page == null || page.isClosed()) {
-            page = browser.newPage();
+        if (session.page == null || session.page.isClosed()) {
+            session.page = session.browser.newPage();
         }
-        return page;
+        return session.page;
     }
 
-    private Page requirePage() {
-        if (page == null || page.isClosed()) {
+    private Page requirePage(BrowserSession session) {
+        if (session.page == null || session.page.isClosed()) {
             throw new IllegalStateException("No active browser page. Call browser.open first.");
         }
-        return page;
+        return session.page;
     }
 
     private Map<String, Object> pageState(Page current) {
@@ -349,5 +386,11 @@ public class BrowserTool implements AutoCloseable {
                     + "gradlew :agent-studio-node-java:run --args=\"install-browsers\"";
         }
         return toolName + " failed: " + message;
+    }
+
+    private static final class BrowserSession {
+        private Playwright playwright;
+        private Browser browser;
+        private Page page;
     }
 }

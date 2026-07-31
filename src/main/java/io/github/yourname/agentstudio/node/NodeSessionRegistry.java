@@ -44,6 +44,16 @@ public class NodeSessionRegistry {
     }
 
     public NodeToolCallResult invoke(String nodeId, String toolName, Map<String, Object> arguments, Duration timeout) {
+        return invoke(nodeId, toolName, arguments, timeout, null);
+    }
+
+    /** Supplies backend-owned execution metadata to stateful node tools. */
+    public NodeToolCallResult invoke(
+            String nodeId,
+            String toolName,
+            Map<String, Object> arguments,
+            Duration timeout,
+            String executionSessionId) {
         WebSocketSession session = sessions.get(nodeId);
         if (session == null || !session.isOpen()) {
             throw new IllegalArgumentException("Node is not connected: " + nodeId);
@@ -55,12 +65,15 @@ public class NodeSessionRegistry {
         // 先注册再发送，避免节点极快回包时找不到等待 Future 的竞争条件。
         pendingInvocations.put(invocationId, future);
         try {
-            Map<String, Object> payload = Map.of(
-                    "type", "tool.invoke",
-                    "messageId", messageId,
-                    "invocationId", invocationId,
-                    "toolName", toolName,
-                    "arguments", arguments == null ? Map.of() : arguments);
+            Map<String, Object> payload = new java.util.LinkedHashMap<>();
+            payload.put("type", "tool.invoke");
+            payload.put("messageId", messageId);
+            payload.put("invocationId", invocationId);
+            payload.put("toolName", toolName);
+            payload.put("arguments", arguments == null ? Map.of() : arguments);
+            if (executionSessionId != null && !executionSessionId.isBlank()) {
+                payload.put("executionSessionId", executionSessionId);
+            }
             synchronized (session) {
                 // 同一 WebSocket 的发送串行化，避免并发写入时帧交错。
                 session.sendMessage(new TextMessage(objectMapper.writeValueAsString(payload)));
