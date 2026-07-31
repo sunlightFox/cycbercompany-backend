@@ -17,8 +17,9 @@ import org.springframework.stereotype.Service;
 @Service
 class CodingAgentLoop {
 
-    private static final int MAX_MODEL_TURNS = 16;
-    private static final int MAX_TOOL_CALLS = 32;
+    private static final int MAX_MODEL_TURNS = 24;
+    private static final int MAX_TOOL_CALLS = 48;
+    private static final int TOOL_BUDGET_WARNING = 36;
     private static final int MAX_RATE_LIMIT_RETRIES = 3;
     private static final Duration INITIAL_RATE_LIMIT_DELAY = Duration.ofSeconds(15);
     private static final Duration MAX_RATE_LIMIT_DELAY = Duration.ofSeconds(45);
@@ -110,6 +111,14 @@ class CodingAgentLoop {
                     ModelGateway.ModelToolCall call = calls.get(callIndex);
                     if (++executedCalls > MAX_TOOL_CALLS) {
                         throw new IllegalStateException("Coding run reached its maximum of " + MAX_TOOL_CALLS + " tool calls.");
+                    }
+                    if (executedCalls == TOOL_BUDGET_WARNING) {
+                        events.publish(
+                                runId,
+                                RunEventType.TOOL_BUDGET_WARNING,
+                                "toolCalls=" + executedCalls + ", max=" + MAX_TOOL_CALLS
+                                        + ". Focus on the requested files and verification.",
+                                actor);
                     }
                     CodingToolAdapter.AvailableTool tool = byModelName.get(call.name());
                     if (tool == null) {

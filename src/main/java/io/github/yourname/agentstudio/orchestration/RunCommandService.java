@@ -342,7 +342,7 @@ public class RunCommandService {
         });
     }
 
-    private static String buildSystemPrompt(
+    static String buildSystemPrompt(
             String agentPrompt,
             CreateRunCommand command,
             EvidenceBundle evidence,
@@ -365,7 +365,7 @@ public class RunCommandService {
                 .append("- Current server time: ").append(SERVER_TIME_FORMAT.format(Instant.now())).append('\n')
                 .append("- Tool calls are orchestrated by the backend. Do not emit raw tool-call XML or pseudo tool-call markup in the final answer.\n");
         if (command.nodeId() != null && !command.nodeId().isBlank()) {
-            builder.append("- You are working in a developer workspace through native tools. You MUST call a relevant native tool before giving any final answer. Inspect before editing, make the smallest coherent change, run relevant tests or checks when command access is available, and report the files changed plus verification results. Never claim a command or test passed unless its tool result says so.\n");
+            appendCodingWorkflow(builder);
         }
         if (!capabilityContext.isBlank()) {
             builder.append(capabilityContext);
@@ -402,6 +402,17 @@ public class RunCommandService {
                     .append("\nIf current information is required, explain that live search is temporarily unavailable and ask the user to retry or narrow the query.\n");
         }
         return builder.toString();
+    }
+
+    private static void appendCodingWorkflow(StringBuilder builder) {
+        builder.append("""
+                - You are working in a developer workspace through native tools. You MUST call a relevant native tool before giving any final answer. Never claim a command or test passed unless its tool result says so.
+                - Follow the coding workflow strictly: treat any target directory named by the user as the only project scope. If it does not exist, create that directory and its required parents; do not inspect unrelated samples, previous experiments, or sibling projects.
+                - Start with only the minimum inspection needed for the requested files. Once the target is known, read and list only files inside it. Do not repeatedly inspect the workspace root or browse unrelated README files for inspiration.
+                - Work in coherent stages: create or edit the implementation, run the smallest relevant compile/test command, then start a managed development process only when live verification is needed. Use HTTP or browser tools to validate the user-facing path before reporting completion.
+                - When a check fails, inspect the relevant error output, make one focused correction, and repeat that check. Prefer direct file writes for new files and focused patches for changes. Keep tool calls purposeful because each coding run has a finite tool budget.
+                - In the final answer, state the files changed, the concrete verification performed, any process URL that remains running, and any limitation that was not verified.
+                """);
     }
 
     private static boolean shouldSearchWeb(CreateRunCommand command) {
