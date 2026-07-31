@@ -12,12 +12,32 @@ import io.github.yourname.agentstudio.model.ModelGateway;
 import io.github.yourname.agentstudio.node.CallNodeToolCommand;
 import io.github.yourname.agentstudio.node.NodeService;
 import io.github.yourname.agentstudio.node.NodeToolCallResult;
+import io.github.yourname.agentstudio.node.NodeToolView;
 import io.github.yourname.agentstudio.security.ActorContext;
+import io.github.yourname.agentstudio.tool.RiskLevel;
+import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class CodingToolAdapterScopeTest {
+
+    @Test
+    void exposesEnabledBrowserToolsToCodingRuns() {
+        NodeService nodes = mock(NodeService.class);
+        CodingToolAdapter adapter = new CodingToolAdapter(nodes, new ObjectMapper());
+        ActorContext actor = new ActorContext("tenant", "user", java.util.Set.of(), java.util.Set.of());
+        NodeToolView browser = new NodeToolView(
+                21L, "node-1", "browser.open", "Open browser", RiskLevel.MEDIUM,
+                true, false, "{\"type\":\"object\"}", Instant.now(), Instant.now());
+        when(nodes.isReadyForToolExecution("node-1", actor)).thenReturn(true);
+        when(nodes.listTools("node-1", actor)).thenReturn(List.of(browser));
+
+        assertThat(adapter.availableTools("node-1", actor))
+                .extracting(CodingToolAdapter.AvailableTool::nodeToolName)
+                .containsExactly("browser.open");
+    }
 
     @Test
     void forwardsFilePathsAndCommandDirectoriesInsideTheRunScope() {

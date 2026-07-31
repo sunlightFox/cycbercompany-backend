@@ -53,7 +53,12 @@ public class CodingToolAdapter {
                 || "process.status".equals(name)
                 || "process.stop".equals(name)
                 || "git.status".equals(name)
-                || "git.diff".equals(name);
+                || "git.diff".equals(name)
+                || "browser.open".equals(name)
+                || "browser.snapshot".equals(name)
+                || "browser.screenshot".equals(name)
+                || "browser.click".equals(name)
+                || "browser.type".equals(name);
     }
 
     public ToolExecution execute(

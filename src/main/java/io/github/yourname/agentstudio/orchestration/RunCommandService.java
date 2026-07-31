@@ -116,7 +116,9 @@ public class RunCommandService {
                 agentId,
                 Instant.now()));
 
-        CompletableFuture.runAsync(() -> execute(run.id(), command, actor));
+        // The worker reads the run back from the database. Schedule it only after this
+        // transaction commits; otherwise a fast worker can observe no run yet.
+        scheduleAfterCommit(() -> execute(run.id(), command, actor));
         return new CreateRunResponse(run.id(), RunStatus.CREATED, "/api/v1/runs/" + run.id() + "/events");
     }
 

@@ -30,7 +30,9 @@ import org.springframework.web.client.RestClientResponseException;
 class OpenAiCompatibleModelGateway implements ModelGateway {
 
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
-    private static final Duration READ_TIMEOUT = Duration.ofSeconds(45);
+    // Tool-oriented coding turns often ask the provider to inspect a large context
+    // and emit structured calls. Give them a practical response window.
+    private static final Duration READ_TIMEOUT = Duration.ofSeconds(90);
 
     private final ModelProfileRepository profiles;
     private final RestClient.Builder restClientBuilder;

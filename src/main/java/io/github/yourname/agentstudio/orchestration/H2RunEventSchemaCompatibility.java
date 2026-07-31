@@ -8,7 +8,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
-/** Removes the legacy Hibernate-generated H2 enum constraint after startup. */
+/** Removes legacy Hibernate-generated H2 enum constraints after startup. */
 @Component
 @Order(100)
 class H2RunEventSchemaCompatibility implements ApplicationRunner {
@@ -26,18 +26,28 @@ class H2RunEventSchemaCompatibility implements ApplicationRunner {
             if (!"H2".equalsIgnoreCase(product)) {
                 return;
             }
-            List<String> constraints = jdbc.queryForList(
-                    """
-                    select constraint_name from information_schema.table_constraints
-                    where upper(table_name) = 'RUN_EVENT' and constraint_type = 'CHECK'
-                    """,
-                    String.class);
-            for (String constraint : constraints) {
-                jdbc.execute("alter table run_event drop constraint if exists \"" + constraint.replace("\"", "\"\"") + "\"");
-            }
+            dropCheckConstraints("run_event");
+            // Existing local databases were created before WAITING_APPROVAL and
+            // CANCELLED existed. Hibernate ddl-auto does not widen its H2 CHECK
+            // constraint, which otherwise makes an approval suspension fail.
+            dropCheckConstraints("agent_run");
         } catch (Exception ignored) {
             // A missing table or a database-specific information schema must not
             // prevent application startup; the normal ORM schema creation still applies.
+        }
+    }
+
+    private void dropCheckConstraints(String tableName) {
+        List<String> constraints = jdbc.queryForList(
+                """
+                select constraint_name from information_schema.table_constraints
+                where upper(table_name) = ? and constraint_type = 'CHECK'
+                """,
+                String.class,
+                tableName.toUpperCase(java.util.Locale.ROOT));
+        for (String constraint : constraints) {
+            jdbc.execute("alter table " + tableName + " drop constraint if exists \""
+                    + constraint.replace("\"", "\"\"") + "\"");
         }
     }
 }
