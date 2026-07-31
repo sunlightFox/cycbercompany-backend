@@ -35,6 +35,8 @@ class RunCommandSystemPromptTest {
                 .contains("target directory")
                 .contains("only project scope")
                 .contains("unrelated samples")
+                .contains("project.inspect")
+                .contains("manifest-backed recommendations")
                 .contains("managed development process")
                 .contains("fs.search")
                 .contains("startLine")

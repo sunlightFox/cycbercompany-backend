@@ -43,6 +43,21 @@ class ToolRegistryTest {
     }
 
     @Test
+    void advertisesReadOnlyProjectInspection() throws Exception {
+        ToolRegistry registry = new ToolRegistry(HttpClient.newHttpClient(), Files.createTempDirectory("agent-studio-tools"));
+
+        var capability = registry.capabilities().stream()
+                .filter(item -> "project.inspect".equals(item.name()))
+                .findFirst()
+                .orElseThrow();
+
+        assertTrue(capability.enabled());
+        assertEquals("LOW", capability.riskLevel());
+        assertEquals(java.util.List.of(), capability.inputSchema().getOrDefault("required", java.util.List.of()));
+        registry.close();
+    }
+
+    @Test
     void acceptsTheBackendOnlyBrowserSessionCleanupCommand() throws Exception {
         ToolRegistry registry = new ToolRegistry(HttpClient.newHttpClient(), Files.createTempDirectory("agent-studio-tools"));
 

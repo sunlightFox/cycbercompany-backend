@@ -5,6 +5,7 @@ import io.github.yourname.agentstudio.nodeclient.tools.BrowserTool;
 import io.github.yourname.agentstudio.nodeclient.tools.FileTool;
 import io.github.yourname.agentstudio.nodeclient.tools.GitTool;
 import io.github.yourname.agentstudio.nodeclient.tools.ManagedProcessTool;
+import io.github.yourname.agentstudio.nodeclient.tools.ProjectTool;
 import io.github.yourname.agentstudio.nodeclient.tools.ShellTool;
 import java.net.http.HttpClient;
 import java.nio.file.Path;
@@ -26,6 +27,7 @@ public class ToolRegistry {
     private final ShellTool shellTool;
     private final GitTool gitTool;
     private final ManagedProcessTool managedProcessTool;
+    private final ProjectTool projectTool;
 
     public ToolRegistry(HttpClient httpClient, Path workspaceRoot) {
         this.browserTool = new BrowserTool(httpClient);
@@ -33,6 +35,7 @@ public class ToolRegistry {
         this.shellTool = workspaceRoot == null ? null : new ShellTool(workspaceRoot);
         this.gitTool = workspaceRoot == null ? null : new GitTool(workspaceRoot);
         this.managedProcessTool = workspaceRoot == null ? null : new ManagedProcessTool(workspaceRoot);
+        this.projectTool = workspaceRoot == null ? null : new ProjectTool(workspaceRoot);
     }
 
     public List<NodeCapability> capabilities() {
@@ -44,6 +47,13 @@ public class ToolRegistry {
                 new NodeCapability(
                         "git.diff", "Show the current Git diff, optionally for one workspace-relative path.", "LOW", gitTool != null, false,
                         objectSchema(Map.of("path", Map.of("type", "string")))),
+                new NodeCapability(
+                        "project.inspect",
+                        "Detect the workspace project type and return manifest-backed build, test, and start command recommendations without executing them.",
+                        "LOW",
+                        projectTool != null,
+                        false,
+                        objectSchema(Map.of("cwd", Map.of("type", "string")))),
                 new NodeCapability(
                         "fs.list",
                         "List files under an allowed workspace path.",
@@ -205,6 +215,11 @@ public class ToolRegistry {
             return fileTool == null
                     ? ToolExecutionResult.failure("fs.list is unavailable because this node has no configured workspace.")
                     : fileTool.list(arguments);
+        }
+        if ("project.inspect".equals(toolName)) {
+            return projectTool == null
+                    ? ToolExecutionResult.failure("project.inspect is unavailable because this node has no configured workspace.")
+                    : projectTool.inspect(arguments);
         }
         if ("fs.read".equals(toolName)) {
             return fileTool == null
