@@ -7,6 +7,8 @@ import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.tool.RegisteredTool;
 import io.github.yourname.agentstudio.tool.RiskLevel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
@@ -213,6 +215,65 @@ public class NodeService {
         return invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(actor.tenantId(), runId).stream()
                 .map(NodeToolInvocationView::from)
                 .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public CodingRunEvidenceView codingEvidence(String runId, ActorContext actor) {
+        List<NodeToolInvocationEntity> history = invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(actor.tenantId(), runId);
+
+        // 这里的摘要会直接返回给用户，因此只保留“项目内相对路径”。
+        // 调用记录来自数据库，不能假定旧数据或手工修复过的数据一定合法；
+        // 绝对路径、包含 ".." 的路径都不应该通过这个接口泄露出去。
+        List<String> changedFiles = history.stream()
+                .filter(invocation -> "fs.write".equals(invocation.toolName()) || "fs.apply_patch".equals(invocation.toolName()))
+                .filter(invocation -> invocation.status() == NodeToolInvocationStatus.SUCCEEDED)
+                .map(this::evidenceFilePath)
+                .flatMap(java.util.Optional::stream)
+                .distinct()
+                .toList();
+
+        // shell.run 和 browser.* 是“已经做过验证”的证据。这里刻意只返回工具名称，
+        // 不返回命令参数或标准输出，以免日志中的敏感信息被这个摘要接口暴露。
+        List<String> verificationTools = history.stream()
+                .filter(invocation -> invocation.status() == NodeToolInvocationStatus.SUCCEEDED)
+                .map(NodeToolInvocationEntity::toolName)
+                .filter(name -> "shell.run".equals(name) || name.startsWith("browser."))
+                .distinct()
+                .toList();
+        List<String> failedTools = history.stream()
+                .filter(invocation -> invocation.status() == NodeToolInvocationStatus.FAILED)
+                .map(NodeToolInvocationEntity::toolName)
+                .distinct()
+                .toList();
+        boolean browserVerified = verificationTools.stream().anyMatch(name -> name.startsWith("browser."));
+        return new CodingRunEvidenceView(runId, history.size(), changedFiles, verificationTools, browserVerified, failedTools);
+    }
+
+    /**
+     * 从一次文件写入调用中取出可安全展示的工作区相对路径。
+     *
+     * <p>这不是文件系统权限校验（真正的权限校验在节点工具中完成），而是“展示层兜底”：
+     * 即使历史 JSON 损坏或被人为写入了绝对路径，交付摘要也仍然可用且不会泄露机器目录。
+     */
+    private java.util.Optional<String> evidenceFilePath(NodeToolInvocationEntity invocation) {
+        Object rawPath = readJsonMap(invocation.argumentsJson()).get("path");
+        if (!(rawPath instanceof String path) || path.isBlank()) {
+            return java.util.Optional.empty();
+        }
+        try {
+            String normalized = Path.of(path.trim()).normalize().toString().replace('\\', '/');
+            if (Path.of(path.trim()).isAbsolute()
+                    || normalized.isBlank()
+                    || ".".equals(normalized)
+                    || "..".equals(normalized)
+                    || normalized.startsWith("../")) {
+                return java.util.Optional.empty();
+            }
+            return java.util.Optional.of(normalized);
+        } catch (InvalidPathException ex) {
+            // 单条坏记录不应导致整个编码任务的交付信息无法查看。
+            return java.util.Optional.empty();
+        }
     }
 
     /**

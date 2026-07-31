@@ -551,6 +551,14 @@ class AgentStudioController {
         return nodes.listRunInvocations(id, actor);
     }
 
+    @GetMapping("/runs/{id}/coding-evidence")
+    Object codingEvidence(@PathVariable String id, HttpServletRequest request) {
+        var actor = actors.current(request);
+        // 必须先按当前租户查询任务。否则仅凭猜测 runId 就可能枚举其他租户的摘要。
+        runQueries.get(id, actor);
+        return nodes.codingEvidence(id, actor);
+    }
+
     @GetMapping(path = "/runs/{id}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     SseEmitter streamRunEvents(
             @PathVariable String id,
