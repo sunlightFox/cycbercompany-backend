@@ -38,6 +38,11 @@ public class NodeSessionRegistry {
         sessions.remove(nodeId, session);
     }
 
+    public boolean isConnected(String nodeId) {
+        WebSocketSession session = sessions.get(nodeId);
+        return session != null && session.isOpen();
+    }
+
     public NodeToolCallResult invoke(String nodeId, String toolName, Map<String, Object> arguments, Duration timeout) {
         WebSocketSession session = sessions.get(nodeId);
         if (session == null || !session.isOpen()) {

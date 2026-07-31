@@ -1,6 +1,7 @@
 package io.github.yourname.agentstudio.orchestration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -17,6 +18,22 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class CodingAgentLoopTest {
+
+    @Test
+    void rejectsAPlainTextResponseBeforeAnyCodingToolWasCalled() {
+        ModelGateway gateway = mock(ModelGateway.class);
+        CodingToolAdapter tools = mock(CodingToolAdapter.class);
+        RunEventPublisher events = mock(RunEventPublisher.class);
+        ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
+        var declaredTool = new CodingToolAdapter.AvailableTool(
+                "node_tool_7", "node-a", "fs.read", new ModelGateway.ModelTool("node_tool_7", "Read", Map.of()));
+        when(tools.availableTools("node-a", actor)).thenReturn(List.of(declaredTool));
+        when(gateway.complete(any())).thenReturn(new ModelGateway.ModelAnswer("I will inspect it.", null, null, "test"));
+
+        assertThatThrownBy(() -> new CodingAgentLoop(gateway, tools, events).execute(
+                        "run-a", "model-a", "node-a", new java.util.ArrayList<>(), actor))
+                .hasMessageContaining("without calling any coding tool");
+    }
 
     @Test
     void feedsNodeToolResultBackToModelBeforeFinalAnswer() {

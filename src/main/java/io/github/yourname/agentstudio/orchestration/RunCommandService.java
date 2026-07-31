@@ -204,7 +204,7 @@ public class RunCommandService {
                 .append("- Current server time: ").append(SERVER_TIME_FORMAT.format(Instant.now())).append('\n')
                 .append("- Tool calls are orchestrated by the backend. Do not emit raw tool-call XML or pseudo tool-call markup in the final answer.\n");
         if (command.nodeId() != null && !command.nodeId().isBlank()) {
-            builder.append("- You are working in a developer workspace through native tools. Inspect before editing, make the smallest coherent change, run relevant tests or checks when command access is available, and report the files changed plus verification results. Never claim a command or test passed unless its tool result says so.\n");
+            builder.append("- You are working in a developer workspace through native tools. You MUST call a relevant native tool before giving any final answer. Inspect before editing, make the smallest coherent change, run relevant tests or checks when command access is available, and report the files changed plus verification results. Never claim a command or test passed unless its tool result says so.\n");
         }
         if (!capabilityContext.isBlank()) {
             builder.append(capabilityContext);

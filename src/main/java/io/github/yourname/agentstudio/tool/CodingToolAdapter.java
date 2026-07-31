@@ -33,13 +33,25 @@ public class CodingToolAdapter {
     }
 
     public List<AvailableTool> availableTools(String nodeId, ActorContext actor) {
+        if (!nodes.isReadyForToolExecution(nodeId, actor)) {
+            throw new IllegalArgumentException("The selected node is not connected for tool execution: " + nodeId);
+        }
         return nodes.listTools(nodeId, actor).stream()
                 .filter(NodeToolView::enabled)
                 // Approval is a user-facing lifecycle. Until that lifecycle is
                 // completed, do not expose a capability the run cannot execute.
                 .filter(tool -> !tool.requiresApproval())
+                .filter(tool -> isCodingTool(tool.name()))
                 .map(this::availableTool)
                 .toList();
+    }
+
+    private static boolean isCodingTool(String name) {
+        return "fs.list".equals(name)
+                || "fs.read".equals(name)
+                || "fs.write".equals(name)
+                || "fs.apply_patch".equals(name)
+                || "shell.run".equals(name);
     }
 
     public ToolExecution execute(

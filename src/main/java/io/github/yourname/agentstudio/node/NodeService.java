@@ -144,6 +144,12 @@ public class NodeService {
                 .toList();
     }
 
+    @Transactional(readOnly = true)
+    public boolean isReadyForToolExecution(String nodeId, ActorContext actor) {
+        NodeConnectionEntity node = requireNode(nodeId, actor);
+        return node.enabled() && node.status() == NodeStatus.ONLINE && sessions.isConnected(nodeId);
+    }
+
     @Transactional
     public NodeToolView updateTool(String nodeId, String toolName, UpdateNodeToolCommand command, ActorContext actor) {
         requireNode(nodeId, actor);
@@ -203,7 +209,7 @@ public class NodeService {
 
     private NodeToolCallResult executeTool(String nodeId, String toolName, CallNodeToolCommand command, ActorContext actor) {
         NodeConnectionEntity node = requireNode(nodeId, actor);
-        if (!node.enabled() || node.status() != NodeStatus.ONLINE) {
+        if (!node.enabled() || node.status() != NodeStatus.ONLINE || !sessions.isConnected(nodeId)) {
             throw new IllegalArgumentException("Node is not online or enabled: " + nodeId);
         }
         NodeToolEntity tool = tools.findByTenantIdAndNodeIdAndName(actor.tenantId(), nodeId, toolName)

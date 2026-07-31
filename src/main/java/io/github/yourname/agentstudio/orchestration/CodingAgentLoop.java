@@ -50,6 +50,11 @@ class CodingAgentLoop {
             var answer = modelGateway.complete(new ModelGateway.ModelCompletionRequest(modelProfileId, messages, modelTools));
             List<ModelGateway.ModelToolCall> calls = normalizeCalls(answer.toolCalls());
             if (calls.isEmpty()) {
+                if (executedCalls == 0) {
+                    throw new IllegalStateException(
+                            "The selected model returned a text response without calling any coding tool. "
+                                    + "Use a model/provider with verified OpenAI-compatible function calling.");
+                }
                 return answer.content() == null ? "" : answer.content();
             }
 
@@ -74,6 +79,9 @@ class CodingAgentLoop {
                         "tool=" + tool.nodeToolName(),
                         actor);
                 messages.add(ModelGateway.ModelMessage.toolResult(call.id(), outcome.content()));
+                if (!outcome.succeeded() && isNodeUnavailable(outcome.content())) {
+                    throw new IllegalStateException("The node disconnected during the coding run; no further tool calls will be attempted.");
+                }
             }
         }
         throw new IllegalStateException("Coding run reached its maximum of " + MAX_MODEL_TURNS + " model turns.");
@@ -89,5 +97,11 @@ class CodingAgentLoop {
             result.add(new ModelGateway.ModelToolCall(id, call.name(), call.arguments() == null ? Map.of() : call.arguments()));
         }
         return result;
+    }
+
+    private static boolean isNodeUnavailable(String toolResult) {
+        return toolResult != null
+                && (toolResult.contains("Node is not connected")
+                        || toolResult.contains("Node is not online or enabled"));
     }
 }

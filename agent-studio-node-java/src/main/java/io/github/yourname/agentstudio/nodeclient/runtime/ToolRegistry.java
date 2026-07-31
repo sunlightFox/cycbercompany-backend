@@ -39,7 +39,7 @@ public class ToolRegistry {
                         fileTool != null,
                         false,
                         objectSchema(Map.of(
-                                "path", Map.of("type", "string")))),
+                                "path", Map.of("type", "string")), "path")),
                 new NodeCapability(
                         "fs.read",
                         "Read a text file under an allowed workspace path.",
@@ -47,7 +47,7 @@ public class ToolRegistry {
                         fileTool != null,
                         false,
                         objectSchema(Map.of(
-                                "path", Map.of("type", "string")))),
+                                "path", Map.of("type", "string")), "path")),
                 new NodeCapability(
                         "fs.write",
                         "Write a UTF-8 text file under the configured workspace.",
@@ -56,7 +56,7 @@ public class ToolRegistry {
                         true,
                         objectSchema(Map.of(
                                 "path", Map.of("type", "string"),
-                                "content", Map.of("type", "string")))),
+                                "content", Map.of("type", "string")), "path", "content")),
                 new NodeCapability(
                         "fs.apply_patch",
                         "Apply one unambiguous text replacement under the configured workspace.",
@@ -66,7 +66,7 @@ public class ToolRegistry {
                         objectSchema(Map.of(
                                 "path", Map.of("type", "string"),
                                 "expected", Map.of("type", "string"),
-                                "replacement", Map.of("type", "string")))),
+                                "replacement", Map.of("type", "string")), "path", "expected", "replacement")),
                 new NodeCapability(
                         "shell.run",
                         "Run a shell command in the configured workspace.",
@@ -76,7 +76,7 @@ public class ToolRegistry {
                         objectSchema(Map.of(
                                 "command", Map.of("type", "string"),
                                 "cwd", Map.of("type", "string"),
-                                "timeoutSeconds", Map.of("type", "integer")))),
+                                "timeoutSeconds", Map.of("type", "integer")), "command")),
                 new NodeCapability(
                         "browser.open",
                         "Open a URL with Playwright on this node.",
@@ -123,10 +123,14 @@ public class ToolRegistry {
         return capabilities;
     }
 
-    private Map<String, Object> objectSchema(Map<String, Object> properties) {
-        return Map.of(
-                "type", "object",
-                "properties", properties);
+    private Map<String, Object> objectSchema(Map<String, Object> properties, String... required) {
+        Map<String, Object> schema = new java.util.LinkedHashMap<>();
+        schema.put("type", "object");
+        schema.put("properties", properties);
+        if (required != null && required.length > 0) {
+            schema.put("required", List.of(required));
+        }
+        return schema;
     }
 
     public ToolExecutionResult execute(String toolName, Map<String, Object> arguments) {

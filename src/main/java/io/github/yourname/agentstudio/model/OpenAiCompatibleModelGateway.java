@@ -84,6 +84,10 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
                                         "description", tool.description(),
                                         "parameters", tool.inputSchema())))
                         .toList());
+                // Every current native-tool caller is an autonomous coding run.
+                // Require the first model response to take an observable action;
+                // the loop accepts a normal final response after tool results.
+                payload.put("tool_choice", "required");
             }
 
             var response = restClientBuilder

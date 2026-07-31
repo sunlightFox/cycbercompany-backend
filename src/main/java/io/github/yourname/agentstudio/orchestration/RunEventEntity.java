@@ -1,8 +1,6 @@
 package io.github.yourname.agentstudio.orchestration;
 
 import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -19,8 +17,10 @@ public class RunEventEntity {
     private String runId;
     private long sequence;
 
-    @Enumerated(EnumType.STRING)
-    private RunEventType type;
+    // Store the enum name as ordinary text. Hibernate's H2 enum mapping adds a
+    // CHECK constraint containing every value, which breaks persisted local
+    // databases whenever a new SSE event type is introduced.
+    private String type;
 
     @Lob
     private String payload;
@@ -33,7 +33,7 @@ public class RunEventEntity {
         this.tenantId = tenantId;
         this.runId = runId;
         this.sequence = sequence;
-        this.type = type;
+        this.type = type.name();
         this.payload = payload;
         this.createdAt = createdAt;
     }
@@ -42,7 +42,7 @@ public class RunEventEntity {
     public String tenantId() { return tenantId; }
     public String runId() { return runId; }
     public long sequence() { return sequence; }
-    public RunEventType type() { return type; }
+    public RunEventType type() { return RunEventType.valueOf(type); }
     public String payload() { return payload; }
     public Instant createdAt() { return createdAt; }
 }
