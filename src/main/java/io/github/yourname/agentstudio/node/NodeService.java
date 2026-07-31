@@ -223,11 +223,20 @@ public class NodeService {
     @Transactional(noRollbackFor = Exception.class)
     public List<NodeToolCallResult> cleanupManagedProcessesForRun(String runId, ActorContext actor) {
         List<NodeToolInvocationEntity> history = invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(actor.tenantId(), runId);
-        List<ManagedProcessTarget> targets = history.stream()
+        List<ManagedProcessTarget> invocationTargets = history.stream()
                 .filter(invocation -> invocation.status() == NodeToolInvocationStatus.SUCCEEDED)
                 .filter(invocation -> "process.start".equals(invocation.toolName()))
                 .map(this::managedProcessTarget)
                 .flatMap(java.util.Optional::stream)
+                .toList();
+        List<ManagedProcessTarget> approvalTargets = approvals.findByTenantIdAndRunId(actor.tenantId(), runId).stream()
+                .filter(approval -> approval.status() == NodeToolApprovalStatus.APPROVED)
+                .filter(approval -> "SUCCEEDED".equalsIgnoreCase(approval.executionStatus()))
+                .filter(approval -> "process.start".equals(approval.toolName()))
+                .map(this::managedProcessTarget)
+                .flatMap(java.util.Optional::stream)
+                .toList();
+        List<ManagedProcessTarget> targets = java.util.stream.Stream.concat(invocationTargets.stream(), approvalTargets.stream())
                 .filter(target -> !wasStopped(history, target.processId()))
                 .distinct()
                 .toList();
@@ -404,6 +413,15 @@ public class NodeService {
             return java.util.Optional.empty();
         }
         return java.util.Optional.of(new ManagedProcessTarget(invocation.nodeId(), processId.toString()));
+    }
+
+    private java.util.Optional<ManagedProcessTarget> managedProcessTarget(NodeToolApprovalEntity approval) {
+        Map<String, Object> result = readJsonMap(approval.resultJson());
+        Object processId = result.get("processId");
+        if (processId == null || processId.toString().isBlank()) {
+            return java.util.Optional.empty();
+        }
+        return java.util.Optional.of(new ManagedProcessTarget(approval.nodeId(), processId.toString()));
     }
 
     private boolean wasStopped(List<NodeToolInvocationEntity> history, String processId) {
