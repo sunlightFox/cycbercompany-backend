@@ -1,5 +1,6 @@
 package io.github.yourname.agentstudio.web;
 
+import io.github.yourname.agentstudio.node.NodeToolApprovalConflictException;
 import java.time.Instant;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
@@ -10,6 +11,14 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 @RestControllerAdvice
 class ApiExceptionHandler {
+
+    @ExceptionHandler(NodeToolApprovalConflictException.class)
+    ProblemDetail approvalConflict(NodeToolApprovalConflictException ex) {
+        var detail = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+        detail.setProperty("code", "NODE_TOOL_APPROVAL_ALREADY_DECIDED");
+        detail.setProperty("timestamp", Instant.now().toString());
+        return detail;
+    }
 
     /** 将业务输入错误转换为 RFC 9457 风格的 ProblemDetail，而不是暴露堆栈。 */
     @ExceptionHandler(IllegalArgumentException.class)

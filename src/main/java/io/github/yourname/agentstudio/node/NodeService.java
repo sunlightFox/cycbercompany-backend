@@ -1,6 +1,7 @@
 package io.github.yourname.agentstudio.node;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.tool.RegisteredTool;
@@ -14,6 +15,7 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,6 +37,7 @@ public class NodeService {
     private final NodeRegistrationTokenRepository tokens;
     private final NodeToolRepository tools;
     private final NodeToolInvocationRepository invocations;
+    private final NodeToolApprovalRepository approvals;
     private final NodeSessionRegistry sessions;
     private final ObjectMapper objectMapper;
 
@@ -43,12 +46,14 @@ public class NodeService {
             NodeRegistrationTokenRepository tokens,
             NodeToolRepository tools,
             NodeToolInvocationRepository invocations,
+            NodeToolApprovalRepository approvals,
             NodeSessionRegistry sessions,
             ObjectMapper objectMapper) {
         this.nodes = nodes;
         this.tokens = tokens;
         this.tools = tools;
         this.invocations = invocations;
+        this.approvals = approvals;
         this.sessions = sessions;
         this.objectMapper = objectMapper;
     }
@@ -159,9 +164,9 @@ public class NodeService {
         return NodeToolView.from(tools.save(tool));
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public NodeToolCallResult callTool(String nodeId, String toolName, CallNodeToolCommand command, ActorContext actor) {
-        return executeTool(nodeId, toolName, command, actor);
+        return executeTool(nodeId, toolName, command, actor, false);
     }
 
     @Transactional(noRollbackFor = Exception.class)
@@ -185,9 +190,11 @@ public class NodeService {
         invocation.start(now);
         invocations.save(invocation);
         try {
-            NodeToolCallResult result = executeTool(nodeId, toolName, command, actor);
+            NodeToolCallResult result = executeTool(nodeId, toolName, command, actor, false);
             if ("SUCCEEDED".equalsIgnoreCase(result.status())) {
                 invocation.succeed(toJson(result.result()), Instant.now());
+            } else if ("APPROVAL_REQUIRED".equalsIgnoreCase(result.status())) {
+                invocation.fail(NodeToolInvocationStatus.APPROVAL_REQUIRED, result.errorMessage(), Instant.now());
             } else {
                 invocation.fail(NodeToolInvocationStatus.FAILED, result.errorMessage(), Instant.now());
             }
@@ -207,27 +214,135 @@ public class NodeService {
                 .toList();
     }
 
-    private NodeToolCallResult executeTool(String nodeId, String toolName, CallNodeToolCommand command, ActorContext actor) {
-        NodeConnectionEntity node = requireNode(nodeId, actor);
-        if (!node.enabled() || node.status() != NodeStatus.ONLINE || !sessions.isConnected(nodeId)) {
-            throw new IllegalArgumentException("Node is not online or enabled: " + nodeId);
-        }
+    @Transactional
+    public NodeToolApprovalView requestToolApproval(
+            String nodeId,
+            String toolName,
+            CallNodeToolCommand command,
+            ActorContext actor) {
+        requireNode(nodeId, actor);
         NodeToolEntity tool = tools.findByTenantIdAndNodeIdAndName(actor.tenantId(), nodeId, toolName)
                 .orElseThrow(() -> new IllegalArgumentException("Node tool not found: " + toolName));
         if (!tool.enabled()) {
             throw new IllegalArgumentException("Node tool is disabled: " + toolName);
         }
-        if (tool.requiresApproval()) {
-            throw new IllegalArgumentException("Node tool requires approval and cannot be called directly yet: " + toolName);
+        if (!tool.requiresApproval()) {
+            throw new IllegalArgumentException("Node tool does not require approval: " + toolName);
         }
-        int timeoutSeconds = command == null || command.timeoutSeconds() == null || command.timeoutSeconds() <= 0
-                ? 30
-                : Math.min(command.timeoutSeconds(), 120);
+        int timeoutSeconds = timeoutSeconds(command);
+        NodeToolApprovalEntity approval = approvals.save(new NodeToolApprovalEntity(
+                "nodeapproval_" + UUID.randomUUID(),
+                actor.tenantId(),
+                nodeId,
+                toolName,
+                toJson(command == null || command.arguments() == null ? Map.of() : command.arguments()),
+                timeoutSeconds,
+                actor.userId(),
+                Instant.now()));
+        return NodeToolApprovalView.from(approval);
+    }
+
+    @Transactional(readOnly = true)
+    public List<NodeToolApprovalView> listToolApprovals(ActorContext actor) {
+        return approvals.findByTenantIdOrderByCreatedAtDesc(actor.tenantId()).stream()
+                .map(NodeToolApprovalView::from)
+                .toList();
+    }
+
+    /**
+     * Executes exactly one previously persisted request after a human decision.
+     * A second decision is rejected by the entity transition check (and database versioning).
+     */
+    @Transactional(noRollbackFor = Exception.class)
+    public NodeToolApprovalDecisionView decideToolApproval(
+            String approvalId,
+            DecideNodeToolApprovalCommand command,
+            ActorContext actor) {
+        NodeToolApprovalEntity approval = approvals.findByIdAndTenantId(approvalId, actor.tenantId())
+                .orElseThrow(() -> new IllegalArgumentException("Node tool approval not found: " + approvalId));
+        boolean approved = command != null && command.approved();
+        approval.decide(approved ? NodeToolApprovalStatus.APPROVED : NodeToolApprovalStatus.REJECTED, actor.userId(), Instant.now());
+        // Flush the irreversible decision before dispatching so concurrent submissions cannot execute twice.
+        approvals.saveAndFlush(approval);
+        if (!approved) {
+            return new NodeToolApprovalDecisionView(NodeToolApprovalView.from(approval), null);
+        }
+
+        NodeToolCallResult execution;
+        try {
+            execution = executeTool(
+                    approval.nodeId(),
+                    approval.toolName(),
+                    new CallNodeToolCommand(readArguments(approval.argumentsJson()), approval.timeoutSeconds()),
+                    actor,
+                    true);
+            approval.recordExecution(
+                    execution.status(),
+                    toJson(execution.result()),
+                    execution.errorMessage(),
+                    Instant.now());
+        } catch (Exception ex) {
+            execution = new NodeToolCallResult(
+                    null,
+                    approval.nodeId(),
+                    approval.toolName(),
+                    "FAILED",
+                    null,
+                    ex.getMessage());
+            approval.recordExecution("FAILED", null, ex.getMessage(), Instant.now());
+        }
+        approvals.save(approval);
+        return new NodeToolApprovalDecisionView(NodeToolApprovalView.from(approval), execution);
+    }
+
+    private NodeToolCallResult executeTool(
+            String nodeId,
+            String toolName,
+            CallNodeToolCommand command,
+            ActorContext actor,
+            boolean bypassApproval) {
+        NodeConnectionEntity node = requireNode(nodeId, actor);
+        NodeToolEntity tool = tools.findByTenantIdAndNodeIdAndName(actor.tenantId(), nodeId, toolName)
+                .orElseThrow(() -> new IllegalArgumentException("Node tool not found: " + toolName));
+        if (!tool.enabled()) {
+            throw new IllegalArgumentException("Node tool is disabled: " + toolName);
+        }
+        if (tool.requiresApproval() && !bypassApproval) {
+            NodeToolApprovalView approval = requestToolApproval(nodeId, toolName, command, actor);
+            return new NodeToolCallResult(
+                    null,
+                    nodeId,
+                    toolName,
+                    "APPROVAL_REQUIRED",
+                    Map.of("approvalId", approval.id(), "status", approval.status().name()),
+                    "Node tool requires approval before it can execute.");
+        }
+        if (!node.enabled() || node.status() != NodeStatus.ONLINE || !sessions.isConnected(nodeId)) {
+            throw new IllegalArgumentException("Node is not online or enabled: " + nodeId);
+        }
+        int timeoutSeconds = timeoutSeconds(command);
         return sessions.invoke(
                 nodeId,
                 toolName,
                 command == null ? null : command.arguments(),
                 Duration.ofSeconds(timeoutSeconds));
+    }
+
+    private int timeoutSeconds(CallNodeToolCommand command) {
+        return command == null || command.timeoutSeconds() == null || command.timeoutSeconds() <= 0
+                ? 30
+                : Math.min(command.timeoutSeconds(), 120);
+    }
+
+    private Map<String, Object> readArguments(String argumentsJson) {
+        if (argumentsJson == null || argumentsJson.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return objectMapper.readValue(argumentsJson, new TypeReference<Map<String, Object>>() {});
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException("Stored approval arguments cannot be read.", ex);
+        }
     }
 
     @Transactional(readOnly = true)

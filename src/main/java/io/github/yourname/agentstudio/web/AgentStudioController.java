@@ -16,6 +16,7 @@ import io.github.yourname.agentstudio.model.UpdateModelStatusCommand;
 import io.github.yourname.agentstudio.model.UpsertModelProfileCommand;
 import io.github.yourname.agentstudio.node.CallNodeToolCommand;
 import io.github.yourname.agentstudio.node.CreateNodeRegistrationTokenCommand;
+import io.github.yourname.agentstudio.node.DecideNodeToolApprovalCommand;
 import io.github.yourname.agentstudio.node.NodeService;
 import io.github.yourname.agentstudio.node.RegisterNodeCommand;
 import io.github.yourname.agentstudio.node.UpdateNodeCommand;
@@ -397,6 +398,29 @@ class AgentStudioController {
             @RequestBody(required = false) CallNodeToolCommand command,
             HttpServletRequest request) {
         return nodes.callTool(id, toolName, command, actors.current(request));
+    }
+
+    @PostMapping("/nodes/{id}/tools/{toolName}/approval-requests")
+    @ResponseStatus(HttpStatus.CREATED)
+    Object requestNodeToolApproval(
+            @PathVariable String id,
+            @PathVariable String toolName,
+            @RequestBody(required = false) CallNodeToolCommand command,
+            HttpServletRequest request) {
+        return nodes.requestToolApproval(id, toolName, command, actors.current(request));
+    }
+
+    @GetMapping("/node-tool-approvals")
+    Object listNodeToolApprovals(HttpServletRequest request) {
+        return nodes.listToolApprovals(actors.current(request));
+    }
+
+    @PostMapping("/node-tool-approvals/{approvalId}/decision")
+    Object decideNodeToolApproval(
+            @PathVariable String approvalId,
+            @RequestBody(required = false) DecideNodeToolApprovalCommand command,
+            HttpServletRequest request) {
+        return nodes.decideToolApproval(approvalId, command, actors.current(request));
     }
 
     @PostMapping("/knowledge-bases")
