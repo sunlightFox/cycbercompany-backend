@@ -86,6 +86,16 @@ public class CodingToolAdapter {
         }
     }
 
+    /** Stops only managed processes the backend recorded for this run. */
+    public List<CleanupResult> cleanupRun(String runId, ActorContext actor) {
+        return nodes.cleanupManagedProcessesForRun(runId, actor).stream()
+                .map(result -> new CleanupResult(
+                        result.nodeId(),
+                        "SUCCEEDED".equalsIgnoreCase(result.status()),
+                        result.errorMessage()))
+                .toList();
+    }
+
     private AvailableTool availableTool(NodeToolView tool) {
         return new AvailableTool(
                 "node_tool_" + tool.id(),
@@ -155,5 +165,8 @@ public class CodingToolAdapter {
     }
 
     public record ToolExecution(boolean succeeded, String content) {
+    }
+
+    public record CleanupResult(String nodeId, boolean succeeded, String errorMessage) {
     }
 }

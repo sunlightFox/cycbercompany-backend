@@ -62,6 +62,7 @@ class CodingAgentLoopTest {
                 .thenReturn(new ModelGateway.ModelAnswer("The fix is verified.", null, null, "test-model"));
         when(tools.execute(eq("run-a"), eq(declaredTool), any(), eq(actor)))
                 .thenReturn(new CodingToolAdapter.ToolExecution(true, "{\"status\":\"SUCCEEDED\",\"result\":{}}"));
+        when(tools.cleanupRun("run-a", actor)).thenReturn(List.of());
 
         String answer = new CodingAgentLoop(gateway, tools, events).execute(
                 "run-a",
@@ -80,6 +81,7 @@ class CodingAgentLoopTest {
         assertThat(requests.getAllValues().get(1).toolChoice()).isEqualTo(ModelGateway.ToolChoice.AUTO);
         assertThat(requests.getAllValues().get(1).messages())
                 .anyMatch(message -> "tool".equals(message.role()) && "call-1".equals(message.toolCallId()));
+        verify(tools).cleanupRun("run-a", actor);
     }
 
     @Test

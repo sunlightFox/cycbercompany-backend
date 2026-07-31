@@ -50,21 +50,22 @@ class CodingAgentLoop {
             String nodeId,
             List<ModelGateway.ModelMessage> messages,
             ActorContext actor) {
-        List<CodingToolAdapter.AvailableTool> available = tools.availableTools(nodeId, actor);
-        if (available.isEmpty()) {
-            throw new IllegalArgumentException("The selected node has no enabled tools approved for autonomous runs.");
-        }
-        Map<String, CodingToolAdapter.AvailableTool> byModelName = new HashMap<>();
-        for (CodingToolAdapter.AvailableTool tool : available) {
-            byModelName.put(tool.modelToolName(), tool);
-        }
-        List<ModelGateway.ModelTool> modelTools = available.stream()
-                .map(CodingToolAdapter.AvailableTool::modelTool)
-                .toList();
-        int executedCalls = 0;
+        try {
+            List<CodingToolAdapter.AvailableTool> available = tools.availableTools(nodeId, actor);
+            if (available.isEmpty()) {
+                throw new IllegalArgumentException("The selected node has no enabled tools approved for autonomous runs.");
+            }
+            Map<String, CodingToolAdapter.AvailableTool> byModelName = new HashMap<>();
+            for (CodingToolAdapter.AvailableTool tool : available) {
+                byModelName.put(tool.modelToolName(), tool);
+            }
+            List<ModelGateway.ModelTool> modelTools = available.stream()
+                    .map(CodingToolAdapter.AvailableTool::modelTool)
+                    .toList();
+            int executedCalls = 0;
 
-        for (int turn = 1; turn <= MAX_MODEL_TURNS; turn++) {
-            var answer = completeWithRateLimitRetry(
+            for (int turn = 1; turn <= MAX_MODEL_TURNS; turn++) {
+                var answer = completeWithRateLimitRetry(
                     runId,
                     actor,
                     new ModelGateway.ModelCompletionRequest(
@@ -72,45 +73,63 @@ class CodingAgentLoop {
                             messages,
                             modelTools,
                             turn == 1 ? ModelGateway.ToolChoice.REQUIRED : ModelGateway.ToolChoice.AUTO));
-            List<ModelGateway.ModelToolCall> calls = normalizeCalls(answer.toolCalls());
-            if (calls.isEmpty()) {
-                if (executedCalls == 0) {
-                    throw new IllegalStateException(
-                            "The selected model returned a text response without calling any coding tool. "
-                                    + "Use a model/provider with verified OpenAI-compatible function calling.");
+                List<ModelGateway.ModelToolCall> calls = normalizeCalls(answer.toolCalls());
+                if (calls.isEmpty()) {
+                    if (executedCalls == 0) {
+                        throw new IllegalStateException(
+                                "The selected model returned a text response without calling any coding tool. "
+                                        + "Use a model/provider with verified OpenAI-compatible function calling.");
+                    }
+                    return answer.content() == null ? "" : answer.content();
                 }
-                return answer.content() == null ? "" : answer.content();
-            }
 
-            messages.add(ModelGateway.ModelMessage.assistantToolCalls(answer.content(), calls));
-            for (ModelGateway.ModelToolCall call : calls) {
-                if (++executedCalls > MAX_TOOL_CALLS) {
-                    throw new IllegalStateException("Coding run reached its maximum of " + MAX_TOOL_CALLS + " tool calls.");
+                messages.add(ModelGateway.ModelMessage.assistantToolCalls(answer.content(), calls));
+                for (ModelGateway.ModelToolCall call : calls) {
+                    if (++executedCalls > MAX_TOOL_CALLS) {
+                        throw new IllegalStateException("Coding run reached its maximum of " + MAX_TOOL_CALLS + " tool calls.");
+                    }
+                    CodingToolAdapter.AvailableTool tool = byModelName.get(call.name());
+                    if (tool == null) {
+                        String result = "{\"status\":\"FAILED\",\"error\":\"Tool is not available in this run.\"}";
+                        events.publish(runId, RunEventType.TOOL_CALL_FAILED, "Unknown tool requested: " + call.name(), actor);
+                        messages.add(ModelGateway.ModelMessage.toolResult(call.id(), result));
+                        continue;
+                    }
+                    events.publish(runId, RunEventType.TOOL_CALL_REQUESTED, "tool=" + tool.nodeToolName(), actor);
+                    events.publish(runId, RunEventType.TOOL_CALL_STARTED, "tool=" + tool.nodeToolName(), actor);
+                    CodingToolAdapter.ToolExecution outcome = tools.execute(runId, tool, call, actor);
+                    events.publish(
+                            runId,
+                            outcome.succeeded() ? RunEventType.TOOL_CALL_COMPLETED : RunEventType.TOOL_CALL_FAILED,
+                            "tool=" + tool.nodeToolName(),
+                            actor);
+                    messages.add(ModelGateway.ModelMessage.toolResult(call.id(), outcome.content()));
+                    if (!outcome.succeeded() && isNodeUnavailable(outcome.content())) {
+                        throw new IllegalStateException("The node disconnected during the coding run; no further tool calls will be attempted.");
+                    }
                 }
-                CodingToolAdapter.AvailableTool tool = byModelName.get(call.name());
-                if (tool == null) {
-                    String result = "{\"status\":\"FAILED\",\"error\":\"Tool is not available in this run.\"}";
-                    events.publish(runId, RunEventType.TOOL_CALL_FAILED, "Unknown tool requested: " + call.name(), actor);
-                    messages.add(ModelGateway.ModelMessage.toolResult(call.id(), result));
-                    continue;
-                }
-                events.publish(runId, RunEventType.TOOL_CALL_REQUESTED, "tool=" + tool.nodeToolName(), actor);
-                events.publish(runId, RunEventType.TOOL_CALL_STARTED, "tool=" + tool.nodeToolName(), actor);
-                CodingToolAdapter.ToolExecution outcome = tools.execute(runId, tool, call, actor);
+            }
+            throw new IllegalStateException(
+                    "Coding run reached its maximum of " + MAX_MODEL_TURNS
+                            + " model turns without a final answer. The model kept requesting tools.");
+        } finally {
+            cleanupManagedProcesses(runId, actor);
+        }
+    }
+
+    private void cleanupManagedProcesses(String runId, ActorContext actor) {
+        try {
+            for (CodingToolAdapter.CleanupResult result : tools.cleanupRun(runId, actor)) {
+                events.publish(runId, RunEventType.TOOL_CALL_STARTED, "tool=process.stop cleanup", actor);
                 events.publish(
                         runId,
-                        outcome.succeeded() ? RunEventType.TOOL_CALL_COMPLETED : RunEventType.TOOL_CALL_FAILED,
-                        "tool=" + tool.nodeToolName(),
+                        result.succeeded() ? RunEventType.TOOL_CALL_COMPLETED : RunEventType.TOOL_CALL_FAILED,
+                        "tool=process.stop cleanup" + (result.errorMessage() == null ? "" : ", error=" + result.errorMessage()),
                         actor);
-                messages.add(ModelGateway.ModelMessage.toolResult(call.id(), outcome.content()));
-                if (!outcome.succeeded() && isNodeUnavailable(outcome.content())) {
-                    throw new IllegalStateException("The node disconnected during the coding run; no further tool calls will be attempted.");
-                }
             }
+        } catch (Exception ignored) {
+            // Cleanup failures must not hide the model's final answer or original execution failure.
         }
-        throw new IllegalStateException(
-                "Coding run reached its maximum of " + MAX_MODEL_TURNS
-                        + " model turns without a final answer. The model kept requesting tools.");
     }
 
     private ModelGateway.ModelAnswer completeWithRateLimitRetry(

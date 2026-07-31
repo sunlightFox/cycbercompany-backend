@@ -214,6 +214,29 @@ public class NodeService {
                 .toList();
     }
 
+    /**
+     * Stops only process handles that this exact run previously started. This intentionally bypasses
+     * the normal approval gate: allowing an autonomous run to start a managed process also grants it
+     * the narrower ability to clean up that same handle, not to stop arbitrary node processes.
+     */
+    @Transactional(noRollbackFor = Exception.class)
+    public List<NodeToolCallResult> cleanupManagedProcessesForRun(String runId, ActorContext actor) {
+        List<NodeToolInvocationEntity> history = invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(actor.tenantId(), runId);
+        List<ManagedProcessTarget> targets = history.stream()
+                .filter(invocation -> invocation.status() == NodeToolInvocationStatus.SUCCEEDED)
+                .filter(invocation -> "process.start".equals(invocation.toolName()))
+                .map(this::managedProcessTarget)
+                .flatMap(java.util.Optional::stream)
+                .filter(target -> !wasStopped(history, target.processId()))
+                .distinct()
+                .toList();
+        List<NodeToolCallResult> results = new java.util.ArrayList<>();
+        for (ManagedProcessTarget target : targets) {
+            results.add(stopManagedProcessForRun(runId, target, actor));
+        }
+        return results;
+    }
+
     @Transactional
     public NodeToolApprovalView requestToolApproval(
             String nodeId,
@@ -328,6 +351,58 @@ public class NodeService {
                 Duration.ofSeconds(timeoutSeconds));
     }
 
+    private NodeToolCallResult stopManagedProcessForRun(String runId, ManagedProcessTarget target, ActorContext actor) {
+        Instant now = Instant.now();
+        NodeToolInvocationEntity invocation = invocations.save(new NodeToolInvocationEntity(
+                "nodeinv_" + UUID.randomUUID(),
+                actor.tenantId(),
+                runId,
+                "cleanup_" + target.processId(),
+                target.nodeId(),
+                "process.stop",
+                toJson(Map.of("processId", target.processId())),
+                now));
+        invocation.start(now);
+        invocations.save(invocation);
+        try {
+            NodeToolCallResult result = executeTool(
+                    target.nodeId(),
+                    "process.stop",
+                    new CallNodeToolCommand(Map.of("processId", target.processId()), 30),
+                    actor,
+                    true);
+            if ("SUCCEEDED".equalsIgnoreCase(result.status())) {
+                invocation.succeed(toJson(result.result()), Instant.now());
+            } else {
+                invocation.fail(NodeToolInvocationStatus.FAILED, result.errorMessage(), Instant.now());
+            }
+            invocations.save(invocation);
+            return result;
+        } catch (Exception ex) {
+            invocation.fail(NodeToolInvocationStatus.FAILED, ex.getMessage(), Instant.now());
+            invocations.save(invocation);
+            return new NodeToolCallResult(null, target.nodeId(), "process.stop", "FAILED", null, ex.getMessage());
+        }
+    }
+
+    private java.util.Optional<ManagedProcessTarget> managedProcessTarget(NodeToolInvocationEntity invocation) {
+        Map<String, Object> result = readJsonMap(invocation.resultJson());
+        Object processId = result.get("processId");
+        if (processId == null || processId.toString().isBlank()) {
+            return java.util.Optional.empty();
+        }
+        return java.util.Optional.of(new ManagedProcessTarget(invocation.nodeId(), processId.toString()));
+    }
+
+    private boolean wasStopped(List<NodeToolInvocationEntity> history, String processId) {
+        return history.stream()
+                .filter(invocation -> invocation.status() == NodeToolInvocationStatus.SUCCEEDED)
+                .filter(invocation -> "process.stop".equals(invocation.toolName()))
+                .map(invocation -> readJsonMap(invocation.argumentsJson()).get("processId"))
+                .filter(java.util.Objects::nonNull)
+                .anyMatch(processId::equals);
+    }
+
     private int timeoutSeconds(CallNodeToolCommand command) {
         return command == null || command.timeoutSeconds() == null || command.timeoutSeconds() <= 0
                 ? 30
@@ -342,6 +417,17 @@ public class NodeService {
             return objectMapper.readValue(argumentsJson, new TypeReference<Map<String, Object>>() {});
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException("Stored approval arguments cannot be read.", ex);
+        }
+    }
+
+    private Map<String, Object> readJsonMap(String json) {
+        if (json == null || json.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+        } catch (JsonProcessingException ex) {
+            return Map.of();
         }
     }
 
@@ -492,5 +578,8 @@ public class NodeService {
         } catch (NoSuchAlgorithmException ex) {
             throw new IllegalStateException("SHA-256 is required by the Java platform.", ex);
         }
+    }
+
+    private record ManagedProcessTarget(String nodeId, String processId) {
     }
 }
