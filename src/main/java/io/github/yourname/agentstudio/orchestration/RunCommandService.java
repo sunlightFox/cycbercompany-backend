@@ -18,6 +18,7 @@ import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.tool.WebSearchCommand;
 import io.github.yourname.agentstudio.tool.WebSearchResult;
 import io.github.yourname.agentstudio.tool.WebSearchService;
+import io.github.yourname.agentstudio.tool.CodingWorkspaceScope;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -102,6 +103,7 @@ public class RunCommandService {
 
     @Transactional
     public CreateRunResponse create(CreateRunCommand command, ActorContext actor) {
+        CodingWorkspaceScope.from(command.workingDirectory());
         conversations.append(command.conversationId(), MessageRole.USER, command.text(), null, actor);
         String agentId = blankToDefault(command.agentId(), "default-assistant");
         String modelId = blankToDefault(command.modelProfileId(), models.defaultModelProfileId());
@@ -120,6 +122,7 @@ public class RunCommandService {
 
     private void execute(String runId, CreateRunCommand command, ActorContext actor) {
         try {
+            CodingWorkspaceScope workspaceScope = CodingWorkspaceScope.from(command.workingDirectory());
             AgentRunEntity run = runs.findByIdAndTenantId(runId, actor.tenantId()).orElseThrow();
             run.start();
             runs.save(run);
@@ -170,7 +173,8 @@ public class RunCommandService {
                         run.modelProfileId(),
                         command.nodeId(),
                         messages,
-                        actor));
+                        actor,
+                        workspaceScope));
                 events.publish(runId, RunEventType.STEP_COMPLETED, "coding-agent", actor);
             } else {
                 var answer = modelGateway.complete(new ModelGateway.ModelCompletionRequest(run.modelProfileId(), messages));
@@ -186,7 +190,7 @@ public class RunCommandService {
             events.publish(runId, RunEventType.STEP_COMPLETED, "single-agent", actor);
             events.publish(runId, RunEventType.FINAL_ANSWER, answerContent, actor);
         } catch (CodingApprovalRequiredException approvalRequired) {
-            suspendForApproval(runId, command.nodeId(), approvalRequired, actor);
+            suspendForApproval(runId, command.nodeId(), command.workingDirectory(), approvalRequired, actor);
         } catch (Exception ex) {
             runs.findByIdAndTenantId(runId, actor.tenantId()).ifPresent(run -> {
                 run.fail(ex.getMessage());
@@ -226,12 +230,18 @@ public class RunCommandService {
         run.resume();
         runs.save(run);
         events.publish(run.id(), RunEventType.RUN_RESUMED, "approvalId=" + approval.id(), actor);
-        scheduleAfterCommit(() -> executeResumedCoding(run.id(), continuation.nodeId(), messages, actor));
+        scheduleAfterCommit(() -> executeResumedCoding(
+                run.id(),
+                continuation.nodeId(),
+                continuation.workingDirectory(),
+                messages,
+                actor));
     }
 
     private void executeResumedCoding(
             String runId,
             String nodeId,
+            String workingDirectory,
             List<ModelGateway.ModelMessage> messages,
             ActorContext actor) {
         try {
@@ -245,7 +255,8 @@ public class RunCommandService {
                     run.modelProfileId(),
                     nodeId,
                     messages,
-                    actor));
+                    actor,
+                    CodingWorkspaceScope.from(workingDirectory)));
             events.publish(runId, RunEventType.STEP_COMPLETED, "coding-agent resumed", actor);
             for (String part : tokenBatches(answer)) {
                 events.publish(runId, RunEventType.TOKEN_DELTA, part, actor);
@@ -256,7 +267,7 @@ public class RunCommandService {
             events.publish(runId, RunEventType.STEP_COMPLETED, "single-agent", actor);
             events.publish(runId, RunEventType.FINAL_ANSWER, answer, actor);
         } catch (CodingApprovalRequiredException approvalRequired) {
-            suspendForApproval(runId, nodeId, approvalRequired, actor);
+            suspendForApproval(runId, nodeId, workingDirectory, approvalRequired, actor);
         } catch (Exception ex) {
             runs.findByIdAndTenantId(runId, actor.tenantId()).ifPresent(run -> {
                 run.fail(ex.getMessage());
@@ -269,6 +280,7 @@ public class RunCommandService {
     private void suspendForApproval(
             String runId,
             String nodeId,
+            String workingDirectory,
             CodingApprovalRequiredException approvalRequired,
             ActorContext actor) {
         AgentRunEntity run = runs.findByIdAndTenantId(runId, actor.tenantId()).orElseThrow();
@@ -279,6 +291,7 @@ public class RunCommandService {
                 runId,
                 actor.tenantId(),
                 nodeId,
+                CodingWorkspaceScope.from(workingDirectory).relativePath(),
                 approvalRequired.approvalId(),
                 approvalRequired.toolCallId(),
                 serializeMessages(approvalRequired.messages()),
@@ -365,7 +378,7 @@ public class RunCommandService {
                 .append("- Current server time: ").append(SERVER_TIME_FORMAT.format(Instant.now())).append('\n')
                 .append("- Tool calls are orchestrated by the backend. Do not emit raw tool-call XML or pseudo tool-call markup in the final answer.\n");
         if (command.nodeId() != null && !command.nodeId().isBlank()) {
-            appendCodingWorkflow(builder);
+            appendCodingWorkflow(builder, CodingWorkspaceScope.from(command.workingDirectory()));
         }
         if (!capabilityContext.isBlank()) {
             builder.append(capabilityContext);
@@ -404,7 +417,7 @@ public class RunCommandService {
         return builder.toString();
     }
 
-    private static void appendCodingWorkflow(StringBuilder builder) {
+    private static void appendCodingWorkflow(StringBuilder builder, CodingWorkspaceScope workspaceScope) {
         builder.append("""
                 - You are working in a developer workspace through native tools. You MUST call a relevant native tool before giving any final answer. Never claim a command or test passed unless its tool result says so.
                 - Follow the coding workflow strictly: treat any target directory named by the user as the only project scope. If it does not exist, create that directory and its required parents; do not inspect unrelated samples, previous experiments, or sibling projects.
@@ -413,6 +426,9 @@ public class RunCommandService {
                 - When a check fails, inspect the relevant error output, make one focused correction, and repeat that check. Prefer direct file writes for new files and focused patches for changes. Keep tool calls purposeful because each coding run has a finite tool budget.
                 - In the final answer, state the files changed, the concrete verification performed, any process URL that remains running, and any limitation that was not verified.
                 """);
+        builder.append("- Project scope for this run: ")
+                .append(workspaceScope.isRoot() ? "the node workspace root" : workspaceScope.relativePath())
+                .append(". All file paths and working directories must be relative to this scope.\n");
     }
 
     private static boolean shouldSearchWeb(CreateRunCommand command) {

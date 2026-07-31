@@ -14,6 +14,7 @@ public class CodingRunContinuationEntity {
     private String runId;
     private String tenantId;
     private String nodeId;
+    private String workingDirectory;
     private String approvalId;
     private String toolCallId;
     @Lob
@@ -30,6 +31,7 @@ public class CodingRunContinuationEntity {
             String runId,
             String tenantId,
             String nodeId,
+            String workingDirectory,
             String approvalId,
             String toolCallId,
             String messagesJson,
@@ -37,6 +39,7 @@ public class CodingRunContinuationEntity {
         this.runId = runId;
         this.tenantId = tenantId;
         this.nodeId = nodeId;
+        this.workingDirectory = workingDirectory;
         this.approvalId = approvalId;
         this.toolCallId = toolCallId;
         this.messagesJson = messagesJson;
@@ -47,6 +50,7 @@ public class CodingRunContinuationEntity {
     public String runId() { return runId; }
     public String tenantId() { return tenantId; }
     public String nodeId() { return nodeId; }
+    public String workingDirectory() { return workingDirectory; }
     public String approvalId() { return approvalId; }
     public String toolCallId() { return toolCallId; }
     public String messagesJson() { return messagesJson; }

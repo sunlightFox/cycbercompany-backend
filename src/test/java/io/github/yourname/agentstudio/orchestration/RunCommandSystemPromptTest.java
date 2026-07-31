@@ -19,7 +19,8 @@ class RunCommandSystemPromptTest {
                 List.of(),
                 List.of(),
                 List.of(),
-                "node-1");
+                "node-1",
+                "task-board");
 
         String prompt = RunCommandService.buildSystemPrompt(
                 "You are a coding assistant.",
@@ -35,6 +36,7 @@ class RunCommandSystemPromptTest {
                 .contains("only project scope")
                 .contains("unrelated samples")
                 .contains("managed development process")
-                .contains("finite tool budget");
+                .contains("finite tool budget")
+                .contains("Project scope for this run: task-board");
     }
 }

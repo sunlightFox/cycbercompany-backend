@@ -61,13 +61,26 @@ public class CodingToolAdapter {
             AvailableTool tool,
             ModelGateway.ModelToolCall call,
             ActorContext actor) {
+        return execute(runId, tool, call, actor, CodingWorkspaceScope.from(null));
+    }
+
+    public ToolExecution execute(
+            String runId,
+            AvailableTool tool,
+            ModelGateway.ModelToolCall call,
+            ActorContext actor,
+            CodingWorkspaceScope workspaceScope) {
         try {
+            Map<String, Object> scopedArguments = scopedArguments(
+                    tool.nodeToolName(),
+                    call.arguments(),
+                    workspaceScope == null ? CodingWorkspaceScope.from(null) : workspaceScope);
             NodeToolCallResult result = nodes.callToolForRun(
                     runId,
                     call.id(),
                     tool.nodeId(),
                     tool.nodeToolName(),
-                    new CallNodeToolCommand(call.arguments(), timeoutSeconds(call.arguments())),
+                    new CallNodeToolCommand(scopedArguments, timeoutSeconds(scopedArguments)),
                     actor);
             String content = serialize(Map.of(
                     "status", result.status(),
@@ -114,6 +127,34 @@ public class CodingToolAdapter {
         }
         Object value = result.result().get("approvalId");
         return value == null || value.toString().isBlank() ? null : value.toString();
+    }
+
+    private static Map<String, Object> scopedArguments(
+            String toolName,
+            Map<String, Object> arguments,
+            CodingWorkspaceScope workspaceScope) {
+        Map<String, Object> scoped = new LinkedHashMap<>(arguments == null ? Map.of() : arguments);
+        if ("fs.list".equals(toolName)
+                || "fs.read".equals(toolName)
+                || "fs.write".equals(toolName)
+                || "fs.apply_patch".equals(toolName)) {
+            scopeArgument(scoped, "path", workspaceScope);
+        }
+        if (("git.diff".equals(toolName) || "browser.screenshot".equals(toolName)) && scoped.containsKey("path")) {
+            scopeArgument(scoped, "path", workspaceScope);
+        }
+        if ("shell.run".equals(toolName) || "process.start".equals(toolName)) {
+            scopeArgument(scoped, "cwd", workspaceScope);
+        }
+        return scoped;
+    }
+
+    private static void scopeArgument(Map<String, Object> arguments, String name, CodingWorkspaceScope workspaceScope) {
+        Object value = arguments.get(name);
+        if (value != null && !(value instanceof String)) {
+            throw new IllegalArgumentException("Node tool argument '" + name + "' must be a string.");
+        }
+        arguments.put(name, workspaceScope.resolve((String) value));
     }
 
     private Map<String, Object> readSchema(String schemaJson) {

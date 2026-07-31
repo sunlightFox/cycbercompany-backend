@@ -57,13 +57,14 @@ class RunCommandServiceApprovalResumeTest {
                 run.id(),
                 ACTOR.tenantId(),
                 "node-1",
+                "task-board",
                 "approval-1",
                 "call-1",
                 mapper.writeValueAsString(persistedMessages),
                 Instant.now());
         when(continuations.findByRunIdAndTenantId(run.id(), ACTOR.tenantId())).thenReturn(Optional.of(continuation));
         when(runs.findByIdAndTenantId(run.id(), ACTOR.tenantId())).thenReturn(Optional.of(run));
-        when(codingLoop.resume(eq(run.id()), eq("model-1"), eq("node-1"), any(), eq(ACTOR)))
+        when(codingLoop.resume(eq(run.id()), eq("model-1"), eq("node-1"), any(), eq(ACTOR), any()))
                 .thenReturn("Server started and verified.");
 
         NodeToolApprovalView approval = new NodeToolApprovalView(
@@ -93,7 +94,8 @@ class RunCommandServiceApprovalResumeTest {
         verify(continuations).delete(continuation);
         verify(events).publish(run.id(), RunEventType.RUN_RESUMED, "approvalId=approval-1", ACTOR);
         ArgumentCaptor<List<ModelGateway.ModelMessage>> restored = ArgumentCaptor.forClass(List.class);
-        verify(codingLoop, timeout(2_000)).resume(eq(run.id()), eq("model-1"), eq("node-1"), restored.capture(), eq(ACTOR));
+        verify(codingLoop, timeout(2_000)).resume(
+                eq(run.id()), eq("model-1"), eq("node-1"), restored.capture(), eq(ACTOR), any());
         assertThat(restored.getValue()).anyMatch(message ->
                 "tool".equals(message.role())
                         && "call-1".equals(message.toolCallId())

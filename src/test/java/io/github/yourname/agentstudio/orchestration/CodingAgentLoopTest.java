@@ -61,7 +61,7 @@ class CodingAgentLoopTest {
                         List.of(new ModelGateway.ModelToolCall("call-1", "node_tool_7", Map.of("path", "README.md"))),
                         "tool_calls"))
                 .thenReturn(new ModelGateway.ModelAnswer("The fix is verified.", null, null, "test-model"));
-        when(tools.execute(eq("run-a"), eq(declaredTool), any(), eq(actor)))
+        when(tools.execute(eq("run-a"), eq(declaredTool), any(), eq(actor), any()))
                 .thenReturn(new CodingToolAdapter.ToolExecution(true, "{\"status\":\"SUCCEEDED\",\"result\":{}}"));
         when(tools.cleanupRun("run-a", actor)).thenReturn(List.of());
 
@@ -73,7 +73,7 @@ class CodingAgentLoopTest {
                 actor);
 
         assertThat(answer).isEqualTo("The fix is verified.");
-        verify(tools).execute(eq("run-a"), eq(declaredTool), any(), eq(actor));
+        verify(tools).execute(eq("run-a"), eq(declaredTool), any(), eq(actor), any());
         verify(events).publish("run-a", RunEventType.TOOL_CALL_COMPLETED, "tool=fs.read", actor);
 
         ArgumentCaptor<ModelGateway.ModelCompletionRequest> requests = ArgumentCaptor.forClass(ModelGateway.ModelCompletionRequest.class);
@@ -107,7 +107,7 @@ class CodingAgentLoopTest {
                         List.of(new ModelGateway.ModelToolCall("call-1", "node_tool_7", Map.of("path", "README.md"))),
                         "tool_calls"))
                 .thenReturn(new ModelGateway.ModelAnswer("Verified after retry.", null, null, "test-model"));
-        when(tools.execute(eq("run-a"), eq(declaredTool), any(), eq(actor)))
+        when(tools.execute(eq("run-a"), eq(declaredTool), any(), eq(actor), any()))
                 .thenReturn(new CodingToolAdapter.ToolExecution(true, "{\"status\":\"SUCCEEDED\"}"));
         List<Duration> delays = new ArrayList<>();
 
@@ -121,7 +121,7 @@ class CodingAgentLoopTest {
         assertThat(answer).isEqualTo("Verified after retry.");
         assertThat(delays).containsExactly(Duration.ofSeconds(2));
         verify(events).publish("run-a", RunEventType.MODEL_RATE_LIMITED, "retry=1, delaySeconds=2", actor);
-        verify(tools, times(1)).execute(eq("run-a"), eq(declaredTool), any(), eq(actor));
+        verify(tools, times(1)).execute(eq("run-a"), eq(declaredTool), any(), eq(actor), any());
     }
 
     @Test
@@ -143,7 +143,7 @@ class CodingAgentLoopTest {
                 "test-model",
                 List.of(new ModelGateway.ModelToolCall("call-approval", "node_tool_9", Map.of("command", "java App"))),
                 "tool_calls"));
-        when(tools.execute(eq("run-a"), eq(declaredTool), any(), eq(actor)))
+        when(tools.execute(eq("run-a"), eq(declaredTool), any(), eq(actor), any()))
                 .thenReturn(new CodingToolAdapter.ToolExecution(
                         false,
                         "{\"status\":\"APPROVAL_REQUIRED\"}",

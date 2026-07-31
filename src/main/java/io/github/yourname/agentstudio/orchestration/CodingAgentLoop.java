@@ -4,6 +4,7 @@ import io.github.yourname.agentstudio.model.ModelGateway;
 import io.github.yourname.agentstudio.model.ModelRateLimitException;
 import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.tool.CodingToolAdapter;
+import io.github.yourname.agentstudio.tool.CodingWorkspaceScope;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -51,7 +52,17 @@ class CodingAgentLoop {
             String nodeId,
             List<ModelGateway.ModelMessage> messages,
             ActorContext actor) {
-        return execute(runId, modelProfileId, nodeId, messages, actor, true);
+        return execute(runId, modelProfileId, nodeId, messages, actor, CodingWorkspaceScope.from(null));
+    }
+
+    String execute(
+            String runId,
+            String modelProfileId,
+            String nodeId,
+            List<ModelGateway.ModelMessage> messages,
+            ActorContext actor,
+            CodingWorkspaceScope workspaceScope) {
+        return execute(runId, modelProfileId, nodeId, messages, actor, workspaceScope, true);
     }
 
     String resume(
@@ -60,7 +71,17 @@ class CodingAgentLoop {
             String nodeId,
             List<ModelGateway.ModelMessage> messages,
             ActorContext actor) {
-        return execute(runId, modelProfileId, nodeId, messages, actor, false);
+        return resume(runId, modelProfileId, nodeId, messages, actor, CodingWorkspaceScope.from(null));
+    }
+
+    String resume(
+            String runId,
+            String modelProfileId,
+            String nodeId,
+            List<ModelGateway.ModelMessage> messages,
+            ActorContext actor,
+            CodingWorkspaceScope workspaceScope) {
+        return execute(runId, modelProfileId, nodeId, messages, actor, workspaceScope, false);
     }
 
     private String execute(
@@ -69,6 +90,7 @@ class CodingAgentLoop {
             String nodeId,
             List<ModelGateway.ModelMessage> messages,
             ActorContext actor,
+            CodingWorkspaceScope workspaceScope,
             boolean requireFirstToolCall) {
         boolean waitingForApproval = false;
         try {
@@ -129,7 +151,7 @@ class CodingAgentLoop {
                     }
                     events.publish(runId, RunEventType.TOOL_CALL_REQUESTED, "tool=" + tool.nodeToolName(), actor);
                     events.publish(runId, RunEventType.TOOL_CALL_STARTED, "tool=" + tool.nodeToolName(), actor);
-                    CodingToolAdapter.ToolExecution outcome = tools.execute(runId, tool, call, actor);
+                    CodingToolAdapter.ToolExecution outcome = tools.execute(runId, tool, call, actor, workspaceScope);
                     if (outcome.requiresApproval()) {
                         for (int deferred = callIndex + 1; deferred < calls.size(); deferred++) {
                             messages.add(ModelGateway.ModelMessage.toolResult(
