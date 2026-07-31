@@ -8,6 +8,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import io.github.yourname.agentstudio.model.ModelGateway;
@@ -22,6 +23,22 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class CodingAgentLoopTest {
+
+    @Test
+    void cancelledRunDoesNotAskTheModelOrInvokeTools() {
+        ModelGateway modelGateway = mock(ModelGateway.class);
+        CodingToolAdapter tools = mock(CodingToolAdapter.class);
+        RunExecutionRegistry executions = new RunExecutionRegistry();
+        executions.cancel("run-cancelled");
+        ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
+        CodingAgentLoop loop = new CodingAgentLoop(
+                modelGateway, tools, mock(RunEventPublisher.class), executions, duration -> { });
+
+        assertThatThrownBy(() -> loop.execute(
+                "run-cancelled", "model-a", "node-a", new java.util.ArrayList<>(), actor))
+                .hasMessageContaining("was cancelled");
+        verifyNoInteractions(modelGateway);
+    }
 
     @Test
     void rejectsAPlainTextResponseBeforeAnyCodingToolWasCalled() {

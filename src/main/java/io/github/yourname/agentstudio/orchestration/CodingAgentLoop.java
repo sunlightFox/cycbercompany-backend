@@ -28,11 +28,16 @@ class CodingAgentLoop {
     private final ModelGateway modelGateway;
     private final CodingToolAdapter tools;
     private final RunEventPublisher events;
+    private final RunExecutionRegistry executions;
     private final RetrySleeper retrySleeper;
 
     @Autowired
-    CodingAgentLoop(ModelGateway modelGateway, CodingToolAdapter tools, RunEventPublisher events) {
-        this(modelGateway, tools, events, Thread::sleep);
+    CodingAgentLoop(
+            ModelGateway modelGateway,
+            CodingToolAdapter tools,
+            RunEventPublisher events,
+            RunExecutionRegistry executions) {
+        this(modelGateway, tools, events, executions, Thread::sleep);
     }
 
     CodingAgentLoop(
@@ -40,9 +45,23 @@ class CodingAgentLoop {
             CodingToolAdapter tools,
             RunEventPublisher events,
             RetrySleeper retrySleeper) {
+        this(modelGateway, tools, events, new RunExecutionRegistry(), retrySleeper);
+    }
+
+    CodingAgentLoop(ModelGateway modelGateway, CodingToolAdapter tools, RunEventPublisher events) {
+        this(modelGateway, tools, events, new RunExecutionRegistry(), Thread::sleep);
+    }
+
+    CodingAgentLoop(
+            ModelGateway modelGateway,
+            CodingToolAdapter tools,
+            RunEventPublisher events,
+            RunExecutionRegistry executions,
+            RetrySleeper retrySleeper) {
         this.modelGateway = modelGateway;
         this.tools = tools;
         this.events = events;
+        this.executions = executions;
         this.retrySleeper = retrySleeper;
     }
 
@@ -94,6 +113,7 @@ class CodingAgentLoop {
             boolean requireFirstToolCall) {
         boolean waitingForApproval = false;
         try {
+            ensureNotCancelled(runId);
             List<CodingToolAdapter.AvailableTool> available = tools.availableTools(nodeId, actor);
             if (available.isEmpty()) {
                 throw new IllegalArgumentException("The selected node has no enabled tools approved for autonomous runs.");
@@ -110,6 +130,7 @@ class CodingAgentLoop {
             int executedCalls = requireFirstToolCall ? 0 : 1;
 
             for (int turn = 1; turn <= MAX_MODEL_TURNS; turn++) {
+                ensureNotCancelled(runId);
                 var answer = completeWithRateLimitRetry(
                     runId,
                     actor,
@@ -118,6 +139,7 @@ class CodingAgentLoop {
                             messages,
                             modelTools,
                             turn == 1 && requireFirstToolCall ? ModelGateway.ToolChoice.REQUIRED : ModelGateway.ToolChoice.AUTO));
+                ensureNotCancelled(runId);
                 List<ModelGateway.ModelToolCall> calls = normalizeCalls(answer.toolCalls());
                 if (calls.isEmpty()) {
                     if (executedCalls == 0) {
@@ -130,6 +152,7 @@ class CodingAgentLoop {
 
                 messages.add(ModelGateway.ModelMessage.assistantToolCalls(answer.content(), calls));
                 for (int callIndex = 0; callIndex < calls.size(); callIndex++) {
+                    ensureNotCancelled(runId);
                     ModelGateway.ModelToolCall call = calls.get(callIndex);
                     if (++executedCalls > MAX_TOOL_CALLS) {
                         throw new IllegalStateException("Coding run reached its maximum of " + MAX_TOOL_CALLS + " tool calls.");
@@ -208,6 +231,7 @@ class CodingAgentLoop {
             ModelGateway.ModelCompletionRequest request) {
         for (int retry = 0; ; retry++) {
             try {
+                ensureNotCancelled(runId);
                 return modelGateway.complete(request);
             } catch (ModelRateLimitException ex) {
                 if (retry >= MAX_RATE_LIMIT_RETRIES) {
@@ -227,6 +251,12 @@ class CodingAgentLoop {
                     throw new IllegalStateException("Coding run was interrupted while waiting for model rate limit recovery.", interrupted);
                 }
             }
+        }
+    }
+
+    private void ensureNotCancelled(String runId) {
+        if (executions.isCancelled(runId)) {
+            throw new CodingRunCancelledException(runId);
         }
     }
 
@@ -259,5 +289,11 @@ class CodingAgentLoop {
     @FunctionalInterface
     interface RetrySleeper {
         void sleep(Duration duration) throws InterruptedException;
+    }
+
+    private static final class CodingRunCancelledException extends RuntimeException {
+        private CodingRunCancelledException(String runId) {
+            super("Coding run was cancelled: " + runId);
+        }
     }
 }
