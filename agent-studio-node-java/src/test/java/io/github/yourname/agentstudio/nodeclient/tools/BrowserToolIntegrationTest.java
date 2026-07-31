@@ -1,6 +1,7 @@
 package io.github.yourname.agentstudio.nodeclient.tools;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
@@ -51,6 +52,9 @@ class BrowserToolIntegrationTest {
             assertTrue(tool.type("run-b", Map.of("selector", "#task-title", "text", "Other run")).success());
             assertTrue(tool.click("run-b", Map.of("selector", "#submit")).success());
             assertTrue(tool.snapshot("run-b", Map.of()).result().get("textPreview").toString().contains("Saved Other run"));
+            assertTrue(tool.snapshot("run-a", Map.of()).result().get("textPreview").toString().contains("Saved Browser E2E"));
+            assertTrue(tool.closeSession("run-b"));
+            assertFalse(tool.snapshot("run-b", Map.of()).success());
             assertTrue(tool.snapshot("run-a", Map.of()).result().get("textPreview").toString().contains("Saved Browser E2E"));
         } finally {
             server.stop(0);

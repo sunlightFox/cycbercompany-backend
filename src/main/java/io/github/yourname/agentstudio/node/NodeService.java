@@ -247,6 +247,30 @@ public class NodeService {
         return results;
     }
 
+    /** Releases browser pages created for this run without granting arbitrary browser-close access. */
+    @Transactional(readOnly = true)
+    public List<NodeToolCallResult> cleanupBrowserSessionsForRun(String runId, ActorContext actor) {
+        List<String> browserNodes = invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(actor.tenantId(), runId).stream()
+                .filter(invocation -> invocation.toolName().startsWith("browser."))
+                .map(NodeToolInvocationEntity::nodeId)
+                .distinct()
+                .toList();
+        List<NodeToolCallResult> results = new java.util.ArrayList<>();
+        for (String nodeId : browserNodes) {
+            try {
+                results.add(sessions.invoke(
+                        nodeId,
+                        "browser.close_session",
+                        Map.of(),
+                        Duration.ofSeconds(10),
+                        runId));
+            } catch (Exception ex) {
+                results.add(new NodeToolCallResult(null, nodeId, "browser.close_session", "FAILED", null, ex.getMessage()));
+            }
+        }
+        return results;
+    }
+
     @Transactional
     public NodeToolApprovalView requestToolApproval(
             String nodeId,

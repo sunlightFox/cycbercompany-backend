@@ -117,4 +117,22 @@ class NodeServiceManagedProcessCleanupTest {
         verify(sessions).invoke(eq("node-a"), eq("process.stop"), arguments.capture(), eq(Duration.ofSeconds(30)), eq("run-a"));
         assertThat(arguments.getValue()).containsEntry("processId", "proc-approved");
     }
+
+    @Test
+    void closesOnlyBrowserSessionsUsedByTheSameRun() {
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+        NodeToolInvocationEntity browserOpen = new NodeToolInvocationEntity(
+                "nodeinv-browser", ACTOR.tenantId(), "run-a", "call-browser", "node-browser", "browser.open", "{}", now);
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(browserOpen));
+        when(sessions.invoke(eq("node-browser"), eq("browser.close_session"), any(), eq(Duration.ofSeconds(10)), eq("run-a")))
+                .thenReturn(new NodeToolCallResult(
+                        "remote-browser", "node-browser", "browser.close_session", "SUCCEEDED", Map.of("closed", true), null));
+
+        NodeService service = new NodeService(nodes, tokens, tools, invocations, approvals, sessions, new ObjectMapper());
+
+        assertThat(service.cleanupBrowserSessionsForRun("run-a", ACTOR)).singleElement()
+                .extracting(NodeToolCallResult::toolName).isEqualTo("browser.close_session");
+        verify(sessions).invoke(eq("node-browser"), eq("browser.close_session"), eq(Map.of()), eq(Duration.ofSeconds(10)), eq("run-a"));
+    }
 }

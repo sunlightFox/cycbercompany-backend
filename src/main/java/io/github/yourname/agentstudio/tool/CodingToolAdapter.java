@@ -108,9 +108,12 @@ public class CodingToolAdapter {
 
     /** Stops only managed processes the backend recorded for this run. */
     public List<CleanupResult> cleanupRun(String runId, ActorContext actor) {
-        return nodes.cleanupManagedProcessesForRun(runId, actor).stream()
+        return java.util.stream.Stream.concat(
+                        nodes.cleanupManagedProcessesForRun(runId, actor).stream(),
+                        nodes.cleanupBrowserSessionsForRun(runId, actor).stream())
                 .map(result -> new CleanupResult(
                         result.nodeId(),
+                        result.toolName(),
                         "SUCCEEDED".equalsIgnoreCase(result.status()),
                         result.errorMessage()))
                 .toList();
@@ -233,6 +236,6 @@ public class CodingToolAdapter {
         }
     }
 
-    public record CleanupResult(String nodeId, boolean succeeded, String errorMessage) {
+    public record CleanupResult(String nodeId, String toolName, boolean succeeded, String errorMessage) {
     }
 }

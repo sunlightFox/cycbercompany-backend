@@ -211,11 +211,24 @@ public class BrowserTool implements AutoCloseable {
         sessions.clear();
     }
 
+    /** Closes only one backend-owned execution session. It is not exposed as a model tool. */
+    public synchronized boolean closeSession(String executionSessionId) {
+        BrowserSession session = sessions.remove(sessionKey(executionSessionId));
+        if (session == null) {
+            return false;
+        }
+        closeSession(session);
+        return true;
+    }
+
     private BrowserSession session(String executionSessionId) {
-        String key = executionSessionId == null || executionSessionId.isBlank()
+        return sessions.computeIfAbsent(sessionKey(executionSessionId), ignored -> new BrowserSession());
+    }
+
+    private static String sessionKey(String executionSessionId) {
+        return executionSessionId == null || executionSessionId.isBlank()
                 ? DEFAULT_SESSION_ID
                 : executionSessionId;
-        return sessions.computeIfAbsent(key, ignored -> new BrowserSession());
     }
 
     private static void closeSession(BrowserSession session) {

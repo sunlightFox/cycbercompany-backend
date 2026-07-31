@@ -41,4 +41,15 @@ class ToolRegistryTest {
         assertEquals(java.util.List.of("query"), capability.inputSchema().get("required"));
         registry.close();
     }
+
+    @Test
+    void acceptsTheBackendOnlyBrowserSessionCleanupCommand() throws Exception {
+        ToolRegistry registry = new ToolRegistry(HttpClient.newHttpClient(), Files.createTempDirectory("agent-studio-tools"));
+
+        var result = registry.execute("browser.close_session", Map.of(), "run-1");
+
+        assertTrue(result.success());
+        assertEquals(false, result.result().get("closed"));
+        registry.close();
+    }
 }

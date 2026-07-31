@@ -196,6 +196,9 @@ public class ToolRegistry {
 
     /** executionSessionId is transport metadata used only by stateful local tools. */
     public ToolExecutionResult execute(String toolName, Map<String, Object> arguments, String executionSessionId) {
+        if ("browser.close_session".equals(toolName)) {
+            return ToolExecutionResult.success(Map.of("closed", browserTool.closeSession(executionSessionId)));
+        }
         if ("fs.list".equals(toolName)) {
             return fileTool == null
                     ? ToolExecutionResult.failure("fs.list is unavailable because this node has no configured workspace.")

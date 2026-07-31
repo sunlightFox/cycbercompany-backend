@@ -213,11 +213,12 @@ class CodingAgentLoop {
     void cleanupManagedProcesses(String runId, ActorContext actor) {
         try {
             for (CodingToolAdapter.CleanupResult result : tools.cleanupRun(runId, actor)) {
-                events.publish(runId, RunEventType.TOOL_CALL_STARTED, "tool=process.stop cleanup", actor);
+                String detail = "tool=" + result.toolName() + " cleanup";
+                events.publish(runId, RunEventType.TOOL_CALL_STARTED, detail, actor);
                 events.publish(
                         runId,
                         result.succeeded() ? RunEventType.TOOL_CALL_COMPLETED : RunEventType.TOOL_CALL_FAILED,
-                        "tool=process.stop cleanup" + (result.errorMessage() == null ? "" : ", error=" + result.errorMessage()),
+                        detail + (result.errorMessage() == null ? "" : ", error=" + result.errorMessage()),
                         actor);
             }
         } catch (Exception ignored) {
