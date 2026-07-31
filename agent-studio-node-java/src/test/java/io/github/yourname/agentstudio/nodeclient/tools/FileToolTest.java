@@ -27,6 +27,7 @@ class FileToolTest {
         assertTrue(patch.success());
         assertTrue(read.success());
         assertTrue(read.result().get("content").toString().contains("left + right"));
+        assertTrue(read.result().get("path").toString().equals("src/Calculator.java"));
     }
 
     @Test
@@ -76,5 +77,20 @@ class FileToolTest {
         assertTrue(Boolean.TRUE.equals(bounded.result().get("truncated")));
         assertFalse(outside.success());
         assertTrue(outside.errorMessage().contains("configured workspace"));
+    }
+
+    @Test
+    void readsOnlyTheRequestedLineRangeFromALargeSourceFile() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-node-read-range");
+        Files.writeString(workspace.resolve("Example.java"), "line one\nline two\nline three\nline four\n");
+        FileTool tool = new FileTool(workspace);
+
+        var result = tool.read(Map.of("path", "Example.java", "startLine", 2, "endLine", 3));
+
+        assertTrue(result.success());
+        assertTrue(result.result().get("content").toString().equals("line two\nline three"));
+        assertTrue(result.result().get("path").toString().equals("Example.java"));
+        assertTrue(Integer.valueOf(2).equals(result.result().get("startLine")));
+        assertTrue(Integer.valueOf(3).equals(result.result().get("endLine")));
     }
 }

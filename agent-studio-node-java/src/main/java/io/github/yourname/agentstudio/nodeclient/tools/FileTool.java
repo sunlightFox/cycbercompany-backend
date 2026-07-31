@@ -19,6 +19,7 @@ import java.util.Map;
 public final class FileTool {
 
     private static final int MAX_READ_BYTES = 1_024 * 1_024;
+    private static final int MAX_READ_RANGE_LINES = 2_000;
     private static final int MAX_LIST_ENTRIES = 200;
     private static final int MAX_SEARCH_QUERY_CHARS = 512;
     private static final int MAX_SEARCH_RESULTS = 200;
@@ -65,6 +66,11 @@ public final class FileTool {
             if (!Files.isRegularFile(file)) {
                 return ToolExecutionResult.failure("fs.read requires a regular file: " + file);
             }
+            Integer startLine = optionalPositiveInteger(arguments, "startLine");
+            Integer endLine = optionalPositiveInteger(arguments, "endLine");
+            if (startLine != null || endLine != null) {
+                return readLineRange(file, startLine == null ? 1 : startLine, endLine);
+            }
             long size = Files.size(file);
             byte[] bytes;
             try (var stream = Files.newInputStream(file)) {
@@ -74,7 +80,7 @@ public final class FileTool {
             int length = truncated ? MAX_READ_BYTES : bytes.length;
             String content = new String(bytes, 0, length, StandardCharsets.UTF_8);
             return ToolExecutionResult.success(Map.of(
-                    "path", file.toString(),
+                    "path", workspaceRelative(file),
                     "content", content,
                     "sizeBytes", size,
                     "truncated", truncated));
@@ -171,7 +177,7 @@ public final class FileTool {
             Files.writeString(file, content, StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
             return ToolExecutionResult.success(Map.of(
-                    "path", file.toString(),
+                    "path", workspaceRelative(file),
                     "created", !existed,
                     "sizeBytes", Files.size(file)));
         } catch (Exception ex) {
@@ -206,7 +212,7 @@ public final class FileTool {
             Files.writeString(file, patched, StandardCharsets.UTF_8,
                     StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
             return ToolExecutionResult.success(Map.of(
-                    "path", file.toString(),
+                    "path", workspaceRelative(file),
                     "replacements", 1,
                     "sizeBytes", Files.size(file)));
         } catch (Exception ex) {
@@ -227,6 +233,48 @@ public final class FileTool {
             throw new IllegalArgumentException("Path is not a directory: " + realPath);
         }
         return realPath;
+    }
+
+    private ToolExecutionResult readLineRange(Path file, int startLine, Integer requestedEndLine) throws IOException {
+        int endLine = requestedEndLine == null ? startLine + 399 : requestedEndLine;
+        if (endLine < startLine) {
+            return ToolExecutionResult.failure("endLine must be greater than or equal to startLine.");
+        }
+        if (endLine - startLine + 1 > MAX_READ_RANGE_LINES) {
+            return ToolExecutionResult.failure("Requested line range exceeds " + MAX_READ_RANGE_LINES + " lines.");
+        }
+        StringBuilder content = new StringBuilder();
+        int actualEndLine = startLine - 1;
+        boolean outputTruncated = false;
+        try (var reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            String line;
+            for (int lineNumber = 1; (line = reader.readLine()) != null; lineNumber++) {
+                if (lineNumber < startLine) {
+                    continue;
+                }
+                if (lineNumber > endLine) {
+                    break;
+                }
+                if (content.length() + line.length() + 1 > MAX_READ_BYTES) {
+                    outputTruncated = true;
+                    break;
+                }
+                if (!content.isEmpty()) {
+                    content.append('\n');
+                }
+                content.append(line);
+                actualEndLine = lineNumber;
+            }
+        }
+        if (actualEndLine < startLine) {
+            return ToolExecutionResult.failure("Requested startLine is beyond the end of file: " + startLine);
+        }
+        return ToolExecutionResult.success(Map.of(
+                "path", workspaceRelative(file),
+                "content", content.toString(),
+                "startLine", startLine,
+                "endLine", actualEndLine,
+                "truncated", outputTruncated));
     }
 
     private Path resolveForWrite(String requested) throws IOException {
@@ -274,7 +322,8 @@ public final class FileTool {
     }
 
     private String workspaceRelative(Path path) {
-        return workspaceRoot.relativize(path).toString().replace('\\', '/');
+        String relative = workspaceRoot.relativize(path).toString().replace('\\', '/');
+        return relative.isBlank() ? "." : relative;
     }
 
     private boolean ignoredSearchPath(Path path) {
@@ -319,6 +368,22 @@ public final class FileTool {
         }
     }
 
+    private static Integer optionalPositiveInteger(Map<String, Object> arguments, String key) {
+        String value = value(arguments, key);
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            int parsed = Integer.parseInt(value);
+            if (parsed < 1) {
+                throw new IllegalArgumentException(key + " must be a positive integer.");
+            }
+            return parsed;
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException(key + " must be an integer.");
+        }
+    }
+
     private static String preview(String value) {
         String normalized = value == null ? "" : value.trim();
         return normalized.length() <= MAX_SEARCH_LINE_CHARS
@@ -330,7 +395,7 @@ public final class FileTool {
         try {
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("name", path.getFileName().toString());
-            result.put("path", path.toRealPath().toString());
+            result.put("path", workspaceRelative(path));
             result.put("type", Files.isDirectory(path) ? "directory" : "file");
             if (Files.isRegularFile(path)) {
                 result.put("sizeBytes", Files.size(path));

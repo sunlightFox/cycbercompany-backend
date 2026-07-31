@@ -37,6 +37,7 @@ class RunCommandSystemPromptTest {
                 .contains("unrelated samples")
                 .contains("managed development process")
                 .contains("fs.search")
+                .contains("startLine")
                 .contains("finite tool budget")
                 .contains("Project scope for this run: task-board");
     }

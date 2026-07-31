@@ -51,7 +51,9 @@ public class ToolRegistry {
                         fileTool != null,
                         false,
                         objectSchema(Map.of(
-                                "path", Map.of("type", "string")), "path")),
+                                "path", Map.of("type", "string"),
+                                "startLine", Map.of("type", "integer"),
+                                "endLine", Map.of("type", "integer")), "path")),
                 new NodeCapability(
                         "fs.read",
                         "Read a text file under an allowed workspace path.",
