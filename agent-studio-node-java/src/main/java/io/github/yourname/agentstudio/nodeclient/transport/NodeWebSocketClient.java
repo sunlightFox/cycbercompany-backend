@@ -37,9 +37,12 @@ public class NodeWebSocketClient implements WebSocket.Listener {
     private final ToolRegistry toolRegistry;
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     private final java.util.concurrent.ExecutorService toolExecutor = Executors.newVirtualThreadPerTaskExecutor();
-    private final CountDownLatch closed = new CountDownLatch(1);
     private final Object sendLock = new Object();
+    private final StringBuilder incomingMessage = new StringBuilder();
     private volatile WebSocket webSocket;
+    private volatile CountDownLatch disconnected = new CountDownLatch(1);
+    private volatile java.util.concurrent.ScheduledFuture<?> heartbeatTask;
+    private volatile boolean stopping;
 
     public NodeWebSocketClient(ObjectMapper objectMapper, HttpClient httpClient, NodeConfig config, SystemInfo systemInfo) {
         this.objectMapper = objectMapper;
@@ -51,19 +54,32 @@ public class NodeWebSocketClient implements WebSocket.Listener {
 
     public void startBlocking() throws Exception {
         // 命令行程序保持前台运行，直到连接关闭，便于服务管理工具观察节点状态。
-        URI uri = websocketUri();
-        System.out.println("Connecting to " + uri);
-        this.webSocket = httpClient.newWebSocketBuilder()
-                .buildAsync(uri, this)
-                .join();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             // 先停止心跳，再发送关闭帧，降低服务端长期显示 ONLINE 的概率。
-            scheduler.shutdownNow();
+            stopping = true;
+            cancelHeartbeat();
             if (webSocket != null) {
                 webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "node shutdown");
             }
         }));
-        closed.await();
+        int retrySeconds = 1;
+        while (!stopping) {
+            disconnected = new CountDownLatch(1);
+            try {
+                URI uri = websocketUri();
+                System.out.println("Connecting to " + uri);
+                this.webSocket = httpClient.newWebSocketBuilder().buildAsync(uri, this).join();
+                retrySeconds = 1;
+                disconnected.await();
+            } catch (Exception ex) {
+                System.err.println("WebSocket connection failed: " + ex.getMessage());
+            }
+            if (!stopping) {
+                System.out.println("Reconnecting in " + retrySeconds + " seconds.");
+                Thread.sleep(TimeUnit.SECONDS.toMillis(retrySeconds));
+                retrySeconds = Math.min(retrySeconds * 2, 30);
+            }
+        }
     }
 
     @Override
@@ -75,9 +91,19 @@ public class NodeWebSocketClient implements WebSocket.Listener {
 
     @Override
     public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
-        System.out.println("Received: " + data);
+        String message;
+        synchronized (incomingMessage) {
+            incomingMessage.append(data);
+            if (!last) {
+                webSocket.request(1);
+                return null;
+            }
+            message = incomingMessage.toString();
+            incomingMessage.setLength(0);
+        }
+        System.out.println("Received: " + message);
         try {
-            var root = objectMapper.readTree(data.toString());
+            var root = objectMapper.readTree(message);
             String type = root.path("type").asText("");
             if ("node.accepted".equals(type)) {
                 // 认证通过后才上报本机工具能力，避免未认证连接泄露能力列表。
@@ -105,29 +131,36 @@ public class NodeWebSocketClient implements WebSocket.Listener {
     @Override
     public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
         System.out.println("WebSocket closed: " + statusCode + " " + reason);
-        scheduler.shutdownNow();
-        toolExecutor.shutdownNow();
-        closed.countDown();
+        cancelHeartbeat();
+        disconnected.countDown();
         return null;
     }
 
     @Override
     public void onError(WebSocket webSocket, Throwable error) {
         System.err.println("WebSocket error: " + error.getMessage());
-        scheduler.shutdownNow();
-        toolExecutor.shutdownNow();
-        closed.countDown();
+        cancelHeartbeat();
+        disconnected.countDown();
     }
 
     private void startHeartbeat() {
         // 心跳失败只记日志，连接层最终会通过 onError/onClose 收敛状态。
-        scheduler.scheduleAtFixedRate(() -> {
+        cancelHeartbeat();
+        heartbeatTask = scheduler.scheduleAtFixedRate(() -> {
             try {
                 send(heartbeatPayload());
             } catch (Exception ex) {
                 System.err.println("Heartbeat failed: " + ex.getMessage());
             }
         }, 0, 20, TimeUnit.SECONDS);
+    }
+
+    private void cancelHeartbeat() {
+        var task = heartbeatTask;
+        if (task != null) {
+            task.cancel(true);
+            heartbeatTask = null;
+        }
     }
 
     private void sendCapabilities() throws Exception {
