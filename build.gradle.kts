@@ -24,6 +24,7 @@ dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-security")
 	implementation("org.springframework.boot:spring-boot-starter-validation")
 	implementation("org.springframework.boot:spring-boot-starter-webmvc")
+	implementation("org.springframework.boot:spring-boot-starter-websocket")
 	implementation("org.springframework.modulith:spring-modulith-starter-core:2.1.0")
 	implementation("com.fasterxml.jackson.core:jackson-databind")
 	implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")

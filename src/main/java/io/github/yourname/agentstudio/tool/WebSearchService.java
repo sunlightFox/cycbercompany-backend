@@ -22,17 +22,13 @@ import org.jsoup.parser.Parser;
 import org.springframework.stereotype.Service;
 
 /**
- * Performs low-risk web search for the local agent runtime.
+ * 为本地 Agent 提供低风险、尽力而为的联网检索。
  *
- * <p>This service deliberately avoids requiring another paid search API key for
- * the learning/demo version. News/current-information queries use Google News
- * RSS first because it is stable and machine-readable. General web queries use
- * DuckDuckGo HTML as a best-effort fallback, but bot-challenge pages are
- * detected and ignored.
+ * <p>学习版不要求额外申请付费搜索 Key：新闻类请求优先使用可机器读取的 Bing News RSS，
+ * 普通检索使用 DuckDuckGo HTML，并在被反爬挑战页拦截时切换备用来源。
  *
- * <p>Search results are treated as untrusted evidence: they may help the model
- * answer, but they do not override platform instructions, tenant identity, or
- * tool policy.
+ * <p>检索结果只是“不可信外部证据”：它们可以辅助模型回答，但绝不能覆盖系统提示词、
+ * 租户身份或工具权限策略。这是把网页内容放入提示词时必须保留的安全边界。
  */
 @Service
 public class WebSearchService {
@@ -66,6 +62,7 @@ public class WebSearchService {
         int limit = resolveLimit(command, config);
         String query = command.query().trim();
 
+        // 逐个供应商尝试并记录失败原因；只有全部失败才向调用方报告，避免单点不稳定。
         List<Exception> failures = new ArrayList<>();
         if (isNewsLikeQuery(query)) {
             List<WebSearchResult> newsResults = tryProvider(() -> searchBingNews(query, limit, true), failures);
@@ -110,6 +107,7 @@ public class WebSearchService {
             return List.of();
         }
         String normalizedHtml = html.toLowerCase(Locale.ROOT);
+        // HTML 端点可能返回 HTTP 200 的验证码页面，必须识别，否则会把无意义页面当作“没有结果”。
         if (normalizedHtml.contains("anomaly-modal")
                 || normalizedHtml.contains("unfortunately, bots use duckduckgo too")
                 || normalizedHtml.contains("challenge-form")) {
@@ -141,6 +139,7 @@ public class WebSearchService {
     }
 
     private List<WebSearchResult> searchCuratedNewsFeeds(int limit) {
+        // LinkedHashMap 以 URL 去重且保持首次出现顺序，输出给模型时更稳定。
         Map<String, WebSearchResult> deduplicated = new LinkedHashMap<>();
         for (var feed : CURATED_NEWS_FEEDS.entrySet()) {
             try {
@@ -154,8 +153,7 @@ public class WebSearchService {
                     }
                 }
             } catch (Exception ignored) {
-                // Public RSS feeds are best-effort. One slow or blocked feed
-                // should not prevent the remaining feeds from supplying evidence.
+                // 公共 RSS 只是备用证据源，一个源超时或被封不应阻断其余源。
             }
         }
         return List.copyOf(deduplicated.values());
@@ -174,6 +172,7 @@ public class WebSearchService {
                     String source = item.selectFirst("source") == null ? "" : item.selectFirst("source").text();
                     String pubDate = item.selectFirst("pubDate") == null ? "" : item.selectFirst("pubDate").text();
                     if (freshOnly && !isFreshPublicationDate(pubDate)) {
+                        // 新闻意图优先时，宁可少给结果也不把陈旧信息伪装成最新资讯。
                         return null;
                     }
                     String snippet = (source.isBlank() ? "" : "source=" + source)
@@ -198,6 +197,7 @@ public class WebSearchService {
             }
             return response.body();
         } catch (InterruptedException ex) {
+            // 恢复中断标记，让上层线程池或调用方仍可感知取消请求。
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Interrupted while requesting " + url, ex);
         } catch (Exception ex) {
@@ -230,6 +230,7 @@ public class WebSearchService {
         }
         try {
             Instant publishedAt = DateTimeFormatter.RFC_1123_DATE_TIME.parse(pubDate, Instant::from);
+            // 48 小时是演示版的“近期”窗口；生产环境通常应按业务场景配置。
             return !publishedAt.isBefore(Instant.now().minus(Duration.ofHours(48)));
         } catch (DateTimeParseException ex) {
             return false;

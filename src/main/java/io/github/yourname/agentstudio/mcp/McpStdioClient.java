@@ -21,12 +21,11 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.stereotype.Service;
 
 /**
- * Minimal JSON-RPC client for MCP servers that use STDIO transport.
+ * 面向 STDIO MCP Server 的最小 JSON-RPC 客户端。
  *
- * <p>MCP's STDIO transport is line-delimited JSON-RPC. This implementation is
- * intentionally small and process-per-operation: it is slower than a pooled
- * connection, but much safer for a local learning backend because every call is
- * bounded by a timeout and the child process is torn down afterwards.
+ * <p>MCP 的 STDIO 传输以“一行一个 JSON-RPC 消息”的方式在子进程标准输入/输出间通信。
+ * 这里采取“一次操作启动一个进程”的保守策略：虽然比复用连接慢，但每次调用都能设置时限、
+ * 清理子进程，更适合本地学习项目理解生命周期与安全边界。
  */
 @Service
 class McpStdioClient {
@@ -44,6 +43,7 @@ class McpStdioClient {
     }
 
     List<UpsertMcpToolCommand> listTools(McpConnectionService.McpRuntimeConnection connection) {
+        // 先发 tools/list，再把远端描述转换为本地可编辑的工具元数据。
         return withSession(connection, session -> {
             JsonNode result = session.request("tools/list", Map.of(), STARTUP_TIMEOUT);
             List<UpsertMcpToolCommand> tools = new ArrayList<>();
@@ -74,6 +74,7 @@ class McpStdioClient {
             params.put("name", toolName);
             params.put("arguments", arguments == null ? Map.of() : arguments);
             JsonNode result = session.request("tools/call", params, CALL_TIMEOUT);
+            // MCP 的业务失败通常写在 result.isError，而非 JSON-RPC 的 error 字段。
             boolean isError = result.path("isError").asBoolean(false);
             List<Map<String, Object>> content = new ArrayList<>();
             StringBuilder text = new StringBuilder();
@@ -106,6 +107,7 @@ class McpStdioClient {
             List<String> command = new ArrayList<>();
             command.add(connection.command());
             command.addAll(connection.args());
+            // ProcessBuilder 接受分词后的列表，避免经 shell 拼接命令而引入转义和注入问题。
             ProcessBuilder builder = new ProcessBuilder(command);
             builder.environment().putAll(connection.env());
             builder.redirectErrorStream(false);
@@ -123,6 +125,7 @@ class McpStdioClient {
     }
 
     private void initialize(Session session) {
+        // MCP 协议要求先 initialize 成功，再发送 initialized 通知，才能调用 tools/* 方法。
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("protocolVersion", "2024-11-05");
         params.put("capabilities", Map.of());
@@ -136,7 +139,7 @@ class McpStdioClient {
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8))) {
                 while (reader.readLine() != null) {
-                    // Drain only. Many MCP servers log to stderr; not draining can deadlock the child process.
+                    // 只排空不解析。大量 stderr 日志若无人读取会填满管道并卡住子进程。
                 }
             } catch (IOException ignored) {
                 // Process is usually being destroyed when this happens.
@@ -150,6 +153,7 @@ class McpStdioClient {
         }
         process.destroy();
         try {
+            // 先给进程一个正常退出窗口，超时后才强制终止，降低留下孤儿进程的概率。
             if (!process.waitFor(3, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
             }
@@ -195,6 +199,7 @@ class McpStdioClient {
         }
 
         JsonNode request(String method, Map<String, Object> params, Duration timeout) {
+            // id 将请求与响应配对；即使服务端期间穿插通知，也只接收自己的响应。
             long id = ids.getAndIncrement();
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("jsonrpc", "2.0");
@@ -245,6 +250,7 @@ class McpStdioClient {
                         return reader.readLine();
                     }
                     if (!process.isAlive()) {
+                        // 子进程提前退出比“等待到超时”更有诊断价值，立即反馈给调用方。
                         throw new IllegalStateException("MCP process exited before sending a response.");
                     }
                     Thread.sleep(25);

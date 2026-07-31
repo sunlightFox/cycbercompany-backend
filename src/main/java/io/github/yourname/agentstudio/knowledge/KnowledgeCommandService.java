@@ -2,6 +2,8 @@ package io.github.yourname.agentstudio.knowledge;
 
 import io.github.yourname.agentstudio.security.ActorContext;
 import java.nio.charset.StandardCharsets;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
@@ -9,27 +11,49 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import org.jsoup.Jsoup;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 /**
- * Knowledge write facade.
+ * 知识库写入服务：负责创建知识库、摄取文档、删除文档/知识库。
  *
- * <p>This first version uses a simple text chunk index in H2. The important
- * architectural rule is already present: tenant filtering and idempotency are
- * enforced before evidence can ever reach the model prompt.
+ * <p>重要原则：所有写操作都必须带 ActorContext，并且按 tenantId 过滤。这样模型提示词、
+ * MCP 参数或前端传来的任意 id，都不能越权访问其他租户的数据。
  */
 @Service
 public class KnowledgeCommandService {
 
+    /**
+     * 单块最大字符数。这里先用字符长度实现，后续接 tokenizer 后可以改成 token 数。
+     */
     private static final int CHUNK_SIZE = 1_200;
 
-    private final KnowledgeBaseRepository bases;
-    private final KnowledgeChunkRepository chunks;
+    /**
+     * 相邻 chunk 的重叠字符数。重叠能减少“答案刚好跨两个 chunk 边界”导致召回失败的问题。
+     */
+    private static final int CHUNK_OVERLAP = 160;
+    private static final Pattern OPENXML_TEXT_NODE = Pattern.compile("<(?:[A-Za-z0-9]+:)?t[^>]*>(.*?)</(?:[A-Za-z0-9]+:)?t>");
 
-    public KnowledgeCommandService(KnowledgeBaseRepository bases, KnowledgeChunkRepository chunks) {
+    private final KnowledgeBaseRepository bases;
+    private final KnowledgeDocumentRepository documents;
+    private final KnowledgeChunkRepository chunks;
+    private final KnowledgeEmbeddingService embeddings;
+
+    public KnowledgeCommandService(
+            KnowledgeBaseRepository bases,
+            KnowledgeDocumentRepository documents,
+            KnowledgeChunkRepository chunks,
+            KnowledgeEmbeddingService embeddings) {
         this.bases = bases;
+        this.documents = documents;
         this.chunks = chunks;
+        this.embeddings = embeddings;
     }
 
     @Transactional
@@ -44,35 +68,290 @@ public class KnowledgeCommandService {
     }
 
     @Transactional
+    public KnowledgeBaseView update(String knowledgeBaseId, UpdateKnowledgeBaseCommand command, ActorContext actor) {
+        KnowledgeBaseEntity base = requireBase(knowledgeBaseId, actor);
+        base.update(command.name().trim(), command.description());
+        return KnowledgeBaseView.from(
+                bases.save(base),
+                documents.countByTenantIdAndKnowledgeBaseId(actor.tenantId(), knowledgeBaseId),
+                chunks.countByTenantIdAndKnowledgeBaseId(actor.tenantId(), knowledgeBaseId));
+    }
+
+    @Transactional
     public IngestionResult ingest(String knowledgeBaseId, IngestDocumentCommand command, ActorContext actor) {
-        bases.findByIdAndTenantId(knowledgeBaseId, actor.tenantId())
-                .orElseThrow(() -> new IllegalArgumentException("Knowledge base not found: " + knowledgeBaseId));
-        String hash = sha256(actor.tenantId() + ":" + knowledgeBaseId + ":" + command.sourceName() + ":" + command.content());
-        if (chunks.existsByTenantIdAndKnowledgeBaseIdAndContentHash(actor.tenantId(), knowledgeBaseId, hash)) {
-            return new IngestionResult(knowledgeBaseId, command.sourceName(), 0, true);
+        return ingestText(
+                knowledgeBaseId,
+                command.sourceName(),
+                command.content(),
+                "text/plain",
+                actor);
+    }
+
+    @Transactional
+    public IngestionResult ingestFile(String knowledgeBaseId, MultipartFile file, ActorContext actor) {
+        if (file == null || file.isEmpty()) {
+            throw new IllegalArgumentException("Uploaded file is empty.");
+        }
+        try {
+            String sourceName = file.getOriginalFilename() == null || file.getOriginalFilename().isBlank()
+                    ? "uploaded-file"
+                    : file.getOriginalFilename();
+            String contentType = file.getContentType() == null ? "application/octet-stream" : file.getContentType();
+            String content = extractText(sourceName, contentType, file.getBytes());
+            return ingestText(knowledgeBaseId, sourceName, content, contentType, actor);
+        } catch (Exception ex) {
+            throw new IllegalStateException("Failed to ingest uploaded file: " + ex.getMessage(), ex);
+        }
+    }
+
+    @Transactional
+    public void deleteKnowledgeBase(String knowledgeBaseId, ActorContext actor) {
+        KnowledgeBaseEntity base = requireBase(knowledgeBaseId, actor);
+        chunks.deleteByTenantIdAndKnowledgeBaseId(actor.tenantId(), knowledgeBaseId);
+        documents.deleteByTenantIdAndKnowledgeBaseId(actor.tenantId(), knowledgeBaseId);
+        bases.delete(base);
+    }
+
+    @Transactional
+    public void deleteDocument(String knowledgeBaseId, String documentId, ActorContext actor) {
+        requireBase(knowledgeBaseId, actor);
+        KnowledgeDocumentEntity document = documents.findByIdAndTenantIdAndKnowledgeBaseId(
+                        documentId, actor.tenantId(), knowledgeBaseId)
+                .orElseThrow(() -> new IllegalArgumentException("Knowledge document not found: " + documentId));
+        chunks.deleteByTenantIdAndKnowledgeBaseIdAndDocumentId(actor.tenantId(), knowledgeBaseId, document.id());
+        documents.delete(document);
+    }
+
+    @Transactional
+    public RebuildIndexResult rebuildDocument(String knowledgeBaseId, String documentId, ActorContext actor) {
+        requireBase(knowledgeBaseId, actor);
+        KnowledgeDocumentEntity document = documents.findByIdAndTenantIdAndKnowledgeBaseId(
+                        documentId, actor.tenantId(), knowledgeBaseId)
+                .orElseThrow(() -> new IllegalArgumentException("Knowledge document not found: " + documentId));
+        if (document.extractedText() == null || document.extractedText().isBlank()) {
+            throw new IllegalArgumentException("Document cannot be rebuilt because extracted text was not stored: " + documentId);
+        }
+        int count = rebuildChunks(document, actor);
+        return new RebuildIndexResult(knowledgeBaseId, documentId, 1, count);
+    }
+
+    @Transactional
+    public RebuildIndexResult rebuildKnowledgeBase(String knowledgeBaseId, ActorContext actor) {
+        requireBase(knowledgeBaseId, actor);
+        int rebuiltDocuments = 0;
+        int totalChunks = 0;
+        for (KnowledgeDocumentEntity document : documents.findByTenantIdAndKnowledgeBaseIdOrderByCreatedAtDesc(
+                actor.tenantId(), knowledgeBaseId)) {
+            if (document.extractedText() == null || document.extractedText().isBlank()) {
+                continue;
+            }
+            totalChunks += rebuildChunks(document, actor);
+            rebuiltDocuments++;
+        }
+        return new RebuildIndexResult(knowledgeBaseId, null, rebuiltDocuments, totalChunks);
+    }
+
+    @Transactional
+    public KnowledgeStatsView clearDocuments(String knowledgeBaseId, ActorContext actor) {
+        requireBase(knowledgeBaseId, actor);
+        chunks.deleteByTenantIdAndKnowledgeBaseId(actor.tenantId(), knowledgeBaseId);
+        documents.deleteByTenantIdAndKnowledgeBaseId(actor.tenantId(), knowledgeBaseId);
+        return new KnowledgeStatsView(knowledgeBaseId, 0, 0);
+    }
+
+    private IngestionResult ingestText(
+            String knowledgeBaseId,
+            String sourceName,
+            String rawContent,
+            String contentType,
+            ActorContext actor) {
+        requireBase(knowledgeBaseId, actor);
+        String content = normalizeText(rawContent);
+        if (content.isBlank()) {
+            throw new IllegalArgumentException("Document content is blank after text extraction.");
         }
 
-        List<String> split = splitIntoChunks(command.content());
+        String hash = sha256(actor.tenantId() + ":" + knowledgeBaseId + ":" + sourceName + ":" + content);
+        if (documents.existsByTenantIdAndKnowledgeBaseIdAndContentHash(actor.tenantId(), knowledgeBaseId, hash)) {
+            return new IngestionResult(knowledgeBaseId, null, sourceName, 0, true);
+        }
+
+        String documentId = UUID.randomUUID().toString();
+        List<String> split = splitIntoChunks(content);
+        Instant now = Instant.now();
+        documents.save(new KnowledgeDocumentEntity(
+                documentId,
+                actor.tenantId(),
+                knowledgeBaseId,
+                sourceName,
+                hash,
+                contentType,
+                content.length(),
+                split.size(),
+                now,
+                summarize(content),
+                content));
+
         for (int i = 0; i < split.size(); i++) {
+            String chunkContent = split.get(i);
+            // 如果配置了 embedding 模型，这里会为每个 chunk 生成向量；没有配置时返回 null，保持关键词检索可用。
+            String embeddingVector = embeddings.embedForStorage(chunkContent).orElse(null);
             chunks.save(new KnowledgeChunkEntity(
                     actor.tenantId(),
                     knowledgeBaseId,
-                    command.sourceName(),
+                    documentId,
+                    sourceName,
                     hash,
                     i,
-                    split.get(i),
-                    Instant.now()));
+                    chunkContent,
+                    embeddingVector,
+                    now));
         }
-        return new IngestionResult(knowledgeBaseId, command.sourceName(), split.size(), false);
+        return new IngestionResult(knowledgeBaseId, documentId, sourceName, split.size(), false);
+    }
+
+    private int rebuildChunks(KnowledgeDocumentEntity document, ActorContext actor) {
+        chunks.deleteByTenantIdAndKnowledgeBaseIdAndDocumentId(actor.tenantId(), document.knowledgeBaseId(), document.id());
+        List<String> split = splitIntoChunks(document.extractedText());
+        Instant now = Instant.now();
+        for (int i = 0; i < split.size(); i++) {
+            String chunkContent = split.get(i);
+            String embeddingVector = embeddings.embedForStorage(chunkContent).orElse(null);
+            chunks.save(new KnowledgeChunkEntity(
+                    actor.tenantId(),
+                    document.knowledgeBaseId(),
+                    document.id(),
+                    document.sourceName(),
+                    document.contentHash(),
+                    i,
+                    chunkContent,
+                    embeddingVector,
+                    now));
+        }
+        document.markRebuilt(split.size(), summarize(document.extractedText()));
+        documents.save(document);
+        return split.size();
+    }
+
+    private KnowledgeBaseEntity requireBase(String knowledgeBaseId, ActorContext actor) {
+        return bases.findByIdAndTenantId(knowledgeBaseId, actor.tenantId())
+                .orElseThrow(() -> new IllegalArgumentException("Knowledge base not found: " + knowledgeBaseId));
+    }
+
+    /**
+     * 文件文本抽取的第一版：
+     * - txt/md/json/csv/yml 等按 UTF-8 文本读取；
+     * - html 用 jsoup 去掉标签，只保留正文；
+     * - docx/xlsx/pptx 本质是 zip 包，里面是 XML；这里用 JDK ZipInputStream 做基础抽取；
+     * - pdf 二进制结构复杂，先明确提示不支持，后续单独接 PDFBox。
+     */
+    private String extractText(String sourceName, String contentType, byte[] bytes) {
+        String lowerName = sourceName.toLowerCase();
+        if (lowerName.endsWith(".html") || lowerName.endsWith(".htm") || contentType.contains("html")) {
+            return Jsoup.parse(new String(bytes, StandardCharsets.UTF_8)).text();
+        }
+        if (isLikelyPlainText(lowerName, contentType)) {
+            return new String(bytes, StandardCharsets.UTF_8);
+        }
+        if (lowerName.endsWith(".docx")) {
+            return extractOfficeOpenXml(bytes, "word/");
+        }
+        if (lowerName.endsWith(".xlsx")) {
+            return extractOfficeOpenXml(bytes, "xl/");
+        }
+        if (lowerName.endsWith(".pptx")) {
+            return extractOfficeOpenXml(bytes, "ppt/");
+        }
+        if (lowerName.endsWith(".pdf")) {
+            throw new IllegalArgumentException("PDF parsing is not implemented yet. Please upload extracted text/Markdown first, or add PDFBox in the next milestone.");
+        }
+        throw new IllegalArgumentException("Unsupported file type: " + sourceName);
+    }
+
+    private static boolean isLikelyPlainText(String lowerName, String contentType) {
+        return contentType.startsWith("text/")
+                || lowerName.endsWith(".txt")
+                || lowerName.endsWith(".md")
+                || lowerName.endsWith(".markdown")
+                || lowerName.endsWith(".json")
+                || lowerName.endsWith(".csv")
+                || lowerName.endsWith(".tsv")
+                || lowerName.endsWith(".yml")
+                || lowerName.endsWith(".yaml")
+                || lowerName.endsWith(".xml");
+    }
+
+    private static String extractOfficeOpenXml(byte[] bytes, String requiredPrefix) {
+        StringBuilder text = new StringBuilder();
+        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes))) {
+            ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                if (entry.isDirectory()) {
+                    continue;
+                }
+                String name = entry.getName().replace('\\', '/');
+                if ((!name.startsWith(requiredPrefix) && !name.contains("/" + requiredPrefix)) || !name.endsWith(".xml")) {
+                    continue;
+                }
+                byte[] xmlBytes = zip.readNBytes(512_000);
+                String xml = new String(xmlBytes, StandardCharsets.UTF_8);
+                String extracted = extractTextFromOpenXml(xml);
+                if (!extracted.isBlank()) {
+                    text.append(extracted).append('\n');
+                }
+            }
+        } catch (IOException ex) {
+            throw new IllegalArgumentException("Failed to read Office OpenXML file: " + ex.getMessage(), ex);
+        }
+        return text.toString();
+    }
+
+    private static String extractTextFromOpenXml(String xml) {
+        StringBuilder text = new StringBuilder();
+        Matcher matcher = OPENXML_TEXT_NODE.matcher(xml);
+        while (matcher.find()) {
+            text.append(matcher.group(1)).append(' ');
+        }
+        String extracted = text.isEmpty() ? xml.replaceAll("<[^>]+>", " ") : text.toString();
+        return extracted
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&apos;", "'")
+                .replaceAll("\\s+", " ")
+                .trim();
     }
 
     private static List<String> splitIntoChunks(String content) {
         List<String> result = new ArrayList<>();
-        String normalized = content.replace("\r\n", "\n").trim();
-        for (int start = 0; start < normalized.length(); start += CHUNK_SIZE) {
-            result.add(normalized.substring(start, Math.min(start + CHUNK_SIZE, normalized.length())));
+        String normalized = normalizeText(content);
+        int step = Math.max(1, CHUNK_SIZE - CHUNK_OVERLAP);
+        for (int start = 0; start < normalized.length(); start += step) {
+            int end = Math.min(start + CHUNK_SIZE, normalized.length());
+            result.add(normalized.substring(start, end));
+            if (end == normalized.length()) {
+                break;
+            }
         }
         return result;
+    }
+
+    private static String normalizeText(String content) {
+        if (content == null) {
+            return "";
+        }
+        return content
+                .replace("\r\n", "\n")
+                .replace('\r', '\n')
+                .replaceAll("[\\t\\x0B\\f]+", " ")
+                .replaceAll("\\n{3,}", "\n\n")
+                .trim();
+    }
+
+    private static String summarize(String content) {
+        String compact = content.replaceAll("\\s+", " ").trim();
+        return compact.length() <= 240 ? compact : compact.substring(0, 240) + "...";
     }
 
     private static String sha256(String value) {
@@ -83,6 +362,11 @@ public class KnowledgeCommandService {
         }
     }
 
-    public record IngestionResult(String knowledgeBaseId, String sourceName, int chunkCount, boolean duplicate) {
+    public record IngestionResult(
+            String knowledgeBaseId,
+            String documentId,
+            String sourceName,
+            int chunkCount,
+            boolean duplicate) {
     }
 }

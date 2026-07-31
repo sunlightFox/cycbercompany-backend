@@ -13,6 +13,7 @@ public class KnowledgeBaseEntity {
     private String name;
     private String description;
     private Instant createdAt;
+    private Instant updatedAt;
 
     protected KnowledgeBaseEntity() {
     }
@@ -23,6 +24,7 @@ public class KnowledgeBaseEntity {
         this.name = name;
         this.description = description;
         this.createdAt = createdAt;
+        this.updatedAt = createdAt;
     }
 
     public String id() { return id; }
@@ -30,4 +32,16 @@ public class KnowledgeBaseEntity {
     public String name() { return name; }
     public String description() { return description; }
     public Instant createdAt() { return createdAt; }
+    public Instant updatedAt() { return updatedAt; }
+
+    /**
+     * 更新知识库的展示信息。
+     *
+     * <p>这里不允许修改 tenantId/id，因为它们是权限隔离和数据归属的根。
+     */
+    public void update(String name, String description) {
+        this.name = name;
+        this.description = description;
+        this.updatedAt = Instant.now();
+    }
 }

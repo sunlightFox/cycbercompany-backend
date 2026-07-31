@@ -14,7 +14,14 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * without turning configuration files into a credential leak surface.
  */
 @ConfigurationProperties(prefix = "app")
-public record AppProperties(Path dataDir, Ai ai, Run run, WebSearch webSearch, SkillStore skills, McpStore mcp) {
+public record AppProperties(
+        Path dataDir,
+        Ai ai,
+        Run run,
+        WebSearch webSearch,
+        SkillStore skills,
+        McpStore mcp,
+        Rag rag) {
 
     public record Run(long timeoutSeconds) {
     }
@@ -26,6 +33,19 @@ public record AppProperties(Path dataDir, Ai ai, Run run, WebSearch webSearch, S
     }
 
     public record McpStore(Path configDir) {
+    }
+
+    /**
+     * RAG/知识库配置。
+     *
+     * <p>embedding 默认关闭，是为了让项目在没有向量模型 Key 的情况下也能完整启动和测试；
+     * 配好 embedding 模型后，只要打开开关，摄取新文档和重建索引就会自动生成 chunk 向量。
+     */
+    public record Rag(
+            boolean embeddingEnabled,
+            String embeddingModelProfileId,
+            int maxEmbeddingChars,
+            double vectorWeight) {
     }
 
     public record Ai(

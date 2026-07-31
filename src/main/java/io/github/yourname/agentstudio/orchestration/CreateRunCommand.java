@@ -11,5 +11,6 @@ public record CreateRunCommand(
         List<String> knowledgeBaseIds,
         List<String> skillIds,
         List<String> mcpServerIds,
-        List<String> toolNames) {
+        List<String> toolNames,
+        String nodeId) {
 }

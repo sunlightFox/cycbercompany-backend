@@ -59,6 +59,7 @@ public class RunCommandService {
     private final McpConnectionService mcpConnections;
     private final ModelCatalog models;
     private final ModelGateway modelGateway;
+    private final CodingAgentLoop codingAgentLoop;
     private final RunEventPublisher events;
 
     public RunCommandService(
@@ -71,6 +72,7 @@ public class RunCommandService {
             McpConnectionService mcpConnections,
             ModelCatalog models,
             ModelGateway modelGateway,
+            CodingAgentLoop codingAgentLoop,
             RunEventPublisher events) {
         this.properties = properties;
         this.runs = runs;
@@ -81,6 +83,7 @@ public class RunCommandService {
         this.mcpConnections = mcpConnections;
         this.models = models;
         this.modelGateway = modelGateway;
+        this.codingAgentLoop = codingAgentLoop;
         this.events = events;
     }
 
@@ -146,8 +149,20 @@ public class RunCommandService {
             conversations.history(run.conversationId(), actor).forEach(message ->
                     messages.add(new ModelGateway.ModelMessage(message.role().name().toLowerCase(), message.content())));
 
-            var answer = modelGateway.complete(new ModelGateway.ModelCompletionRequest(run.modelProfileId(), messages));
-            String answerContent = sanitizeModelOutput(answer.content());
+            String answerContent;
+            if (command.nodeId() != null && !command.nodeId().isBlank()) {
+                events.publish(runId, RunEventType.STEP_STARTED, "coding-agent", actor);
+                answerContent = sanitizeModelOutput(codingAgentLoop.execute(
+                        runId,
+                        run.modelProfileId(),
+                        command.nodeId(),
+                        messages,
+                        actor));
+                events.publish(runId, RunEventType.STEP_COMPLETED, "coding-agent", actor);
+            } else {
+                var answer = modelGateway.complete(new ModelGateway.ModelCompletionRequest(run.modelProfileId(), messages));
+                answerContent = sanitizeModelOutput(answer.content());
+            }
             for (String part : tokenBatches(answerContent)) {
                 events.publish(runId, RunEventType.TOKEN_DELTA, part, actor);
             }
@@ -179,7 +194,8 @@ public class RunCommandService {
                 && webResults.isEmpty()
                 && mcpResults.isEmpty()
                 && webRetrievalNote.isBlank()
-                && capabilityContext.isBlank()) {
+                && capabilityContext.isBlank()
+                && (command.nodeId() == null || command.nodeId().isBlank())) {
             return agentPrompt;
         }
 
@@ -187,6 +203,9 @@ public class RunCommandService {
                 .append("\n\nRuntime context:\n")
                 .append("- Current server time: ").append(SERVER_TIME_FORMAT.format(Instant.now())).append('\n')
                 .append("- Tool calls are orchestrated by the backend. Do not emit raw tool-call XML or pseudo tool-call markup in the final answer.\n");
+        if (command.nodeId() != null && !command.nodeId().isBlank()) {
+            builder.append("- You are working in a developer workspace through native tools. Inspect before editing, make the smallest coherent change, run relevant tests or checks when command access is available, and report the files changed plus verification results. Never claim a command or test passed unless its tool result says so.\n");
+        }
         if (!capabilityContext.isBlank()) {
             builder.append(capabilityContext);
         }

@@ -10,6 +10,17 @@ public interface KnowledgeChunkRepository extends JpaRepository<KnowledgeChunkEn
 
     boolean existsByTenantIdAndKnowledgeBaseIdAndContentHash(String tenantId, String knowledgeBaseId, String contentHash);
 
+    List<KnowledgeChunkEntity> findByTenantIdAndKnowledgeBaseIdIn(String tenantId, Collection<String> knowledgeBaseIds);
+
+    List<KnowledgeChunkEntity> findByTenantIdAndKnowledgeBaseIdAndDocumentIdOrderByChunkIndexAsc(
+            String tenantId, String knowledgeBaseId, String documentId);
+
+    long countByTenantIdAndKnowledgeBaseId(String tenantId, String knowledgeBaseId);
+
+    void deleteByTenantIdAndKnowledgeBaseId(String tenantId, String knowledgeBaseId);
+
+    void deleteByTenantIdAndKnowledgeBaseIdAndDocumentId(String tenantId, String knowledgeBaseId, String documentId);
+
     @Query("""
             select chunk from knowledge_chunk chunk
             where chunk.tenantId = :tenantId

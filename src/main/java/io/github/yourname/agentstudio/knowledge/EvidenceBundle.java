@@ -10,6 +10,7 @@ public record EvidenceBundle(List<Evidence> evidence) {
 
     public record Evidence(
             Long chunkId,
+            String documentId,
             String knowledgeBaseId,
             String sourceName,
             int chunkIndex,

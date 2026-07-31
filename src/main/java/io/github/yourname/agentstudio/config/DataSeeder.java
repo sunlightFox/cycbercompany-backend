@@ -14,10 +14,10 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Creates the local demo defaults once.
+ * 在首次启动时补齐本地演示所需的默认数据。
  *
- * <p>Keeping this in code rather than a migration makes the first learning pass
- * easier: the user can see exactly which runtime defaults exist.
+ * <p>默认模型和默认 Agent 写在代码中而不是 SQL migration 里，学习时能直接看到运行时
+ * 依赖哪些配置。逻辑通过“存在则复用，不存在才创建”保证重复启动不会制造重复记录。
  */
 @Component
 class DataSeeder implements ApplicationRunner {
@@ -67,6 +67,7 @@ class DataSeeder implements ApplicationRunner {
                     true,
                     Instant.now()));
             } else if (storedProfile.get().apiKey() == null || storedProfile.get().apiKey().isBlank()) {
+                // 旧数据不覆盖用户手动保存的密钥；只在数据库为空时从当前环境变量补一次。
                 String apiKey = System.getenv(configured.credentialRef());
                 if (apiKey != null && !apiKey.isBlank()) {
                     ModelProfileEntity profile = storedProfile.get();
@@ -95,6 +96,7 @@ class DataSeeder implements ApplicationRunner {
                     true,
                     Instant.now()));
         } else if (isLegacyDefaultAssistant(defaultAssistant.get())) {
+            // 兼容早期种子数据：仅升级缺少 web_search 的旧默认 Agent，不影响用户自建 Agent。
             AgentDefinitionEntity assistant = defaultAssistant.get();
             assistant.updateRuntimeDefaults(DEFAULT_ASSISTANT_PROMPT, DEFAULT_ASSISTANT_TOOLS);
             agents.save(assistant);

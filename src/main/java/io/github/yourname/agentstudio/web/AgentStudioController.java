@@ -8,11 +8,18 @@ import io.github.yourname.agentstudio.knowledge.IngestDocumentCommand;
 import io.github.yourname.agentstudio.knowledge.KnowledgeCommandService;
 import io.github.yourname.agentstudio.knowledge.KnowledgeQueryService;
 import io.github.yourname.agentstudio.knowledge.KnowledgeSearchCommand;
+import io.github.yourname.agentstudio.knowledge.UpdateKnowledgeBaseCommand;
 import io.github.yourname.agentstudio.model.ModelCatalog;
 import io.github.yourname.agentstudio.model.SetDefaultModelCommand;
 import io.github.yourname.agentstudio.model.TestModelCommand;
 import io.github.yourname.agentstudio.model.UpdateModelStatusCommand;
 import io.github.yourname.agentstudio.model.UpsertModelProfileCommand;
+import io.github.yourname.agentstudio.node.CallNodeToolCommand;
+import io.github.yourname.agentstudio.node.CreateNodeRegistrationTokenCommand;
+import io.github.yourname.agentstudio.node.NodeService;
+import io.github.yourname.agentstudio.node.RegisterNodeCommand;
+import io.github.yourname.agentstudio.node.UpdateNodeCommand;
+import io.github.yourname.agentstudio.node.UpdateNodeToolCommand;
 import io.github.yourname.agentstudio.mcp.CreateMcpConnectionCommand;
 import io.github.yourname.agentstudio.mcp.CallMcpToolCommand;
 import io.github.yourname.agentstudio.mcp.InstallNpmMcpServerCommand;
@@ -51,8 +58,10 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @RestController
@@ -69,6 +78,7 @@ class AgentStudioController {
     private final SkillRepositoryService skillRepositories;
     private final McpConnectionService mcpConnections;
     private final McpRepositoryService mcpRepositories;
+    private final NodeService nodes;
     private final KnowledgeCommandService knowledgeCommands;
     private final KnowledgeQueryService knowledgeQueries;
     private final RunCommandService runCommands;
@@ -86,6 +96,7 @@ class AgentStudioController {
             SkillRepositoryService skillRepositories,
             McpConnectionService mcpConnections,
             McpRepositoryService mcpRepositories,
+            NodeService nodes,
             KnowledgeCommandService knowledgeCommands,
             KnowledgeQueryService knowledgeQueries,
             RunCommandService runCommands,
@@ -101,6 +112,7 @@ class AgentStudioController {
         this.skillRepositories = skillRepositories;
         this.mcpConnections = mcpConnections;
         this.mcpRepositories = mcpRepositories;
+        this.nodes = nodes;
         this.knowledgeCommands = knowledgeCommands;
         this.knowledgeQueries = knowledgeQueries;
         this.runCommands = runCommands;
@@ -172,8 +184,10 @@ class AgentStudioController {
     }
 
     @GetMapping("/tools")
-    Object listTools() {
-        return Stream.concat(tools.list().stream(), mcpConnections.enabledRegisteredTools().stream()).toList();
+    Object listTools(HttpServletRequest request) {
+        return Stream.concat(
+                Stream.concat(tools.list().stream(), mcpConnections.enabledRegisteredTools().stream()),
+                nodes.enabledRegisteredTools(actors.current(request)).stream()).toList();
     }
 
     @PostMapping("/web-search")
@@ -324,10 +338,76 @@ class AgentStudioController {
         return ResponseEntity.noContent().build();
     }
 
+    @PostMapping("/node-registration-tokens")
+    @ResponseStatus(HttpStatus.CREATED)
+    Object createNodeRegistrationToken(
+            @RequestBody(required = false) CreateNodeRegistrationTokenCommand command,
+            HttpServletRequest request) {
+        return nodes.createRegistrationToken(command, actors.current(request));
+    }
+
+    @PostMapping("/nodes/register")
+    @ResponseStatus(HttpStatus.CREATED)
+    Object registerNode(@Valid @RequestBody RegisterNodeCommand command, HttpServletRequest request) {
+        return nodes.register(command, actors.current(request));
+    }
+
+    @GetMapping("/nodes")
+    Object listNodes(HttpServletRequest request) {
+        return nodes.list(actors.current(request));
+    }
+
+    @GetMapping("/nodes/{id}")
+    Object getNode(@PathVariable String id, HttpServletRequest request) {
+        return nodes.get(id, actors.current(request));
+    }
+
+    @PatchMapping("/nodes/{id}")
+    Object updateNode(
+            @PathVariable String id,
+            @RequestBody UpdateNodeCommand command,
+            HttpServletRequest request) {
+        return nodes.update(id, command, actors.current(request));
+    }
+
+    @DeleteMapping("/nodes/{id}")
+    ResponseEntity<Void> deleteNode(@PathVariable String id, HttpServletRequest request) {
+        nodes.delete(id, actors.current(request));
+        return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping("/nodes/{id}/tools")
+    Object listNodeTools(@PathVariable String id, HttpServletRequest request) {
+        return nodes.listTools(id, actors.current(request));
+    }
+
+    @PatchMapping("/nodes/{id}/tools/{toolName}")
+    Object updateNodeTool(
+            @PathVariable String id,
+            @PathVariable String toolName,
+            @RequestBody UpdateNodeToolCommand command,
+            HttpServletRequest request) {
+        return nodes.updateTool(id, toolName, command, actors.current(request));
+    }
+
+    @PostMapping("/nodes/{id}/tools/{toolName}/call")
+    Object callNodeTool(
+            @PathVariable String id,
+            @PathVariable String toolName,
+            @RequestBody(required = false) CallNodeToolCommand command,
+            HttpServletRequest request) {
+        return nodes.callTool(id, toolName, command, actors.current(request));
+    }
+
     @PostMapping("/knowledge-bases")
     @ResponseStatus(HttpStatus.CREATED)
     Object createKnowledgeBase(@Valid @RequestBody CreateKnowledgeBaseCommand command, HttpServletRequest request) {
         return knowledgeCommands.create(command, actors.current(request));
+    }
+
+    @GetMapping("/knowledge-settings")
+    Object getKnowledgeSettings() {
+        return knowledgeQueries.settings();
     }
 
     @GetMapping("/knowledge-bases")
@@ -335,10 +415,83 @@ class AgentStudioController {
         return knowledgeQueries.list(actors.current(request));
     }
 
+    @GetMapping("/knowledge-bases/{id}")
+    Object getKnowledgeBase(@PathVariable String id, HttpServletRequest request) {
+        return knowledgeQueries.get(id, actors.current(request));
+    }
+
+    @PatchMapping("/knowledge-bases/{id}")
+    Object updateKnowledgeBase(
+            @PathVariable String id,
+            @Valid @RequestBody UpdateKnowledgeBaseCommand command,
+            HttpServletRequest request) {
+        return knowledgeCommands.update(id, command, actors.current(request));
+    }
+
+    @DeleteMapping("/knowledge-bases/{id}")
+    ResponseEntity<Void> deleteKnowledgeBase(@PathVariable String id, HttpServletRequest request) {
+        knowledgeCommands.deleteKnowledgeBase(id, actors.current(request));
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/knowledge-bases/{id}/rebuild-index")
+    Object rebuildKnowledgeBaseIndex(@PathVariable String id, HttpServletRequest request) {
+        return knowledgeCommands.rebuildKnowledgeBase(id, actors.current(request));
+    }
+
+    @PostMapping("/knowledge-bases/{id}/clear-documents")
+    Object clearKnowledgeDocuments(@PathVariable String id, HttpServletRequest request) {
+        return knowledgeCommands.clearDocuments(id, actors.current(request));
+    }
+
     @PostMapping("/knowledge-bases/{id}/documents")
     @ResponseStatus(HttpStatus.ACCEPTED)
     Object ingestDocument(@PathVariable String id, @Valid @RequestBody IngestDocumentCommand command, HttpServletRequest request) {
         return knowledgeCommands.ingest(id, command, actors.current(request));
+    }
+
+    @PostMapping(path = "/knowledge-bases/{id}/documents/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    Object uploadKnowledgeDocument(
+            @PathVariable String id,
+            @RequestPart("file") MultipartFile file,
+            HttpServletRequest request) {
+        return knowledgeCommands.ingestFile(id, file, actors.current(request));
+    }
+
+    @GetMapping("/knowledge-bases/{id}/documents")
+    Object listKnowledgeDocuments(@PathVariable String id, HttpServletRequest request) {
+        return knowledgeQueries.listDocuments(id, actors.current(request));
+    }
+
+    @DeleteMapping("/knowledge-bases/{id}/documents/{documentId}")
+    ResponseEntity<Void> deleteKnowledgeDocument(
+            @PathVariable String id,
+            @PathVariable String documentId,
+            HttpServletRequest request) {
+        knowledgeCommands.deleteDocument(id, documentId, actors.current(request));
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/knowledge-bases/{id}/documents/{documentId}/rebuild-index")
+    Object rebuildKnowledgeDocumentIndex(
+            @PathVariable String id,
+            @PathVariable String documentId,
+            HttpServletRequest request) {
+        return knowledgeCommands.rebuildDocument(id, documentId, actors.current(request));
+    }
+
+    @GetMapping("/knowledge-bases/{id}/documents/{documentId}/chunks")
+    Object listKnowledgeDocumentChunks(
+            @PathVariable String id,
+            @PathVariable String documentId,
+            HttpServletRequest request) {
+        return knowledgeQueries.listDocumentChunks(id, documentId, actors.current(request));
+    }
+
+    @GetMapping("/knowledge-bases/{id}/stats")
+    Object getKnowledgeStats(@PathVariable String id, HttpServletRequest request) {
+        return knowledgeQueries.stats(id, actors.current(request));
     }
 
     @PostMapping("/knowledge-search")
@@ -355,6 +508,15 @@ class AgentStudioController {
     @GetMapping("/runs/{id}")
     Object getRun(@PathVariable String id, HttpServletRequest request) {
         return runQueries.get(id, actors.current(request));
+    }
+
+    @GetMapping("/runs/{id}/tool-invocations")
+    Object listRunToolInvocations(@PathVariable String id, HttpServletRequest request) {
+        var actor = actors.current(request);
+        // Resolve the run first so invocation IDs cannot become a cross-tenant
+        // enumeration surface.
+        runQueries.get(id, actor);
+        return nodes.listRunInvocations(id, actor);
     }
 
     @GetMapping(path = "/runs/{id}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)

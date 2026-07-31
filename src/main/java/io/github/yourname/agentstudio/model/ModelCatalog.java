@@ -50,6 +50,7 @@ public class ModelCatalog {
     public List<ModelPresetView> presets() {
         Set<ModelCapability> textJsonTools = Set.of(ModelCapability.TEXT, ModelCapability.JSON_OUTPUT, ModelCapability.TOOLS);
         Set<ModelCapability> textJson = Set.of(ModelCapability.TEXT, ModelCapability.JSON_OUTPUT);
+        Set<ModelCapability> embedding = Set.of(ModelCapability.EMBEDDING);
         return List.of(
                 new ModelPresetView("edgefn-minimax-m3", "EdgeFn / MiniMax", "MiniMax-M3", ProviderType.OPENAI_COMPATIBLE,
                         "https://api.edgefn.net/v1", "MiniMax-M3", "EDGEFN_API_KEY", textJson,
@@ -60,6 +61,9 @@ public class ModelCatalog {
                 new ModelPresetView("openai-gpt-4o", "OpenAI", "GPT-4o", ProviderType.OPENAI_COMPATIBLE,
                         "https://api.openai.com/v1", "gpt-4o", "OPENAI_API_KEY", textJsonTools,
                         "Higher capability OpenAI profile."),
+                new ModelPresetView("openai-text-embedding-3-small", "OpenAI", "Text Embedding 3 Small", ProviderType.OPENAI_COMPATIBLE,
+                        "https://api.openai.com/v1", "text-embedding-3-small", "OPENAI_API_KEY", embedding,
+                        "Example OpenAI-compatible embedding profile for RAG indexing."),
                 new ModelPresetView("deepseek-chat", "DeepSeek", "DeepSeek Chat", ProviderType.OPENAI_COMPATIBLE,
                         "https://api.deepseek.com/v1", "deepseek-chat", "DEEPSEEK_API_KEY", textJson,
                         "DeepSeek OpenAI-compatible endpoint."),
@@ -86,7 +90,10 @@ public class ModelCatalog {
                         "Local Ollama OpenAI-compatible endpoint. API key can be any non-empty value if your Ollama does not require auth."),
                 new ModelPresetView("custom-openai-compatible", "Custom", "Custom OpenAI-compatible", ProviderType.OPENAI_COMPATIBLE,
                         "https://your-provider.example/v1", "your-model-name", "CUSTOM_MODEL_API_KEY", textJson,
-                        "Use this for one-api, LiteLLM, self-hosted gateways, or any OpenAI-compatible provider."));
+                        "Use this for one-api, LiteLLM, self-hosted gateways, or any OpenAI-compatible provider."),
+                new ModelPresetView("custom-openai-compatible-embedding", "Custom", "Custom OpenAI-compatible Embedding", ProviderType.OPENAI_COMPATIBLE,
+                        "https://your-provider.example/v1", "your-embedding-model-name", "CUSTOM_EMBEDDING_API_KEY", embedding,
+                        "Use this for embedding models exposed through an OpenAI-compatible /embeddings endpoint."));
     }
 
     @Transactional
