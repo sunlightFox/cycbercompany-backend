@@ -194,6 +194,7 @@ public class NodeService {
             if ("SUCCEEDED".equalsIgnoreCase(result.status())) {
                 invocation.succeed(toJson(result.result()), Instant.now());
             } else if ("APPROVAL_REQUIRED".equalsIgnoreCase(result.status())) {
+                linkApprovalToRun(result, runId, toolCallId, actor);
                 invocation.fail(NodeToolInvocationStatus.APPROVAL_REQUIRED, result.errorMessage(), Instant.now());
             } else {
                 invocation.fail(NodeToolInvocationStatus.FAILED, result.errorMessage(), Instant.now());
@@ -349,6 +350,17 @@ public class NodeService {
                 toolName,
                 command == null ? null : command.arguments(),
                 Duration.ofSeconds(timeoutSeconds));
+    }
+
+    private void linkApprovalToRun(NodeToolCallResult result, String runId, String toolCallId, ActorContext actor) {
+        Object approvalId = result.result() == null ? null : result.result().get("approvalId");
+        if (approvalId == null || approvalId.toString().isBlank()) {
+            throw new IllegalStateException("Approval-required tool result did not contain an approval ID.");
+        }
+        NodeToolApprovalEntity approval = approvals.findByIdAndTenantId(approvalId.toString(), actor.tenantId())
+                .orElseThrow(() -> new IllegalStateException("Created node tool approval was not found: " + approvalId));
+        approval.linkToRun(runId, toolCallId);
+        approvals.save(approval);
     }
 
     private NodeToolCallResult stopManagedProcessForRun(String runId, ManagedProcessTarget target, ActorContext actor) {

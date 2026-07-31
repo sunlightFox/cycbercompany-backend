@@ -38,9 +38,6 @@ public class CodingToolAdapter {
         }
         return nodes.listTools(nodeId, actor).stream()
                 .filter(NodeToolView::enabled)
-                // Approval is a user-facing lifecycle. Until that lifecycle is
-                // completed, do not expose a capability the run cannot execute.
-                .filter(tool -> !tool.requiresApproval())
                 .filter(tool -> isCodingTool(tool.name()))
                 .map(this::availableTool)
                 .toList();
@@ -77,7 +74,10 @@ public class CodingToolAdapter {
                     "tool", tool.nodeToolName(),
                     "result", result.result() == null ? Map.of() : result.result(),
                     "error", result.errorMessage() == null ? "" : result.errorMessage()));
-            return new ToolExecution("SUCCEEDED".equalsIgnoreCase(result.status()), content);
+            return new ToolExecution(
+                    "SUCCEEDED".equalsIgnoreCase(result.status()),
+                    content,
+                    approvalId(result));
         } catch (Exception ex) {
             return new ToolExecution(false, serialize(Map.of(
                     "status", "FAILED",
@@ -103,8 +103,17 @@ public class CodingToolAdapter {
                 tool.name(),
                 new ModelGateway.ModelTool(
                         "node_tool_" + tool.id(),
-                        "Node tool '" + tool.name() + "': " + blankToDefault(tool.description(), "No description provided."),
+                        "Node tool '" + tool.name() + "': " + blankToDefault(tool.description(), "No description provided.")
+                                + (tool.requiresApproval() ? " This call requires human approval before execution." : ""),
                         readSchema(tool.inputSchemaJson())));
+    }
+
+    private static String approvalId(NodeToolCallResult result) {
+        if (!"APPROVAL_REQUIRED".equalsIgnoreCase(result.status()) || result.result() == null) {
+            return null;
+        }
+        Object value = result.result().get("approvalId");
+        return value == null || value.toString().isBlank() ? null : value.toString();
     }
 
     private Map<String, Object> readSchema(String schemaJson) {
@@ -164,7 +173,15 @@ public class CodingToolAdapter {
             ModelGateway.ModelTool modelTool) {
     }
 
-    public record ToolExecution(boolean succeeded, String content) {
+    public record ToolExecution(boolean succeeded, String content, String approvalId) {
+
+        public ToolExecution(boolean succeeded, String content) {
+            this(succeeded, content, null);
+        }
+
+        public boolean requiresApproval() {
+            return approvalId != null && !approvalId.isBlank();
+        }
     }
 
     public record CleanupResult(String nodeId, boolean succeeded, String errorMessage) {

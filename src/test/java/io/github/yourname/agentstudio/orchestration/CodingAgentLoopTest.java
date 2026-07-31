@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -121,5 +122,75 @@ class CodingAgentLoopTest {
         assertThat(delays).containsExactly(Duration.ofSeconds(2));
         verify(events).publish("run-a", RunEventType.MODEL_RATE_LIMITED, "retry=1, delaySeconds=2", actor);
         verify(tools, times(1)).execute(eq("run-a"), eq(declaredTool), any(), eq(actor));
+    }
+
+    @Test
+    void pausesForApprovalWithoutCleaningUpManagedProcesses() {
+        ModelGateway gateway = mock(ModelGateway.class);
+        CodingToolAdapter tools = mock(CodingToolAdapter.class);
+        RunEventPublisher events = mock(RunEventPublisher.class);
+        ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
+        var declaredTool = new CodingToolAdapter.AvailableTool(
+                "node_tool_9",
+                "node-a",
+                "process.start",
+                new ModelGateway.ModelTool("node_tool_9", "Start a development server.", Map.of("type", "object")));
+        when(tools.availableTools("node-a", actor)).thenReturn(List.of(declaredTool));
+        when(gateway.complete(any())).thenReturn(new ModelGateway.ModelAnswer(
+                "I need to start the server.",
+                null,
+                null,
+                "test-model",
+                List.of(new ModelGateway.ModelToolCall("call-approval", "node_tool_9", Map.of("command", "java App"))),
+                "tool_calls"));
+        when(tools.execute(eq("run-a"), eq(declaredTool), any(), eq(actor)))
+                .thenReturn(new CodingToolAdapter.ToolExecution(
+                        false,
+                        "{\"status\":\"APPROVAL_REQUIRED\"}",
+                        "approval-1"));
+
+        List<ModelGateway.ModelMessage> messages = new ArrayList<>(List.of(new ModelGateway.ModelMessage("user", "Start it")));
+        assertThatThrownBy(() -> new CodingAgentLoop(gateway, tools, events).execute(
+                        "run-a", "model-a", "node-a", messages, actor))
+                .isInstanceOfSatisfying(CodingApprovalRequiredException.class, exception -> {
+                    assertThat(exception.approvalId()).isEqualTo("approval-1");
+                    assertThat(exception.toolCallId()).isEqualTo("call-approval");
+                    assertThat(exception.messages()).anyMatch(message ->
+                            "assistant".equals(message.role()) && !message.toolCalls().isEmpty());
+                });
+
+        verify(events).publish(
+                "run-a",
+                RunEventType.TOOL_APPROVAL_REQUIRED,
+                "tool=process.start, approvalId=approval-1",
+                actor);
+        verify(tools, never()).cleanupRun("run-a", actor);
+    }
+
+    @Test
+    void resumedRunMayReturnFinalAnswerWithoutAnotherToolCall() {
+        ModelGateway gateway = mock(ModelGateway.class);
+        CodingToolAdapter tools = mock(CodingToolAdapter.class);
+        RunEventPublisher events = mock(RunEventPublisher.class);
+        ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
+        var declaredTool = new CodingToolAdapter.AvailableTool(
+                "node_tool_7", "node-a", "fs.read", new ModelGateway.ModelTool("node_tool_7", "Read", Map.of()));
+        when(tools.availableTools("node-a", actor)).thenReturn(List.of(declaredTool));
+        when(gateway.complete(any())).thenReturn(new ModelGateway.ModelAnswer("The approved command is complete.", null, null, "test"));
+        when(tools.cleanupRun("run-a", actor)).thenReturn(List.of());
+
+        String answer = new CodingAgentLoop(gateway, tools, events).resume(
+                "run-a",
+                "model-a",
+                "node-a",
+                new ArrayList<>(List.of(
+                        new ModelGateway.ModelMessage("user", "Start it"),
+                        ModelGateway.ModelMessage.toolResult("call-approval", "{\"status\":\"SUCCEEDED\"}"))),
+                actor);
+
+        assertThat(answer).isEqualTo("The approved command is complete.");
+        ArgumentCaptor<ModelGateway.ModelCompletionRequest> request = ArgumentCaptor.forClass(ModelGateway.ModelCompletionRequest.class);
+        verify(gateway).complete(request.capture());
+        assertThat(request.getValue().toolChoice()).isEqualTo(ModelGateway.ToolChoice.AUTO);
     }
 }

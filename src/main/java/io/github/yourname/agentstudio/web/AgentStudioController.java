@@ -420,7 +420,10 @@ class AgentStudioController {
             @PathVariable String approvalId,
             @RequestBody(required = false) DecideNodeToolApprovalCommand command,
             HttpServletRequest request) {
-        return nodes.decideToolApproval(approvalId, command, actors.current(request));
+        var actor = actors.current(request);
+        var decision = nodes.decideToolApproval(approvalId, command, actor);
+        runCommands.resumeAfterToolApproval(decision, actor);
+        return decision;
     }
 
     @PostMapping("/knowledge-bases")

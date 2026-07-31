@@ -15,6 +15,8 @@ public class NodeToolApprovalEntity {
     private String tenantId;
     private String nodeId;
     private String toolName;
+    private String runId;
+    private String toolCallId;
     @Lob
     private String argumentsJson;
     private Integer timeoutSeconds;
@@ -71,10 +73,20 @@ public class NodeToolApprovalEntity {
         this.executedAt = now;
     }
 
+    public void linkToRun(String runId, String toolCallId) {
+        if (status != NodeToolApprovalStatus.PENDING) {
+            throw new NodeToolApprovalConflictException("Cannot link a decided approval to a run: " + id);
+        }
+        this.runId = runId;
+        this.toolCallId = toolCallId;
+    }
+
     public String id() { return id; }
     public String tenantId() { return tenantId; }
     public String nodeId() { return nodeId; }
     public String toolName() { return toolName; }
+    public String runId() { return runId; }
+    public String toolCallId() { return toolCallId; }
     public String argumentsJson() { return argumentsJson; }
     public Integer timeoutSeconds() { return timeoutSeconds; }
     public NodeToolApprovalStatus status() { return status; }

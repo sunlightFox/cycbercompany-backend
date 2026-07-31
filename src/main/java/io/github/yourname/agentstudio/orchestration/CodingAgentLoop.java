@@ -50,6 +50,26 @@ class CodingAgentLoop {
             String nodeId,
             List<ModelGateway.ModelMessage> messages,
             ActorContext actor) {
+        return execute(runId, modelProfileId, nodeId, messages, actor, true);
+    }
+
+    String resume(
+            String runId,
+            String modelProfileId,
+            String nodeId,
+            List<ModelGateway.ModelMessage> messages,
+            ActorContext actor) {
+        return execute(runId, modelProfileId, nodeId, messages, actor, false);
+    }
+
+    private String execute(
+            String runId,
+            String modelProfileId,
+            String nodeId,
+            List<ModelGateway.ModelMessage> messages,
+            ActorContext actor,
+            boolean requireFirstToolCall) {
+        boolean waitingForApproval = false;
         try {
             List<CodingToolAdapter.AvailableTool> available = tools.availableTools(nodeId, actor);
             if (available.isEmpty()) {
@@ -62,7 +82,9 @@ class CodingAgentLoop {
             List<ModelGateway.ModelTool> modelTools = available.stream()
                     .map(CodingToolAdapter.AvailableTool::modelTool)
                     .toList();
-            int executedCalls = 0;
+            // A resumed run already has a completed (or explicitly rejected) tool call in its
+            // persisted context, so a final text response is valid on its first resumed turn.
+            int executedCalls = requireFirstToolCall ? 0 : 1;
 
             for (int turn = 1; turn <= MAX_MODEL_TURNS; turn++) {
                 var answer = completeWithRateLimitRetry(
@@ -72,7 +94,7 @@ class CodingAgentLoop {
                             modelProfileId,
                             messages,
                             modelTools,
-                            turn == 1 ? ModelGateway.ToolChoice.REQUIRED : ModelGateway.ToolChoice.AUTO));
+                            turn == 1 && requireFirstToolCall ? ModelGateway.ToolChoice.REQUIRED : ModelGateway.ToolChoice.AUTO));
                 List<ModelGateway.ModelToolCall> calls = normalizeCalls(answer.toolCalls());
                 if (calls.isEmpty()) {
                     if (executedCalls == 0) {
@@ -84,7 +106,8 @@ class CodingAgentLoop {
                 }
 
                 messages.add(ModelGateway.ModelMessage.assistantToolCalls(answer.content(), calls));
-                for (ModelGateway.ModelToolCall call : calls) {
+                for (int callIndex = 0; callIndex < calls.size(); callIndex++) {
+                    ModelGateway.ModelToolCall call = calls.get(callIndex);
                     if (++executedCalls > MAX_TOOL_CALLS) {
                         throw new IllegalStateException("Coding run reached its maximum of " + MAX_TOOL_CALLS + " tool calls.");
                     }
@@ -98,6 +121,20 @@ class CodingAgentLoop {
                     events.publish(runId, RunEventType.TOOL_CALL_REQUESTED, "tool=" + tool.nodeToolName(), actor);
                     events.publish(runId, RunEventType.TOOL_CALL_STARTED, "tool=" + tool.nodeToolName(), actor);
                     CodingToolAdapter.ToolExecution outcome = tools.execute(runId, tool, call, actor);
+                    if (outcome.requiresApproval()) {
+                        for (int deferred = callIndex + 1; deferred < calls.size(); deferred++) {
+                            messages.add(ModelGateway.ModelMessage.toolResult(
+                                    calls.get(deferred).id(),
+                                    "{\"status\":\"DEFERRED\",\"error\":\"Run paused while another tool call awaits approval. Request this tool again after approval.\"}"));
+                        }
+                        events.publish(
+                                runId,
+                                RunEventType.TOOL_APPROVAL_REQUIRED,
+                                "tool=" + tool.nodeToolName() + ", approvalId=" + outcome.approvalId(),
+                                actor);
+                        waitingForApproval = true;
+                        throw new CodingApprovalRequiredException(outcome.approvalId(), call.id(), messages);
+                    }
                     events.publish(
                             runId,
                             outcome.succeeded() ? RunEventType.TOOL_CALL_COMPLETED : RunEventType.TOOL_CALL_FAILED,
@@ -113,7 +150,9 @@ class CodingAgentLoop {
                     "Coding run reached its maximum of " + MAX_MODEL_TURNS
                             + " model turns without a final answer. The model kept requesting tools.");
         } finally {
-            cleanupManagedProcesses(runId, actor);
+            if (!waitingForApproval) {
+                cleanupManagedProcesses(runId, actor);
+            }
         }
     }
 

@@ -54,6 +54,14 @@ public class AgentRunEntity {
         this.finishedAt = Instant.now();
     }
 
+    public void waitForApproval() {
+        this.status = RunStatus.WAITING_APPROVAL;
+    }
+
+    public void resume() {
+        this.status = RunStatus.RUNNING;
+    }
+
     public void fail(String errorMessage) {
         this.status = RunStatus.FAILED;
         this.errorMessage = errorMessage;

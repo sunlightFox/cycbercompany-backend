@@ -19,6 +19,7 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -66,6 +67,7 @@ class NodeServiceApprovalTest {
         lenient().when(tools.findByTenantIdAndNodeIdAndName(TENANT, NODE_ID, TOOL_NAME)).thenReturn(Optional.of(tool));
         lenient().when(approvals.save(any(NodeToolApprovalEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
         lenient().when(approvals.saveAndFlush(any(NodeToolApprovalEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        lenient().when(invocations.save(any(NodeToolInvocationEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
     }
 
     @Test
@@ -76,6 +78,31 @@ class NodeServiceApprovalTest {
         assertEquals("APPROVAL_REQUIRED", result.status());
         assertEquals("PENDING", result.result().get("status"));
         verify(approvals).save(any(NodeToolApprovalEntity.class));
+        verifyNoInteractions(sessions);
+    }
+
+    @Test
+    void codingRunApprovalIsLinkedToItsRunAndModelToolCall() {
+        AtomicReference<NodeToolApprovalEntity> createdApproval = new AtomicReference<>();
+        when(approvals.save(any(NodeToolApprovalEntity.class))).thenAnswer(invocation -> {
+            NodeToolApprovalEntity value = invocation.getArgument(0);
+            createdApproval.set(value);
+            return value;
+        });
+        when(approvals.findByIdAndTenantId(any(), eq(TENANT)))
+                .thenAnswer(invocation -> Optional.ofNullable(createdApproval.get()));
+
+        NodeToolCallResult result = service.callToolForRun(
+                "run-1",
+                "model-call-7",
+                NODE_ID,
+                TOOL_NAME,
+                new CallNodeToolCommand(Map.of("command", "whoami"), 45),
+                ACTOR);
+
+        assertEquals("APPROVAL_REQUIRED", result.status());
+        assertEquals("run-1", createdApproval.get().runId());
+        assertEquals("model-call-7", createdApproval.get().toolCallId());
         verifyNoInteractions(sessions);
     }
 

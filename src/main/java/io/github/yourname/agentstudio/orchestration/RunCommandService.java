@@ -1,5 +1,7 @@
 package io.github.yourname.agentstudio.orchestration;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.yourname.agentstudio.agent.AgentCatalog;
 import io.github.yourname.agentstudio.config.AppProperties;
 import io.github.yourname.agentstudio.conversation.ConversationService;
@@ -11,6 +13,7 @@ import io.github.yourname.agentstudio.model.ModelGateway;
 import io.github.yourname.agentstudio.model.ModelCatalog;
 import io.github.yourname.agentstudio.mcp.McpConnectionService;
 import io.github.yourname.agentstudio.mcp.McpToolCallResult;
+import io.github.yourname.agentstudio.node.NodeToolApprovalDecisionView;
 import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.tool.WebSearchCommand;
 import io.github.yourname.agentstudio.tool.WebSearchResult;
@@ -19,13 +22,17 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
  * Creates durable runs and executes them asynchronously.
@@ -52,6 +59,7 @@ public class RunCommandService {
 
     private final AppProperties properties;
     private final AgentRunRepository runs;
+    private final CodingRunContinuationRepository continuations;
     private final ConversationService conversations;
     private final AgentCatalog agents;
     private final KnowledgeQueryService knowledge;
@@ -61,10 +69,12 @@ public class RunCommandService {
     private final ModelGateway modelGateway;
     private final CodingAgentLoop codingAgentLoop;
     private final RunEventPublisher events;
+    private final ObjectMapper objectMapper;
 
     public RunCommandService(
             AppProperties properties,
             AgentRunRepository runs,
+            CodingRunContinuationRepository continuations,
             ConversationService conversations,
             AgentCatalog agents,
             KnowledgeQueryService knowledge,
@@ -73,9 +83,11 @@ public class RunCommandService {
             ModelCatalog models,
             ModelGateway modelGateway,
             CodingAgentLoop codingAgentLoop,
-            RunEventPublisher events) {
+            RunEventPublisher events,
+            ObjectMapper objectMapper) {
         this.properties = properties;
         this.runs = runs;
+        this.continuations = continuations;
         this.conversations = conversations;
         this.agents = agents;
         this.knowledge = knowledge;
@@ -85,6 +97,7 @@ public class RunCommandService {
         this.modelGateway = modelGateway;
         this.codingAgentLoop = codingAgentLoop;
         this.events = events;
+        this.objectMapper = objectMapper;
     }
 
     @Transactional
@@ -172,6 +185,8 @@ public class RunCommandService {
             runs.save(run);
             events.publish(runId, RunEventType.STEP_COMPLETED, "single-agent", actor);
             events.publish(runId, RunEventType.FINAL_ANSWER, answerContent, actor);
+        } catch (CodingApprovalRequiredException approvalRequired) {
+            suspendForApproval(runId, command.nodeId(), approvalRequired, actor);
         } catch (Exception ex) {
             runs.findByIdAndTenantId(runId, actor.tenantId()).ifPresent(run -> {
                 run.fail(ex.getMessage());
@@ -179,6 +194,152 @@ public class RunCommandService {
             });
             events.publish(runId, RunEventType.RUN_FAILED, ex.getMessage(), actor);
         }
+    }
+
+    /**
+     * Starts the persisted continuation after a node tool is approved or rejected. A rejected
+     * request is also resumed: the model receives a structured rejection and can choose a safer
+     * alternative instead of leaving the run stranded.
+     */
+    @Transactional
+    public void resumeAfterToolApproval(NodeToolApprovalDecisionView decision, ActorContext actor) {
+        if (decision == null || decision.approval() == null || decision.approval().runId() == null
+                || decision.approval().runId().isBlank()) {
+            return;
+        }
+
+        var approval = decision.approval();
+        var continuation = continuations.findByRunIdAndTenantId(approval.runId(), actor.tenantId()).orElse(null);
+        if (continuation == null
+                || !continuation.approvalId().equals(approval.id())
+                || !continuation.toolCallId().equals(approval.toolCallId())) {
+            return;
+        }
+        var run = runs.findByIdAndTenantId(approval.runId(), actor.tenantId()).orElse(null);
+        if (run == null || run.status() != RunStatus.WAITING_APPROVAL) {
+            return;
+        }
+
+        List<ModelGateway.ModelMessage> messages = deserializeMessages(continuation.messagesJson());
+        messages.add(ModelGateway.ModelMessage.toolResult(approval.toolCallId(), approvalResult(decision)));
+        continuations.delete(continuation);
+        run.resume();
+        runs.save(run);
+        events.publish(run.id(), RunEventType.RUN_RESUMED, "approvalId=" + approval.id(), actor);
+        scheduleAfterCommit(() -> executeResumedCoding(run.id(), continuation.nodeId(), messages, actor));
+    }
+
+    private void executeResumedCoding(
+            String runId,
+            String nodeId,
+            List<ModelGateway.ModelMessage> messages,
+            ActorContext actor) {
+        try {
+            AgentRunEntity run = runs.findByIdAndTenantId(runId, actor.tenantId()).orElseThrow();
+            if (run.status() != RunStatus.RUNNING) {
+                return;
+            }
+            events.publish(runId, RunEventType.STEP_STARTED, "coding-agent resumed", actor);
+            String answer = sanitizeModelOutput(codingAgentLoop.resume(
+                    runId,
+                    run.modelProfileId(),
+                    nodeId,
+                    messages,
+                    actor));
+            events.publish(runId, RunEventType.STEP_COMPLETED, "coding-agent resumed", actor);
+            for (String part : tokenBatches(answer)) {
+                events.publish(runId, RunEventType.TOKEN_DELTA, part, actor);
+            }
+            conversations.append(run.conversationId(), MessageRole.ASSISTANT, answer, runId, actor);
+            run.succeed(answer);
+            runs.save(run);
+            events.publish(runId, RunEventType.STEP_COMPLETED, "single-agent", actor);
+            events.publish(runId, RunEventType.FINAL_ANSWER, answer, actor);
+        } catch (CodingApprovalRequiredException approvalRequired) {
+            suspendForApproval(runId, nodeId, approvalRequired, actor);
+        } catch (Exception ex) {
+            runs.findByIdAndTenantId(runId, actor.tenantId()).ifPresent(run -> {
+                run.fail(ex.getMessage());
+                runs.save(run);
+            });
+            events.publish(runId, RunEventType.RUN_FAILED, ex.getMessage(), actor);
+        }
+    }
+
+    private void suspendForApproval(
+            String runId,
+            String nodeId,
+            CodingApprovalRequiredException approvalRequired,
+            ActorContext actor) {
+        AgentRunEntity run = runs.findByIdAndTenantId(runId, actor.tenantId()).orElseThrow();
+        if (run.status() != RunStatus.RUNNING) {
+            throw new IllegalStateException("Cannot suspend a coding run that is not running: " + runId);
+        }
+        continuations.save(new CodingRunContinuationEntity(
+                runId,
+                actor.tenantId(),
+                nodeId,
+                approvalRequired.approvalId(),
+                approvalRequired.toolCallId(),
+                serializeMessages(approvalRequired.messages()),
+                Instant.now()));
+        run.waitForApproval();
+        runs.save(run);
+        events.publish(
+                runId,
+                RunEventType.RUN_WAITING_APPROVAL,
+                "approvalId=" + approvalRequired.approvalId(),
+                actor);
+    }
+
+    private String approvalResult(NodeToolApprovalDecisionView decision) {
+        var result = new LinkedHashMap<String, Object>();
+        result.put("tool", decision.approval().toolName());
+        if (decision.execution() == null) {
+            result.put("status", "REJECTED");
+            result.put("error", "The user rejected this tool call.");
+        } else {
+            result.put("status", decision.execution().status());
+            result.put("result", decision.execution().result() == null ? Map.of() : decision.execution().result());
+            result.put("error", decision.execution().errorMessage() == null ? "" : decision.execution().errorMessage());
+        }
+        try {
+            return objectMapper.writeValueAsString(result);
+        } catch (Exception ex) {
+            throw new IllegalStateException("Unable to serialize approved node tool result.", ex);
+        }
+    }
+
+    private String serializeMessages(List<ModelGateway.ModelMessage> messages) {
+        try {
+            return objectMapper.writeValueAsString(messages);
+        } catch (Exception ex) {
+            throw new IllegalStateException("Unable to persist coding continuation.", ex);
+        }
+    }
+
+    private List<ModelGateway.ModelMessage> deserializeMessages(String messagesJson) {
+        try {
+            return new ArrayList<>(objectMapper.readValue(
+                    messagesJson,
+                    new TypeReference<List<ModelGateway.ModelMessage>>() {
+                    }));
+        } catch (Exception ex) {
+            throw new IllegalStateException("Unable to restore coding continuation.", ex);
+        }
+    }
+
+    private static void scheduleAfterCommit(Runnable task) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            CompletableFuture.runAsync(task);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                CompletableFuture.runAsync(task);
+            }
+        });
     }
 
     private static String buildSystemPrompt(
