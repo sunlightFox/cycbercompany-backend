@@ -42,6 +42,14 @@ public record CodingWorkspaceScope(String relativePath) {
         if (isRoot()) {
             return child.isBlank() ? "." : child;
         }
+        // Models sometimes repeat the selected project directory despite being
+        // instructed that tool paths are already relative to it. Accept only
+        // that exact, still-in-scope prefix instead of producing project/project.
+        if (child.equals(relativePath)) {
+            child = "";
+        } else if (child.startsWith(relativePath + "/")) {
+            child = child.substring(relativePath.length() + 1);
+        }
         return child.isBlank() ? relativePath : relativePath + "/" + child;
     }
 

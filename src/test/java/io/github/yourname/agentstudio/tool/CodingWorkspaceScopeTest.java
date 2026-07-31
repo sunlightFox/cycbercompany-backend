@@ -17,6 +17,15 @@ class CodingWorkspaceScopeTest {
     }
 
     @Test
+    void doesNotDuplicateTheSelectedProjectWhenAModelRepeatsIt() {
+        CodingWorkspaceScope scope = CodingWorkspaceScope.from("projects/task-board");
+
+        assertThat(scope.resolve("projects/task-board")).isEqualTo("projects/task-board");
+        assertThat(scope.resolve("projects/task-board/src/main/App.java"))
+                .isEqualTo("projects/task-board/src/main/App.java");
+    }
+
+    @Test
     void rejectsAbsoluteAndParentEscapingPaths() {
         assertThatThrownBy(() -> CodingWorkspaceScope.from("D:\\outside"))
                 .hasMessageContaining("workspace-relative");
