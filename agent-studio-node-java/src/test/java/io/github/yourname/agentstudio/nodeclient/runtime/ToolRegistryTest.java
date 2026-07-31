@@ -103,4 +103,21 @@ class ToolRegistryTest {
         assertTrue(registry.capabilities().stream().noneMatch(item -> item.name().startsWith("system.")));
         registry.close();
     }
+
+    @Test
+    void systemModeExecutesAbsolutePathFileToolsThroughTheRegistry() throws Exception {
+        var workspace = Files.createTempDirectory("agent-studio-system-workspace");
+        var outside = Files.createTempDirectory("agent-studio-system-outside").resolve("system-note.txt");
+        ToolRegistry registry = new ToolRegistry(HttpClient.newHttpClient(), workspace, NodeAccessMode.SYSTEM);
+
+        // 这是节点真实分发表的验证：模型调用 system.fs.write 后，绝对路径不能被改写为工作区子路径。
+        var write = registry.execute("system.fs.write", Map.of("path", outside.toString(), "content", "system access verified"));
+        var read = registry.execute("system.fs.read", Map.of("path", outside.toString()));
+
+        assertTrue(write.success());
+        assertTrue(read.success());
+        assertEquals(outside.toRealPath().toString(), read.result().get("path"));
+        assertEquals("system access verified", read.result().get("content"));
+        registry.close();
+    }
 }
