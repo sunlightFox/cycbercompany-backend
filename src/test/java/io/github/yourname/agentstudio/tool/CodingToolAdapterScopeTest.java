@@ -18,10 +18,32 @@ import io.github.yourname.agentstudio.tool.RiskLevel;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class CodingToolAdapterScopeTest {
+
+    @Test
+    void exposesProjectInspectionAndScopesItsOptionalWorkingDirectory() {
+        NodeService nodes = mock(NodeService.class);
+        CodingToolAdapter adapter = new CodingToolAdapter(nodes, new ObjectMapper());
+        ActorContext actor = new ActorContext("tenant-a", "user-a", Set.of(), Set.of());
+        NodeToolView inspection = new NodeToolView(
+                25L, "node-1", "project.inspect", "Inspect", RiskLevel.LOW, true, false, "{}", Instant.now(), Instant.now());
+        when(nodes.isReadyForToolExecution("node-1", actor)).thenReturn(true);
+        when(nodes.listTools("node-1", actor)).thenReturn(List.of(inspection));
+        when(nodes.callToolForRun(eq("run-1"), eq("call-project"), eq("node-1"), eq("project.inspect"), any(), eq(actor)))
+                .thenReturn(new NodeToolCallResult("invocation", "node-1", "project.inspect", "SUCCEEDED", Map.of("projectType", "gradle"), null));
+
+        CodingToolAdapter.AvailableTool tool = adapter.availableTools("node-1", actor).getFirst();
+        adapter.execute("run-1", tool, new ModelGateway.ModelToolCall("call-project", tool.modelToolName(), Map.of("cwd", "frontend")), actor,
+                CodingWorkspaceScope.from("demo"));
+
+        ArgumentCaptor<CallNodeToolCommand> command = ArgumentCaptor.forClass(CallNodeToolCommand.class);
+        verify(nodes).callToolForRun(eq("run-1"), eq("call-project"), eq("node-1"), eq("project.inspect"), command.capture(), eq(actor));
+        assertThat(command.getValue().arguments()).containsEntry("cwd", "demo/frontend");
+    }
 
     @Test
     void exposesEnabledBrowserToolsToCodingRuns() {

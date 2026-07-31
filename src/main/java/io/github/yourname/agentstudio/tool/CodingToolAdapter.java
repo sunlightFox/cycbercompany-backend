@@ -44,7 +44,8 @@ public class CodingToolAdapter {
     }
 
     private static boolean isCodingTool(String name) {
-        return "fs.list".equals(name)
+        return "project.inspect".equals(name)
+                || "fs.list".equals(name)
                 || "fs.read".equals(name)
                 || "fs.search".equals(name)
                 || "fs.write".equals(name)
@@ -89,11 +90,19 @@ public class CodingToolAdapter {
                     tool.nodeToolName(),
                     new CallNodeToolCommand(scopedArguments, timeoutSeconds(scopedArguments)),
                     actor);
-            String content = serialize(Map.of(
-                    "status", result.status(),
-                    "tool", tool.nodeToolName(),
-                    "result", result.result() == null ? Map.of() : result.result(),
-                    "error", result.errorMessage() == null ? "" : result.errorMessage()));
+            Map<String, Object> resultContent = new LinkedHashMap<>();
+            resultContent.put("status", result.status());
+            resultContent.put("tool", tool.nodeToolName());
+            resultContent.put("result", result.result() == null ? Map.of() : result.result());
+            resultContent.put("error", result.errorMessage() == null ? "" : result.errorMessage());
+            // 命令输出通常很长。把常见失败模式提炼成结构化字段，让模型先定位文件或测试，
+            // 仍保留原始结果，方便遇到未知工具链时继续阅读真实日志。
+            Map<String, Object> diagnosis = CodingFailureSummary.from(
+                    tool.nodeToolName(), "SUCCEEDED".equalsIgnoreCase(result.status()), result.result(), result.errorMessage());
+            if (!diagnosis.isEmpty()) {
+                resultContent.put("diagnosis", diagnosis);
+            }
+            String content = serialize(resultContent);
             return new ToolExecution(
                     "SUCCEEDED".equalsIgnoreCase(result.status()),
                     content,
@@ -150,6 +159,9 @@ public class CodingToolAdapter {
                 || "fs.write".equals(toolName)
                 || "fs.apply_patch".equals(toolName)) {
             scopeArgument(scoped, "path", workspaceScope);
+        }
+        if ("project.inspect".equals(toolName)) {
+            scopeArgument(scoped, "cwd", workspaceScope);
         }
         if (("git.diff".equals(toolName) || "browser.screenshot".equals(toolName)) && scoped.containsKey("path")) {
             scopeArgument(scoped, "path", workspaceScope);
