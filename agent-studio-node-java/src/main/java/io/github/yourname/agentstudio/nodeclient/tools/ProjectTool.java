@@ -3,7 +3,10 @@ package io.github.yourname.agentstudio.nodeclient.tools;
 import io.github.yourname.agentstudio.nodeclient.runtime.ToolExecutionResult;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -20,6 +23,8 @@ import java.util.regex.Pattern;
 public final class ProjectTool {
 
     private static final int MAX_MANIFEST_BYTES = 128 * 1024;
+    private static final int MAX_DISCOVERY_DEPTH = 4;
+    private static final int MAX_DISCOVERED_PROJECTS = 40;
     private final Path workspaceRoot;
 
     public ProjectTool(Path workspaceRoot) {
@@ -49,6 +54,46 @@ public final class ProjectTool {
             result.put("recommendedCommands", inspection.commands());
             result.put("guidance", inspection.guidance());
             return ToolExecutionResult.success(result);
+        } catch (IllegalArgumentException ex) {
+            return ToolExecutionResult.failure(ex.getMessage());
+        }
+    }
+
+    /**
+     * 在有限深度内发现多模块仓库中的项目根目录。
+     *
+     * <p>它跳过依赖和构建产物目录，既避免把 node_modules 误认为项目，也避免大型仓库的无界扫描。
+     */
+    public ToolExecutionResult discover(Map<String, Object> arguments) {
+        try {
+            Path root = resolveDirectory(stringValue(arguments, "cwd"));
+            List<Map<String, Object>> projects = new ArrayList<>();
+            Files.walkFileTree(root, java.util.Set.of(), MAX_DISCOVERY_DEPTH, new SimpleFileVisitor<>() {
+                @Override
+                public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attributes) {
+                    if (!directory.equals(root) && ignoredDirectory(directory)) {
+                        return FileVisitResult.SKIP_SUBTREE;
+                    }
+                    ProjectInspection inspection = detect(directory);
+                    if (!"unknown".equals(inspection.projectType())) {
+                        Map<String, Object> project = new LinkedHashMap<>();
+                        project.put("path", workspaceRelative(directory));
+                        project.put("projectType", inspection.projectType());
+                        project.put("manifests", inspection.manifests());
+                        projects.add(project);
+                        return projects.size() >= MAX_DISCOVERED_PROJECTS
+                                ? FileVisitResult.TERMINATE
+                                : FileVisitResult.SKIP_SUBTREE;
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+            return ToolExecutionResult.success(Map.of(
+                    "directory", workspaceRelative(root),
+                    "projects", projects,
+                    "truncated", projects.size() >= MAX_DISCOVERED_PROJECTS));
+        } catch (IOException ex) {
+            return ToolExecutionResult.failure("project.discover failed: " + ex.getMessage());
         } catch (IllegalArgumentException ex) {
             return ToolExecutionResult.failure(ex.getMessage());
         }
@@ -159,6 +204,18 @@ public final class ProjectTool {
 
     private static boolean has(Path directory, String... names) {
         return !existing(directory, names).isEmpty();
+    }
+
+    private boolean ignoredDirectory(Path directory) {
+        Path name = directory.getFileName();
+        if (name == null) {
+            return false;
+        }
+        // 与源码搜索使用相同的常见排除项，防止在生成目录与第三方依赖中浪费工具预算。
+        return switch (name.toString()) {
+            case ".git", ".gradle", "node_modules", "build", "target", "out", "dist", "coverage", ".venv" -> true;
+            default -> false;
+        };
     }
 
     private static List<String> existing(Path directory, String... names) {

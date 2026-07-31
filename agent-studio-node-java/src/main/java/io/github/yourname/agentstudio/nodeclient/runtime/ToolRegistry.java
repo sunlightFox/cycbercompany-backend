@@ -69,6 +69,13 @@ public class ToolRegistry {
                         false,
                         objectSchema(Map.of("cwd", Map.of("type", "string")))),
                 new NodeCapability(
+                        "project.discover",
+                        "Discover manifest-backed project roots below a workspace directory without entering dependency or build-output folders.",
+                        "LOW",
+                        projectTool != null,
+                        false,
+                        objectSchema(Map.of("cwd", Map.of("type", "string")))),
+                new NodeCapability(
                         "fs.list",
                         "List files under an allowed workspace path.",
                         "LOW",
@@ -234,6 +241,11 @@ public class ToolRegistry {
             return projectTool == null
                     ? ToolExecutionResult.failure("project.inspect is unavailable because this node has no configured workspace.")
                     : projectTool.inspect(arguments);
+        }
+        if ("project.discover".equals(toolName)) {
+            return projectTool == null
+                    ? ToolExecutionResult.failure("project.discover is unavailable because this node has no configured workspace.")
+                    : projectTool.discover(arguments);
         }
         if ("fs.read".equals(toolName)) {
             return fileTool == null
