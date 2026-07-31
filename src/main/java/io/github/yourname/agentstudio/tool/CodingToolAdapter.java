@@ -46,6 +46,7 @@ public class CodingToolAdapter {
     private static boolean isCodingTool(String name) {
         return "fs.list".equals(name)
                 || "fs.read".equals(name)
+                || "fs.search".equals(name)
                 || "fs.write".equals(name)
                 || "fs.apply_patch".equals(name)
                 || "shell.run".equals(name)
@@ -142,6 +143,7 @@ public class CodingToolAdapter {
         Map<String, Object> scoped = new LinkedHashMap<>(arguments == null ? Map.of() : arguments);
         if ("fs.list".equals(toolName)
                 || "fs.read".equals(toolName)
+                || "fs.search".equals(toolName)
                 || "fs.write".equals(toolName)
                 || "fs.apply_patch".equals(toolName)) {
             scopeArgument(scoped, "path", workspaceScope);

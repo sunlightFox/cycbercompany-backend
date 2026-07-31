@@ -3,9 +3,13 @@ package io.github.yourname.agentstudio.nodeclient.tools;
 import io.github.yourname.agentstudio.nodeclient.runtime.ToolExecutionResult;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -16,6 +20,11 @@ public final class FileTool {
 
     private static final int MAX_READ_BYTES = 1_024 * 1_024;
     private static final int MAX_LIST_ENTRIES = 200;
+    private static final int MAX_SEARCH_QUERY_CHARS = 512;
+    private static final int MAX_SEARCH_RESULTS = 200;
+    private static final int MAX_SEARCH_FILES = 3_000;
+    private static final int MAX_SEARCH_FILE_BYTES = 1_024 * 1_024;
+    private static final int MAX_SEARCH_LINE_CHARS = 500;
 
     private final Path workspaceRoot;
 
@@ -71,6 +80,82 @@ public final class FileTool {
                     "truncated", truncated));
         } catch (Exception ex) {
             return ToolExecutionResult.failure("fs.read failed: " + message(ex));
+        }
+    }
+
+    /** Searches UTF-8 text files without following links or traversing dependency/output directories. */
+    public ToolExecutionResult search(Map<String, Object> arguments) {
+        String query = value(arguments, "query");
+        if (query == null || query.isBlank()) {
+            return ToolExecutionResult.failure("Missing required argument: query");
+        }
+        if (query.length() > MAX_SEARCH_QUERY_CHARS || query.indexOf('\n') >= 0 || query.indexOf('\r') >= 0) {
+            return ToolExecutionResult.failure("fs.search query must be one line and at most " + MAX_SEARCH_QUERY_CHARS + " characters.");
+        }
+        try {
+            Path directory = resolveExisting(value(arguments, "path"), true);
+            boolean caseSensitive = booleanValue(arguments, "caseSensitive", false);
+            int maxResults = boundedInteger(arguments, "maxResults", 80, 1, MAX_SEARCH_RESULTS);
+            String needle = caseSensitive ? query : query.toLowerCase(java.util.Locale.ROOT);
+            List<Map<String, Object>> matches = new ArrayList<>();
+            int scannedFiles = 0;
+            boolean truncated = false;
+
+            int[] scanned = {0};
+            boolean[] limited = {false};
+            Files.walkFileTree(directory, new SimpleFileVisitor<>() {
+                @Override
+                public FileVisitResult preVisitDirectory(Path current, BasicFileAttributes attributes) {
+                    return current.equals(directory) || !ignoredSearchPath(current)
+                            ? FileVisitResult.CONTINUE
+                            : FileVisitResult.SKIP_SUBTREE;
+                }
+
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) throws IOException {
+                    if (Files.isSymbolicLink(file) || !attributes.isRegularFile()) {
+                        return FileVisitResult.CONTINUE;
+                    }
+                    if (++scanned[0] > MAX_SEARCH_FILES) {
+                        limited[0] = true;
+                        return FileVisitResult.TERMINATE;
+                    }
+                    if (attributes.size() > MAX_SEARCH_FILE_BYTES) {
+                        return FileVisitResult.CONTINUE;
+                    }
+                    byte[] bytes = Files.readAllBytes(file);
+                    if (containsNul(bytes)) {
+                        return FileVisitResult.CONTINUE;
+                    }
+                    String[] lines = new String(bytes, StandardCharsets.UTF_8).split("\\R", -1);
+                    for (int lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+                        String comparable = caseSensitive ? lines[lineIndex] : lines[lineIndex].toLowerCase(java.util.Locale.ROOT);
+                        if (comparable.contains(needle)) {
+                            matches.add(searchMatch(file, lineIndex + 1, lines[lineIndex]));
+                            if (matches.size() >= maxResults) {
+                                limited[0] = true;
+                                return FileVisitResult.TERMINATE;
+                            }
+                        }
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFileFailed(Path file, IOException error) {
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+            scannedFiles = scanned[0];
+            truncated = limited[0];
+            return ToolExecutionResult.success(Map.of(
+                    "path", workspaceRelative(directory),
+                    "query", query,
+                    "matches", matches,
+                    "scannedFiles", scannedFiles,
+                    "truncated", truncated));
+        } catch (Exception ex) {
+            return ToolExecutionResult.failure("fs.search failed: " + message(ex));
         }
     }
 
@@ -179,6 +264,66 @@ public final class FileTool {
             throw new IllegalArgumentException("Path must stay inside the configured workspace.");
         }
         return path;
+    }
+
+    private Map<String, Object> searchMatch(Path file, int lineNumber, String line) {
+        return Map.of(
+                "path", workspaceRelative(file),
+                "line", lineNumber,
+                "text", preview(line));
+    }
+
+    private String workspaceRelative(Path path) {
+        return workspaceRoot.relativize(path).toString().replace('\\', '/');
+    }
+
+    private boolean ignoredSearchPath(Path path) {
+        Path relative = workspaceRoot.relativize(path);
+        for (Path segment : relative) {
+            String name = segment.toString();
+            if (".git".equals(name)
+                    || ".gradle".equals(name)
+                    || "node_modules".equals(name)
+                    || "build".equals(name)
+                    || "target".equals(name)
+                    || "out".equals(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsNul(byte[] bytes) {
+        for (byte value : bytes) {
+            if (value == 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean booleanValue(Map<String, Object> arguments, String key, boolean fallback) {
+        String value = value(arguments, key);
+        return value == null ? fallback : Boolean.parseBoolean(value);
+    }
+
+    private static int boundedInteger(Map<String, Object> arguments, String key, int fallback, int min, int max) {
+        String value = value(arguments, key);
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Math.max(min, Math.min(Integer.parseInt(value), max));
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException(key + " must be an integer.");
+        }
+    }
+
+    private static String preview(String value) {
+        String normalized = value == null ? "" : value.trim();
+        return normalized.length() <= MAX_SEARCH_LINE_CHARS
+                ? normalized
+                : normalized.substring(0, MAX_SEARCH_LINE_CHARS) + "...";
     }
 
     private Map<String, Object> entry(Path path) {

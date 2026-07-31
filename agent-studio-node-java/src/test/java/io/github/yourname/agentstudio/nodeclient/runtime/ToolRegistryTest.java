@@ -27,4 +27,18 @@ class ToolRegistryTest {
         assertTrue(properties.containsKey("timeoutMs"));
         registry.close();
     }
+
+    @Test
+    void advertisesWorkspaceSearchWithARequiredQuery() throws Exception {
+        ToolRegistry registry = new ToolRegistry(HttpClient.newHttpClient(), Files.createTempDirectory("agent-studio-tools"));
+
+        var capability = registry.capabilities().stream()
+                .filter(item -> "fs.search".equals(item.name()))
+                .findFirst()
+                .orElseThrow();
+
+        assertTrue(capability.enabled());
+        assertEquals(java.util.List.of("query"), capability.inputSchema().get("required"));
+        registry.close();
+    }
 }

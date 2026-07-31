@@ -61,6 +61,17 @@ public class ToolRegistry {
                         objectSchema(Map.of(
                                 "path", Map.of("type", "string")), "path")),
                 new NodeCapability(
+                        "fs.search",
+                        "Search UTF-8 source files under an allowed workspace path and return matching line numbers.",
+                        "LOW",
+                        fileTool != null,
+                        false,
+                        objectSchema(Map.of(
+                                "path", Map.of("type", "string"),
+                                "query", Map.of("type", "string"),
+                                "caseSensitive", Map.of("type", "boolean"),
+                                "maxResults", Map.of("type", "integer")), "query")),
+                new NodeCapability(
                         "fs.write",
                         "Write a UTF-8 text file under the configured workspace.",
                         "MEDIUM",
@@ -189,6 +200,11 @@ public class ToolRegistry {
             return fileTool == null
                     ? ToolExecutionResult.failure("fs.read is unavailable because this node has no configured workspace.")
                     : fileTool.read(arguments);
+        }
+        if ("fs.search".equals(toolName)) {
+            return fileTool == null
+                    ? ToolExecutionResult.failure("fs.search is unavailable because this node has no configured workspace.")
+                    : fileTool.search(arguments);
         }
         if ("fs.write".equals(toolName)) {
             return fileTool == null

@@ -62,4 +62,28 @@ class CodingToolAdapterScopeTest {
                 .containsEntry("command", "javac App.java")
                 .containsEntry("cwd", "projects/task-board/backend");
     }
+
+    @Test
+    void forwardsSearchRootsInsideTheRunScope() {
+        NodeService nodes = mock(NodeService.class);
+        CodingToolAdapter adapter = new CodingToolAdapter(nodes, new ObjectMapper());
+        ActorContext actor = new ActorContext("tenant", "user", java.util.Set.of(), java.util.Set.of());
+        var tool = new CodingToolAdapter.AvailableTool(
+                "node_tool_6", "node-1", "fs.search", new ModelGateway.ModelTool("node_tool_6", "Search", Map.of()));
+        when(nodes.callToolForRun(any(), any(), any(), any(), any(), any())).thenReturn(
+                new NodeToolCallResult("invocation-2", "node-1", "fs.search", "SUCCEEDED", Map.of(), null));
+
+        adapter.execute(
+                "run-1",
+                tool,
+                new ModelGateway.ModelToolCall("call-2", "node_tool_6", Map.of("path", "src", "query", "TaskController")),
+                actor,
+                CodingWorkspaceScope.from("projects/task-board"));
+
+        ArgumentCaptor<CallNodeToolCommand> command = ArgumentCaptor.forClass(CallNodeToolCommand.class);
+        verify(nodes).callToolForRun(eq("run-1"), eq("call-2"), eq("node-1"), eq("fs.search"), command.capture(), eq(actor));
+        assertThat(command.getValue().arguments())
+                .containsEntry("path", "projects/task-board/src")
+                .containsEntry("query", "TaskController");
+    }
 }
