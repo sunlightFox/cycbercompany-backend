@@ -67,11 +67,13 @@ public class AgentStudioNodeApplication {
                 registered.nodeSecret(),
                 registered.websocketUrl(),
                 registered.name(),
-                workspace.toString());
+                workspace.toString(),
+                NodeAccessMode.from(options.get("access")).name());
         configStore.save(config);
         System.out.println("Node registered successfully.");
         System.out.println("nodeId=" + config.nodeId());
         System.out.println("workspace=" + config.workspaceRoot());
+        System.out.println("access=" + config.resolvedAccessMode().name().toLowerCase(java.util.Locale.ROOT));
         System.out.println("config=" + configStore.path());
     }
 
@@ -98,7 +100,7 @@ public class AgentStudioNodeApplication {
                 Agent Studio Java Node
 
                 Commands:
-                  register --server http://localhost:8080 --token <registrationToken> [--name my-pc] [--workspace path] [--config node-config.json]
+                  register --server http://localhost:8080 --token <registrationToken> [--name my-pc] [--workspace path] [--access workspace|system] [--config node-config.json]
                   start [--config node-config.json]
                   install-browsers
                 """);

@@ -93,4 +93,23 @@ class FileToolTest {
         assertTrue(Integer.valueOf(2).equals(result.result().get("startLine")));
         assertTrue(Integer.valueOf(3).equals(result.result().get("endLine")));
     }
+
+    @Test
+    void systemAccessCanOrganizeFilesOutsideTheWorkspace() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-node-files");
+        Path outside = Files.createTempDirectory("agent-studio-node-system-files");
+        Files.writeString(outside.resolve("inbox.txt"), "sort me");
+        FileTool tool = new FileTool(workspace, true);
+
+        var mkdir = tool.createDirectory(Map.of("path", outside.resolve("Documents").toString()));
+        var move = tool.move(Map.of(
+                "source", outside.resolve("inbox.txt").toString(),
+                "destination", outside.resolve("Documents/inbox.txt").toString()));
+        var delete = tool.delete(Map.of("path", outside.resolve("Documents/inbox.txt").toString()));
+
+        assertTrue(mkdir.success());
+        assertTrue(move.success());
+        assertTrue(delete.success());
+        assertFalse(Files.exists(outside.resolve("Documents/inbox.txt")));
+    }
 }

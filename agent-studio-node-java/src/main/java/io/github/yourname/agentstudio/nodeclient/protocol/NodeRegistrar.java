@@ -46,6 +46,7 @@ public class NodeRegistrar {
                 result.nodeSecret(),
                 result.websocketUrl(),
                 name,
+                null,
                 null);
     }
 

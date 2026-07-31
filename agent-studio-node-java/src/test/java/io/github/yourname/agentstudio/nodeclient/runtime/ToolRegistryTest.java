@@ -3,6 +3,7 @@ package io.github.yourname.agentstudio.nodeclient.runtime;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.yourname.agentstudio.nodeclient.NodeAccessMode;
 import java.net.http.HttpClient;
 import java.nio.file.Files;
 import java.util.Map;
@@ -78,6 +79,28 @@ class ToolRegistryTest {
 
         assertTrue(result.success());
         assertEquals(false, result.result().get("closed"));
+        registry.close();
+    }
+
+    @Test
+    void systemModeAdvertisesApprovalProtectedComputerTools() throws Exception {
+        ToolRegistry registry = new ToolRegistry(
+                HttpClient.newHttpClient(), Files.createTempDirectory("agent-studio-system-tools"), NodeAccessMode.SYSTEM);
+
+        var move = registry.capabilities().stream().filter(item -> "system.fs.move".equals(item.name())).findFirst().orElseThrow();
+        var shell = registry.capabilities().stream().filter(item -> "system.shell.run".equals(item.name())).findFirst().orElseThrow();
+
+        assertTrue(move.enabled() && move.requiresApproval());
+        assertTrue(shell.enabled() && shell.requiresApproval());
+        registry.close();
+    }
+
+    @Test
+    void workspaceModeDoesNotAdvertiseSystemTools() throws Exception {
+        ToolRegistry registry = new ToolRegistry(
+                HttpClient.newHttpClient(), Files.createTempDirectory("agent-studio-workspace-tools"), NodeAccessMode.WORKSPACE);
+
+        assertTrue(registry.capabilities().stream().noneMatch(item -> item.name().startsWith("system.")));
         registry.close();
     }
 }

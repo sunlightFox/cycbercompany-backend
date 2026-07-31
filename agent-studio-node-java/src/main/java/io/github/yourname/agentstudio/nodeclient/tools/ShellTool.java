@@ -33,13 +33,19 @@ public final class ShellTool {
     private static final int MAX_TIMEOUT_SECONDS = 120;
 
     private final Path workspaceRoot;
+    private final boolean systemAccess;
 
     public ShellTool(Path workspaceRoot) {
+        this(workspaceRoot, false);
+    }
+
+    public ShellTool(Path workspaceRoot, boolean systemAccess) {
         try {
             if (workspaceRoot == null || !Files.isDirectory(workspaceRoot)) {
                 throw new IllegalArgumentException("Workspace must be an existing directory: " + workspaceRoot);
             }
             this.workspaceRoot = workspaceRoot.toRealPath();
+            this.systemAccess = systemAccess;
         } catch (IOException ex) {
             throw new IllegalArgumentException("Cannot resolve workspace: " + workspaceRoot, ex);
         }
@@ -126,7 +132,7 @@ public final class ShellTool {
         }
         try {
             Path realPath = candidate.toRealPath();
-            if (!realPath.startsWith(workspaceRoot)) {
+            if (!systemAccess && !realPath.startsWith(workspaceRoot)) {
                 throw new IllegalArgumentException("Working directory must stay inside the configured workspace.");
             }
             return realPath;

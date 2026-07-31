@@ -4,6 +4,7 @@ import io.github.yourname.agentstudio.nodeclient.runtime.ToolExecutionResult;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
+import java.nio.file.FileVisitOption;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
@@ -28,13 +29,19 @@ public final class FileTool {
     private static final int MAX_SEARCH_LINE_CHARS = 500;
 
     private final Path workspaceRoot;
+    private final boolean systemAccess;
 
     public FileTool(Path workspaceRoot) {
+        this(workspaceRoot, false);
+    }
+
+    public FileTool(Path workspaceRoot, boolean systemAccess) {
         try {
             if (workspaceRoot == null || !Files.isDirectory(workspaceRoot)) {
                 throw new IllegalArgumentException("Workspace must be an existing directory: " + workspaceRoot);
             }
             this.workspaceRoot = workspaceRoot.toRealPath();
+            this.systemAccess = systemAccess;
         } catch (IOException ex) {
             throw new IllegalArgumentException("Cannot resolve workspace: " + workspaceRoot, ex);
         }
@@ -52,7 +59,7 @@ public final class FileTool {
                         .toList();
             }
             return ToolExecutionResult.success(Map.of(
-                    "path", directory.toString(),
+                    "path", displayPath(directory),
                     "entries", entries,
                     "truncated", entries.size() == MAX_LIST_ENTRIES));
         } catch (Exception ex) {
@@ -220,13 +227,87 @@ public final class FileTool {
         }
     }
 
+    public ToolExecutionResult createDirectory(Map<String, Object> arguments) {
+        try {
+            Path directory = resolveForWrite(value(arguments, "path"));
+            boolean existed = Files.isDirectory(directory);
+            Files.createDirectories(directory);
+            return ToolExecutionResult.success(Map.of(
+                    "path", displayPath(directory),
+                    "created", !existed));
+        } catch (Exception ex) {
+            return ToolExecutionResult.failure("fs.mkdir failed: " + message(ex));
+        }
+    }
+
+    public ToolExecutionResult move(Map<String, Object> arguments) {
+        try {
+            Path source = resolveExisting(value(arguments, "source"), false);
+            Path destination = resolveForWrite(value(arguments, "destination"));
+            if (source.equals(destination)) {
+                return ToolExecutionResult.failure("Source and destination must be different.");
+            }
+            if (Files.exists(destination) && !booleanValue(arguments, "replaceExisting", false)) {
+                return ToolExecutionResult.failure("Destination already exists: " + destination);
+            }
+            boolean replaced = Files.exists(destination);
+            Files.createDirectories(destination.getParent());
+            if (replaced) {
+                Files.move(source, destination, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } else {
+                Files.move(source, destination);
+            }
+            return ToolExecutionResult.success(Map.of(
+                    "source", displayPath(source),
+                    "destination", displayPath(destination),
+                    "replaced", replaced));
+        } catch (Exception ex) {
+            return ToolExecutionResult.failure("fs.move failed: " + message(ex));
+        }
+    }
+
+    public ToolExecutionResult delete(Map<String, Object> arguments) {
+        try {
+            Path target = resolveExisting(value(arguments, "path"), false);
+            if (target.getParent() == null) {
+                return ToolExecutionResult.failure("Deleting a filesystem root is not allowed.");
+            }
+            boolean recursive = booleanValue(arguments, "recursive", false);
+            if (Files.isDirectory(target) && !recursive) {
+                Files.delete(target);
+            } else if (Files.isDirectory(target)) {
+                Files.walkFileTree(target, java.util.EnumSet.noneOf(FileVisitOption.class), Integer.MAX_VALUE, new SimpleFileVisitor<>() {
+                    @Override
+                    public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) throws IOException {
+                        Files.delete(file);
+                        return FileVisitResult.CONTINUE;
+                    }
+
+                    @Override
+                    public FileVisitResult postVisitDirectory(Path directory, IOException error) throws IOException {
+                        if (error != null) {
+                            throw error;
+                        }
+                        Files.delete(directory);
+                        return FileVisitResult.CONTINUE;
+                    }
+                });
+            } else {
+                Files.delete(target);
+            }
+            return ToolExecutionResult.success(Map.of("path", displayPath(target), "deleted", true, "recursive", recursive));
+        } catch (Exception ex) {
+            return ToolExecutionResult.failure("fs.delete failed: " + message(ex));
+        }
+    }
+
     private Path resolveExisting(String requested, boolean directory) throws IOException {
         Path candidate = candidate(requested);
         if (!Files.exists(candidate)) {
             throw new IllegalArgumentException("Path does not exist: " + candidate);
         }
         Path realPath = candidate.toRealPath();
-        if (!realPath.startsWith(workspaceRoot)) {
+        if (!isAllowed(realPath)) {
             throw new IllegalArgumentException("Path must stay inside the configured workspace.");
         }
         if (directory && !Files.isDirectory(realPath)) {
@@ -290,10 +371,10 @@ public final class FileTool {
                 throw new IllegalArgumentException("Path has no existing workspace parent.");
             }
         }
-        if (!existingParent.toRealPath().startsWith(workspaceRoot)) {
+        if (!isAllowed(existingParent.toRealPath())) {
             throw new IllegalArgumentException("Path must stay inside the configured workspace.");
         }
-        if (Files.exists(candidate) && !candidate.toRealPath().startsWith(workspaceRoot)) {
+        if (Files.exists(candidate) && !isAllowed(candidate.toRealPath())) {
             throw new IllegalArgumentException("Path must stay inside the configured workspace.");
         }
         return candidate;
@@ -308,7 +389,7 @@ public final class FileTool {
             path = workspaceRoot.resolve(path);
         }
         path = path.normalize();
-        if (!path.startsWith(workspaceRoot)) {
+        if (!isAllowed(path)) {
             throw new IllegalArgumentException("Path must stay inside the configured workspace.");
         }
         return path;
@@ -322,8 +403,19 @@ public final class FileTool {
     }
 
     private String workspaceRelative(Path path) {
+        if (!path.startsWith(workspaceRoot)) {
+            return path.toString();
+        }
         String relative = workspaceRoot.relativize(path).toString().replace('\\', '/');
         return relative.isBlank() ? "." : relative;
+    }
+
+    private boolean isAllowed(Path path) {
+        return systemAccess || path.startsWith(workspaceRoot);
+    }
+
+    private String displayPath(Path path) {
+        return workspaceRelative(path);
     }
 
     private boolean ignoredSearchPath(Path path) {

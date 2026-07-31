@@ -49,7 +49,7 @@ public class NodeWebSocketClient implements WebSocket.Listener {
         this.httpClient = httpClient;
         this.config = config;
         this.systemInfo = systemInfo;
-        this.toolRegistry = new ToolRegistry(httpClient, workspaceRoot(config));
+        this.toolRegistry = new ToolRegistry(httpClient, workspaceRoot(config), config.resolvedAccessMode());
     }
 
     public void startBlocking() throws Exception {

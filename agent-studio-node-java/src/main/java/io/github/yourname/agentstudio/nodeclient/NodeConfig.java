@@ -12,5 +12,10 @@ public record NodeConfig(
         String nodeSecret,
         String websocketUrl,
         String name,
-        String workspaceRoot) {
+        String workspaceRoot,
+        String accessMode) {
+
+    public NodeAccessMode resolvedAccessMode() {
+        return NodeAccessMode.from(accessMode);
+    }
 }

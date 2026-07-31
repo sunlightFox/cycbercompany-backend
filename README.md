@@ -97,8 +97,20 @@ GET  /api/v1/runs/{id}/events
 
 ## Web Search
 
-Web search is enabled by default and currently uses DuckDuckGo's HTML endpoint,
-so it does not require another provider key:
+Web search uses a self-hosted [SearXNG](https://github.com/searxng/searxng) JSON endpoint.
+It preserves the original query, maps intent to SearXNG categories and time windows, then
+deduplicates and diversifies the candidates. It reads the highest-ranked result pages and
+marks only readable, query-relevant excerpts as verified evidence. There is no RSS fallback.
+
+Start the included local SearXNG service before starting the backend:
+
+```powershell
+docker compose -f docker-compose.searxng.yml up -d
+```
+
+The backend defaults to `http://localhost:8888`; set `SEARXNG_ENDPOINT` when it is hosted
+elsewhere. The compose file binds SearXNG to localhost only. Change the generated secret in
+`infra/searxng/settings.yml` before exposing it on a network.
 
 ```powershell
 Invoke-RestMethod -Method Post `
@@ -106,6 +118,21 @@ Invoke-RestMethod -Method Post `
   -ContentType application/json `
   -Body '{"query":"assistant-ui GitHub","limit":3}'
 ```
+
+Pass `trace: true` to inspect the chosen intent, SearXNG status, duplicates removed,
+domain-diversity filtering, and page-verification counts. Without it, the endpoint continues
+to return the result array for compatibility.
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://localhost:8080/api/v1/web-search `
+  -ContentType application/json `
+  -Body '{"query":"latest Java security news","limit":5,"mode":"AUTO","freshness":"WEEK","excludeDomains":["techcrunch.com"],"trace":true}'
+```
+
+The optional request fields are `mode`, `freshness` (`ANY`, `DAY`, `WEEK`, `MONTH`),
+`includeDomains`, `excludeDomains`, and `trace`. SearXNG connection, per-domain limits,
+and page-reader safety limits are configured under `app.web-search` in `application.yml`.
 
 The agent automatically searches the web when the user asks for terms such as
 `联网`, `搜索`, `最新`, `新闻`, `GitHub`, `latest`, or `search`. Natural-language

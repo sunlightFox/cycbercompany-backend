@@ -108,4 +108,26 @@ class CodingToolAdapterScopeTest {
                 .containsEntry("path", "projects/task-board/src")
                 .containsEntry("query", "TaskController");
     }
+
+    @Test
+    void exposesSystemToolsWithoutRewritingTheirAbsolutePaths() {
+        NodeService nodes = mock(NodeService.class);
+        CodingToolAdapter adapter = new CodingToolAdapter(nodes, new ObjectMapper());
+        ActorContext actor = new ActorContext("tenant", "user", java.util.Set.of(), java.util.Set.of());
+        var tool = new CodingToolAdapter.AvailableTool(
+                "node_tool_system", "node-1", "system.fs.read", new ModelGateway.ModelTool("node_tool_system", "Read anywhere", Map.of()));
+        when(nodes.callToolForRun(any(), any(), any(), any(), any(), any())).thenReturn(
+                new NodeToolCallResult("invocation-system", "node-1", "system.fs.read", "SUCCEEDED", Map.of(), null));
+
+        adapter.execute(
+                "run-system",
+                tool,
+                new ModelGateway.ModelToolCall("call-system", "node_tool_system", Map.of("path", "C:/shared/notes.txt")),
+                actor,
+                CodingWorkspaceScope.from("projects/task-board"));
+
+        ArgumentCaptor<CallNodeToolCommand> command = ArgumentCaptor.forClass(CallNodeToolCommand.class);
+        verify(nodes).callToolForRun(eq("run-system"), eq("call-system"), eq("node-1"), eq("system.fs.read"), command.capture(), eq(actor));
+        assertThat(command.getValue().arguments()).containsEntry("path", "C:/shared/notes.txt");
+    }
 }

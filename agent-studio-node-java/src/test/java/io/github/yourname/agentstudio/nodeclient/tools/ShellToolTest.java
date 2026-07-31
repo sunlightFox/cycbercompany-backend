@@ -32,4 +32,16 @@ class ShellToolTest {
         assertFalse(result.success());
         assertTrue(result.errorMessage().contains("configured workspace"));
     }
+
+    @Test
+    void systemAccessAcceptsAWorkingDirectoryOutsideTheWorkspace() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-node-shell");
+        Path outside = Files.createTempDirectory("agent-studio-node-system-shell");
+        ShellTool tool = new ShellTool(workspace, true);
+
+        var result = tool.run(Map.of("command", "echo system-access", "cwd", outside.toString(), "timeoutSeconds", 5));
+
+        assertTrue(result.success());
+        assertTrue(result.result().get("cwd").toString().startsWith(outside.toRealPath().toString()));
+    }
 }

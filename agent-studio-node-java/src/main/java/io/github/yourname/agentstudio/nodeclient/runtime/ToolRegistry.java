@@ -1,5 +1,6 @@
 package io.github.yourname.agentstudio.nodeclient.runtime;
 
+import io.github.yourname.agentstudio.nodeclient.NodeAccessMode;
 import io.github.yourname.agentstudio.nodeclient.protocol.NodeCapability;
 import io.github.yourname.agentstudio.nodeclient.tools.BrowserTool;
 import io.github.yourname.agentstudio.nodeclient.tools.FileTool;
@@ -28,11 +29,17 @@ public class ToolRegistry {
     private final GitTool gitTool;
     private final ManagedProcessTool managedProcessTool;
     private final ProjectTool projectTool;
+    private final boolean systemAccess;
 
     public ToolRegistry(HttpClient httpClient, Path workspaceRoot) {
+        this(httpClient, workspaceRoot, NodeAccessMode.WORKSPACE);
+    }
+
+    public ToolRegistry(HttpClient httpClient, Path workspaceRoot, NodeAccessMode accessMode) {
+        this.systemAccess = accessMode != null && accessMode.permitsSystemAccess();
         this.browserTool = new BrowserTool(httpClient);
-        this.fileTool = workspaceRoot == null ? null : new FileTool(workspaceRoot);
-        this.shellTool = workspaceRoot == null ? null : new ShellTool(workspaceRoot);
+        this.fileTool = workspaceRoot == null ? null : new FileTool(workspaceRoot, systemAccess);
+        this.shellTool = workspaceRoot == null ? null : new ShellTool(workspaceRoot, systemAccess);
         this.gitTool = workspaceRoot == null ? null : new GitTool(workspaceRoot);
         this.managedProcessTool = workspaceRoot == null ? null : new ManagedProcessTool(workspaceRoot);
         this.projectTool = workspaceRoot == null ? null : new ProjectTool(workspaceRoot);
@@ -217,7 +224,32 @@ public class ToolRegistry {
                         objectSchema(Map.of(
                                 "selector", Map.of("type", "string"),
                                 "text", Map.of("type", "string"))))));
+        if (systemAccess) {
+            capabilities.addAll(systemCapabilities());
+        }
         return capabilities;
+    }
+
+    private List<NodeCapability> systemCapabilities() {
+        return List.of(
+                new NodeCapability("system.fs.list", "List files anywhere on this computer or server. Requires human approval.", "MEDIUM", true, true,
+                        objectSchema(Map.of("path", Map.of("type", "string")), "path")),
+                new NodeCapability("system.fs.read", "Read a text file anywhere on this computer or server. Requires human approval.", "MEDIUM", true, true,
+                        objectSchema(Map.of("path", Map.of("type", "string")), "path")),
+                new NodeCapability("system.fs.search", "Search text files anywhere on this computer or server. Requires human approval.", "HIGH", true, true,
+                        objectSchema(Map.of("path", Map.of("type", "string"), "query", Map.of("type", "string"), "caseSensitive", Map.of("type", "boolean"), "maxResults", Map.of("type", "integer")), "path", "query")),
+                new NodeCapability("system.fs.write", "Write a UTF-8 text file anywhere on this computer or server. Requires human approval.", "HIGH", true, true,
+                        objectSchema(Map.of("path", Map.of("type", "string"), "content", Map.of("type", "string")), "path", "content")),
+                new NodeCapability("system.fs.apply_patch", "Apply one literal replacement to a text file anywhere on this computer or server. Requires human approval.", "HIGH", true, true,
+                        objectSchema(Map.of("path", Map.of("type", "string"), "expected", Map.of("type", "string"), "replacement", Map.of("type", "string")), "path", "expected", "replacement")),
+                new NodeCapability("system.fs.mkdir", "Create a directory anywhere on this computer or server. Requires human approval.", "HIGH", true, true,
+                        objectSchema(Map.of("path", Map.of("type", "string")), "path")),
+                new NodeCapability("system.fs.move", "Move or rename a file or directory anywhere on this computer or server. Requires human approval.", "HIGH", true, true,
+                        objectSchema(Map.of("source", Map.of("type", "string"), "destination", Map.of("type", "string"), "replaceExisting", Map.of("type", "boolean")), "source", "destination")),
+                new NodeCapability("system.fs.delete", "Delete a file or directory anywhere on this computer or server. Requires human approval.", "HIGH", true, true,
+                        objectSchema(Map.of("path", Map.of("type", "string"), "recursive", Map.of("type", "boolean")), "path")),
+                new NodeCapability("system.shell.run", "Run a shell command from any directory on this computer or server. Requires human approval.", "HIGH", true, true,
+                        objectSchema(Map.of("command", Map.of("type", "string"), "cwd", Map.of("type", "string"), "timeoutSeconds", Map.of("type", "integer")), "command")));
     }
 
     private Map<String, Object> objectSchema(Map<String, Object> properties, String... required) {
@@ -238,6 +270,33 @@ public class ToolRegistry {
     public ToolExecutionResult execute(String toolName, Map<String, Object> arguments, String executionSessionId) {
         if ("browser.close_session".equals(toolName)) {
             return ToolExecutionResult.success(Map.of("closed", browserTool.closeSession(executionSessionId)));
+        }
+        if ("system.fs.list".equals(toolName)) {
+            return fileTool == null ? unavailable(toolName) : fileTool.list(arguments);
+        }
+        if ("system.fs.read".equals(toolName)) {
+            return fileTool == null ? unavailable(toolName) : fileTool.read(arguments);
+        }
+        if ("system.fs.search".equals(toolName)) {
+            return fileTool == null ? unavailable(toolName) : fileTool.search(arguments);
+        }
+        if ("system.fs.write".equals(toolName)) {
+            return fileTool == null ? unavailable(toolName) : fileTool.write(arguments);
+        }
+        if ("system.fs.apply_patch".equals(toolName)) {
+            return fileTool == null ? unavailable(toolName) : fileTool.applyPatch(arguments);
+        }
+        if ("system.fs.mkdir".equals(toolName)) {
+            return fileTool == null ? unavailable(toolName) : fileTool.createDirectory(arguments);
+        }
+        if ("system.fs.move".equals(toolName)) {
+            return fileTool == null ? unavailable(toolName) : fileTool.move(arguments);
+        }
+        if ("system.fs.delete".equals(toolName)) {
+            return fileTool == null ? unavailable(toolName) : fileTool.delete(arguments);
+        }
+        if ("system.shell.run".equals(toolName)) {
+            return shellTool == null ? unavailable(toolName) : shellTool.run(arguments);
         }
         if ("fs.list".equals(toolName)) {
             return fileTool == null
@@ -331,6 +390,10 @@ public class ToolRegistry {
             return browserTool.type(executionSessionId, arguments);
         }
         return ToolExecutionResult.failure("Unsupported node tool: " + toolName);
+    }
+
+    private static ToolExecutionResult unavailable(String toolName) {
+        return ToolExecutionResult.failure(toolName + " is unavailable because this node has no configured workspace.");
     }
 
     public void close() {

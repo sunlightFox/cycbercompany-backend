@@ -47,6 +47,15 @@ public class CodingToolAdapter {
         return "project.inspect".equals(name)
                 || "project.discover".equals(name)
                 || "project.map".equals(name)
+                || "system.fs.list".equals(name)
+                || "system.fs.read".equals(name)
+                || "system.fs.search".equals(name)
+                || "system.fs.write".equals(name)
+                || "system.fs.apply_patch".equals(name)
+                || "system.fs.mkdir".equals(name)
+                || "system.fs.move".equals(name)
+                || "system.fs.delete".equals(name)
+                || "system.shell.run".equals(name)
                 || "fs.list".equals(name)
                 || "fs.read".equals(name)
                 || "fs.search".equals(name)
@@ -65,7 +74,16 @@ public class CodingToolAdapter {
                 || "browser.wait".equals(name)
                 || "browser.screenshot".equals(name)
                 || "browser.click".equals(name)
-                || "browser.type".equals(name);
+                || "browser.type".equals(name)
+                || "system.fs.list".equals(name)
+                || "system.fs.read".equals(name)
+                || "system.fs.search".equals(name)
+                || "system.fs.write".equals(name)
+                || "system.fs.apply_patch".equals(name)
+                || "system.fs.mkdir".equals(name)
+                || "system.fs.move".equals(name)
+                || "system.fs.delete".equals(name)
+                || "system.shell.run".equals(name);
     }
 
     public ToolExecution execute(
@@ -157,6 +175,18 @@ public class CodingToolAdapter {
             Map<String, Object> arguments,
             CodingWorkspaceScope workspaceScope) {
         Map<String, Object> scoped = new LinkedHashMap<>(arguments == null ? Map.of() : arguments);
+        if ("system.fs.list".equals(toolName)
+                || "system.fs.read".equals(toolName)
+                || "system.fs.search".equals(toolName)
+                || "system.fs.write".equals(toolName)
+                || "system.fs.apply_patch".equals(toolName)
+                || "system.fs.mkdir".equals(toolName)
+                || "system.fs.move".equals(toolName)
+                || "system.fs.delete".equals(toolName)
+                || "system.shell.run".equals(toolName)) {
+            // system.* 工具本身已经声明“绝对路径”，不能再套用项目工作区范围。
+            return scoped;
+        }
         if ("fs.list".equals(toolName)
                 || "fs.read".equals(toolName)
                 || "fs.search".equals(toolName)
