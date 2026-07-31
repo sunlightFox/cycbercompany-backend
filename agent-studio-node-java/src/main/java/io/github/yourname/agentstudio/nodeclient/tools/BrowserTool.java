@@ -6,11 +6,14 @@ import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.TimeoutError;
 import com.microsoft.playwright.options.LoadState;
+import com.microsoft.playwright.options.WaitForSelectorState;
 import io.github.yourname.agentstudio.nodeclient.runtime.ToolExecutionResult;
 import java.net.http.HttpClient;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -20,7 +23,57 @@ import java.util.Map;
  * <p>这个类运行在节点本机，因此打开的是“节点所在电脑/服务器”的浏览器环境。
  * 第一版使用单浏览器、单页面会话，便于服务端连续调用 open -> click -> type -> screenshot。
  */
-public class BrowserTool {
+public class BrowserTool implements AutoCloseable {
+
+    private static final int MAX_INTERACTIVE_ELEMENTS = 40;
+    private static final int MAX_INTERACTIVE_TEXT_LENGTH = 160;
+    private static final String INTERACTIVE_ELEMENTS_SCRIPT = """
+            () => {
+              const visible = (element) => {
+                const style = window.getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+              };
+              const selector = (element) => {
+                const escape = (value) => CSS.escape(String(value));
+                const parts = [];
+                let current = element;
+                while (current && current.nodeType === Node.ELEMENT_NODE && current !== document.body) {
+                  if (current.id) {
+                    parts.unshift('#' + escape(current.id));
+                    break;
+                  }
+                  const tag = current.tagName.toLowerCase();
+                  if (current.dataset && current.dataset.testid) {
+                    parts.unshift(tag + '[data-testid="' + escape(current.dataset.testid) + '"]');
+                  } else if (current.getAttribute('name')) {
+                    parts.unshift(tag + '[name="' + escape(current.getAttribute('name')) + '"]');
+                  } else {
+                    const siblings = Array.from(current.parentElement ? current.parentElement.children : [])
+                      .filter((sibling) => sibling.tagName === current.tagName);
+                    parts.unshift(tag + ':nth-of-type(' + (siblings.indexOf(current) + 1) + ')');
+                  }
+                  current = current.parentElement;
+                }
+                return parts.join(' > ');
+              };
+              return Array.from(document.querySelectorAll(
+                'button, input, textarea, select, a[href], [role="button"], [role="link"], [contenteditable="true"]'
+              ))
+                .filter(visible)
+                .slice(0, 40)
+                .map((element) => ({
+                  selector: selector(element),
+                  tag: element.tagName.toLowerCase(),
+                  role: element.getAttribute('role') || '',
+                  type: element.getAttribute('type') || '',
+                  name: element.getAttribute('name') || element.getAttribute('aria-label') || '',
+                  placeholder: element.getAttribute('placeholder') || '',
+                  text: (element.innerText || element.value || element.getAttribute('aria-label') || '').trim(),
+                  disabled: Boolean(element.disabled || element.getAttribute('aria-disabled') === 'true')
+                }));
+            }
+            """;
 
     // 本工具运行在节点本机，且复用一个浏览器/页面会话，适合连续执行 open -> click -> type。
 
@@ -55,6 +108,23 @@ public class BrowserTool {
             return ToolExecutionResult.success(pageState(current));
         } catch (Exception ex) {
             return ToolExecutionResult.failure(playwrightError("browser.snapshot", ex));
+        }
+    }
+
+    /** Waits for a visible element before returning the inspectable page state. */
+    public synchronized ToolExecutionResult waitFor(Map<String, Object> arguments) {
+        String selector = value(arguments, "selector");
+        if (selector == null || selector.isBlank()) {
+            return ToolExecutionResult.failure("Missing required argument: selector");
+        }
+        try {
+            Page current = requirePage();
+            current.waitForSelector(selector, new Page.WaitForSelectorOptions()
+                    .setState(WaitForSelectorState.VISIBLE)
+                    .setTimeout(number(arguments, "timeoutMs", 10_000)));
+            return ToolExecutionResult.success(pageState(current));
+        } catch (Exception ex) {
+            return ToolExecutionResult.failure(playwrightError("browser.wait", ex));
         }
     }
 
@@ -110,6 +180,34 @@ public class BrowserTool {
         }
     }
 
+    @Override
+    public synchronized void close() {
+        if (page != null) {
+            try {
+                page.close();
+            } catch (Exception ignored) {
+                // Closing a detached page must not prevent the node from shutting down.
+            }
+            page = null;
+        }
+        if (browser != null) {
+            try {
+                browser.close();
+            } catch (Exception ignored) {
+                // The browser may already have been closed externally.
+            }
+            browser = null;
+        }
+        if (playwright != null) {
+            try {
+                playwright.close();
+            } catch (Exception ignored) {
+                // Playwright owns native resources; best-effort cleanup is sufficient here.
+            }
+            playwright = null;
+        }
+    }
+
     private Page ensurePage(Map<String, Object> arguments) {
         if (playwright == null) {
             playwright = Playwright.create();
@@ -150,7 +248,53 @@ public class BrowserTool {
         }
         result.put("textPreview", preview(text));
         result.put("textLength", text.length());
+        result.put("interactiveElements", interactiveElements(current));
         return result;
+    }
+
+    private static List<Map<String, Object>> interactiveElements(Page current) {
+        try {
+            return normalizeInteractiveElements(current.evaluate(INTERACTIVE_ELEMENTS_SCRIPT));
+        } catch (Exception ignored) {
+            // Page inspection remains useful even when an unusual page blocks script evaluation.
+            return List.of();
+        }
+    }
+
+    static List<Map<String, Object>> normalizeInteractiveElements(Object rawElements) {
+        if (!(rawElements instanceof Iterable<?> iterable)) {
+            return List.of();
+        }
+        List<Map<String, Object>> elements = new ArrayList<>();
+        for (Object rawElement : iterable) {
+            if (elements.size() >= MAX_INTERACTIVE_ELEMENTS || !(rawElement instanceof Map<?, ?> map)) {
+                continue;
+            }
+            String selector = stringValue(map.get("selector"));
+            if (selector.isBlank()) {
+                continue;
+            }
+            Map<String, Object> element = new LinkedHashMap<>();
+            element.put("selector", selector);
+            copyTextField(map, element, "tag", 40);
+            copyTextField(map, element, "role", 80);
+            copyTextField(map, element, "type", 80);
+            copyTextField(map, element, "name", 160);
+            copyTextField(map, element, "placeholder", 160);
+            copyTextField(map, element, "text", MAX_INTERACTIVE_TEXT_LENGTH);
+            element.put("disabled", Boolean.TRUE.equals(map.get("disabled")));
+            elements.add(element);
+        }
+        return List.copyOf(elements);
+    }
+
+    private static void copyTextField(Map<?, ?> source, Map<String, Object> target, String name, int maxLength) {
+        String value = stringValue(source.get(name));
+        target.put(name, value.length() <= maxLength ? value : value.substring(0, maxLength) + "...");
+    }
+
+    private static String stringValue(Object value) {
+        return value == null ? "" : value.toString().trim();
     }
 
     private static String value(Map<String, Object> arguments, String key) {

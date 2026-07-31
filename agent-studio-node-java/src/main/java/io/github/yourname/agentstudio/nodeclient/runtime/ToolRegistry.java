@@ -126,11 +126,20 @@ public class ToolRegistry {
                                 "channel", Map.of("type", "string")))),
                 new NodeCapability(
                         "browser.snapshot",
-                        "Return current Playwright page URL, title and text preview.",
+                        "Return current Playwright page URL, text preview and visible interactive elements with selectors.",
                         "LOW",
                         true,
                         false,
                         objectSchema(Map.of())),
+                new NodeCapability(
+                        "browser.wait",
+                        "Wait for a visible element on the current Playwright page by selector.",
+                        "LOW",
+                        true,
+                        false,
+                        objectSchema(Map.of(
+                                "selector", Map.of("type", "string"),
+                                "timeoutMs", Map.of("type", "integer")), "selector")),
                 new NodeCapability(
                         "browser.screenshot",
                         "Take a PNG screenshot of the current Playwright page.",
@@ -224,6 +233,9 @@ public class ToolRegistry {
         if ("browser.snapshot".equals(toolName)) {
             return browserTool.snapshot(arguments);
         }
+        if ("browser.wait".equals(toolName)) {
+            return browserTool.waitFor(arguments);
+        }
         if ("browser.screenshot".equals(toolName)) {
             return browserTool.screenshot(arguments);
         }
@@ -237,6 +249,7 @@ public class ToolRegistry {
     }
 
     public void close() {
+        browserTool.close();
         if (managedProcessTool != null) {
             managedProcessTool.close();
         }

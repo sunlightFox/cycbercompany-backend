@@ -56,6 +56,7 @@ public class CodingToolAdapter {
                 || "git.diff".equals(name)
                 || "browser.open".equals(name)
                 || "browser.snapshot".equals(name)
+                || "browser.wait".equals(name)
                 || "browser.screenshot".equals(name)
                 || "browser.click".equals(name)
                 || "browser.type".equals(name);
