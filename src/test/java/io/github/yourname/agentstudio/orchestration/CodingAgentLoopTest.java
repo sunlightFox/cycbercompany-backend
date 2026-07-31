@@ -25,6 +25,26 @@ import org.mockito.ArgumentCaptor;
 class CodingAgentLoopTest {
 
     @Test
+    void compactsOldToolOutputButPreservesTaskInstructionsAndRecentState() {
+        List<ModelGateway.ModelMessage> messages = new ArrayList<>();
+        messages.add(new ModelGateway.ModelMessage("system", "System workflow"));
+        messages.add(new ModelGateway.ModelMessage("user", "Fix the project"));
+        for (int index = 0; index < 12; index++) {
+            messages.add(ModelGateway.ModelMessage.toolResult("old-" + index, "x".repeat(10_000)));
+        }
+        messages.add(ModelGateway.ModelMessage.toolResult("recent", "recent verification result"));
+
+        CodingAgentLoop.compactContextIfNeeded(messages);
+
+        assertThat(messages).anyMatch(message -> "System workflow".equals(message.content()));
+        assertThat(messages).anyMatch(message -> "Fix the project".equals(message.content()));
+        assertThat(messages).anyMatch(message -> message.content() != null && message.content().contains("Earlier tool history was compacted"));
+        assertThat(messages).anyMatch(message -> "recent verification result".equals(message.content()));
+        assertThat(messages.stream().mapToInt(message -> message.content() == null ? 0 : message.content().length()).sum())
+                .isLessThan(60_000);
+    }
+
+    @Test
     void cancelledRunDoesNotAskTheModelOrInvokeTools() {
         ModelGateway modelGateway = mock(ModelGateway.class);
         CodingToolAdapter tools = mock(CodingToolAdapter.class);

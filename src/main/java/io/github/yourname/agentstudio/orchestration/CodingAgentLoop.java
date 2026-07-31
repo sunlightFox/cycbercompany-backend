@@ -21,6 +21,9 @@ class CodingAgentLoop {
     private static final int MAX_MODEL_TURNS = 24;
     private static final int MAX_TOOL_CALLS = 48;
     private static final int TOOL_BUDGET_WARNING = 36;
+    // 以字符数近似上下文长度，避免长日志与截图文本在工具循环中无限累积。
+    private static final int MAX_CONTEXT_CHARS = 96_000;
+    private static final int RECENT_CONTEXT_CHARS = 42_000;
     private static final int MAX_RATE_LIMIT_RETRIES = 3;
     private static final Duration INITIAL_RATE_LIMIT_DELAY = Duration.ofSeconds(15);
     private static final Duration MAX_RATE_LIMIT_DELAY = Duration.ofSeconds(45);
@@ -131,6 +134,7 @@ class CodingAgentLoop {
 
             for (int turn = 1; turn <= MAX_MODEL_TURNS; turn++) {
                 ensureNotCancelled(runId);
+                compactContextIfNeeded(messages);
                 var answer = completeWithRateLimitRetry(
                     runId,
                     actor,
@@ -279,6 +283,55 @@ class CodingAgentLoop {
             result.add(new ModelGateway.ModelToolCall(id, call.name(), call.arguments() == null ? Map.of() : call.arguments()));
         }
         return result;
+    }
+
+    /**
+     * 在下一次模型调用前压缩过长的工具历史。
+     *
+     * <p>保留开头的系统指令与用户需求，并从尾部保留最近一段完整消息；被移除的旧工具输出
+     * 不应再被当作文件当前状态。因此插入明确提示，要求模型重新用受限工具确认事实。
+     */
+    static void compactContextIfNeeded(List<ModelGateway.ModelMessage> messages) {
+        int size = messages.stream().mapToInt(CodingAgentLoop::messageChars).sum();
+        if (size <= MAX_CONTEXT_CHARS || messages.size() <= 4) {
+            return;
+        }
+        List<ModelGateway.ModelMessage> prefix = new ArrayList<>();
+        int index = 0;
+        // 初始的 system 和 user 指令定义任务目标，不能因为日志过长被删除。
+        while (index < messages.size() && prefix.size() < 2) {
+            ModelGateway.ModelMessage message = messages.get(index++);
+            if ("system".equals(message.role()) || "user".equals(message.role())) {
+                prefix.add(message);
+            }
+        }
+        List<ModelGateway.ModelMessage> tail = new ArrayList<>();
+        int retained = 0;
+        for (int position = messages.size() - 1; position >= index; position--) {
+            ModelGateway.ModelMessage message = messages.get(position);
+            if (retained + messageChars(message) > RECENT_CONTEXT_CHARS && !tail.isEmpty()) {
+                break;
+            }
+            tail.addFirst(message);
+            retained += messageChars(message);
+        }
+        int removed = messages.size() - prefix.size() - tail.size();
+        messages.clear();
+        messages.addAll(prefix);
+        messages.add(new ModelGateway.ModelMessage(
+                "system",
+                "Earlier tool history was compacted (" + Math.max(0, removed)
+                        + " messages). Do not assume old outputs describe the current workspace. "
+                        + "Use project.map, project.inspect, git.diff, fs.search, or fs.read to re-check relevant facts before editing."));
+        messages.addAll(tail);
+    }
+
+    private static int messageChars(ModelGateway.ModelMessage message) {
+        int content = message.content() == null ? 0 : message.content().length();
+        int toolCalls = message.toolCalls() == null ? 0 : message.toolCalls().stream()
+                .mapToInt(call -> (call.name() == null ? 0 : call.name().length()) + call.arguments().toString().length())
+                .sum();
+        return content + toolCalls;
     }
 
     private static boolean isNodeUnavailable(String toolResult) {
