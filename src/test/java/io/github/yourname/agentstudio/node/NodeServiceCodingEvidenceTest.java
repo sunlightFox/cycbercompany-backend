@@ -42,17 +42,21 @@ class NodeServiceCodingEvidenceTest {
         NodeToolInvocationEntity patch = successful("fs.apply_patch", "{\"path\":\"projects/app/src/App.java\"}");
         NodeToolInvocationEntity command = successful("shell.run", "{\"command\":\"./gradlew test\"}");
         NodeToolInvocationEntity browser = successful("browser.open", "{\"url\":\"http://localhost:8080\"}");
+        NodeToolInvocationEntity trace = successful("browser.trace.stop", "{}");
+        trace.succeed("{\"path\":\"C:\\\\Users\\\\node\\\\AppData\\\\Local\\\\Temp\\\\browser-2026.zip\"}", NOW);
         NodeToolInvocationEntity failedRead = failed("fs.read");
 
         when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
-                .thenReturn(List.of(write, patch, command, browser, failedRead));
+                .thenReturn(List.of(write, patch, command, browser, trace, failedRead));
 
         CodingRunEvidenceView evidence = service().codingEvidence("run-a", ACTOR);
 
         assertThat(evidence.runId()).isEqualTo("run-a");
-        assertThat(evidence.toolCalls()).isEqualTo(5);
+        assertThat(evidence.toolCalls()).isEqualTo(6);
         assertThat(evidence.changedFiles()).containsExactly("projects/app/src/App.java");
-        assertThat(evidence.verificationTools()).containsExactly("shell.run", "browser.open");
+        assertThat(evidence.verificationTools()).containsExactly("shell.run", "browser.open", "browser.trace.stop");
+        assertThat(evidence.commandVerifications()).containsExactly("test");
+        assertThat(evidence.browserTraceArtifacts()).containsExactly("browser-2026.zip");
         assertThat(evidence.browserVerified()).isTrue();
         assertThat(evidence.failedTools()).containsExactly("fs.read");
     }

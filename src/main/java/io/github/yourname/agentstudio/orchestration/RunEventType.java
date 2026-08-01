@@ -1,9 +1,13 @@
 package io.github.yourname.agentstudio.orchestration;
 
 public enum RunEventType {
+    RUN_QUEUED,
+    SKILLS_RESOLVED,
+    RUN_SPEC_RESOLVED,
     RUN_STARTED,
     STEP_STARTED,
     RETRIEVAL_COMPLETED,
+    RETRIEVAL_SOURCES,
     MODEL_RATE_LIMITED,
     TOOL_CALL_REQUESTED,
     TOOL_CALL_STARTED,
@@ -15,6 +19,7 @@ public enum RunEventType {
     TOOL_CALL_FAILED,
     TOKEN_DELTA,
     STEP_COMPLETED,
+    RUN_NEEDS_VERIFICATION,
     FINAL_ANSWER,
     RUN_FAILED,
     RUN_CANCELLED

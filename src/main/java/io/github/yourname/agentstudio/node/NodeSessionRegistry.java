@@ -2,6 +2,7 @@ package io.github.yourname.agentstudio.node;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -9,6 +10,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.TextMessage;
+import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.WebSocketSession;
 
 /**
@@ -43,6 +45,19 @@ public class NodeSessionRegistry {
         return session != null && session.isOpen();
     }
 
+    /** 主动使旧凭据建立的连接失效；轮换后客户端必须使用新密钥重新认证。 */
+    public void disconnect(String nodeId, String reason) {
+        WebSocketSession session = sessions.remove(nodeId);
+        if (session == null || !session.isOpen()) {
+            return;
+        }
+        try {
+            session.close(new CloseStatus(1008, reason == null ? "node disconnected" : reason));
+        } catch (Exception ignored) {
+            // 会话已从注册表移除；底层连接关闭失败不能恢复旧凭据的授权。
+        }
+    }
+
     public NodeToolCallResult invoke(String nodeId, String toolName, Map<String, Object> arguments, Duration timeout) {
         return invoke(nodeId, toolName, arguments, timeout, null);
     }
@@ -74,9 +89,13 @@ public class NodeSessionRegistry {
             if (executionSessionId != null && !executionSessionId.isBlank()) {
                 payload.put("executionSessionId", executionSessionId);
             }
+            String json = objectMapper.writeValueAsString(payload);
+            if (json.getBytes(StandardCharsets.UTF_8).length > NodeProtocolLimits.MAX_CONTROL_MESSAGE_BYTES) {
+                throw new IllegalArgumentException("Node tool invocation exceeds the control message size limit.");
+            }
             synchronized (session) {
                 // 同一 WebSocket 的发送串行化，避免并发写入时帧交错。
-                session.sendMessage(new TextMessage(objectMapper.writeValueAsString(payload)));
+                session.sendMessage(new TextMessage(json));
             }
             return future.orTimeout(timeout.toMillis(), TimeUnit.MILLISECONDS).join();
         } catch (Exception ex) {

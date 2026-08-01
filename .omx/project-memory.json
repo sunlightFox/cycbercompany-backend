@@ -1,0 +1,10 @@
+{
+  "directives": [
+    {
+      "directive": "All Spring Agent Studio frontend design, prototyping, component work, and implementation must read and comply with D:\\ai\\spring-agent-studio-backend\\docs\\frontend-ui-spec.md. MUST/MUST NOT rules are release blockers. Any deviation requires updating the spec and recording the reason before code changes.",
+      "priority": "high",
+      "context": "Frontend design and implementation",
+      "timestamp": "2026-07-30T15:37:28.098Z"
+    }
+  ]
+}

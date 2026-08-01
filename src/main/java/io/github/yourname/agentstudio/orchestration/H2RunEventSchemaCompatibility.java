@@ -31,6 +31,7 @@ class H2RunEventSchemaCompatibility implements ApplicationRunner {
             // CANCELLED existed. Hibernate ddl-auto does not widen its H2 CHECK
             // constraint, which otherwise makes an approval suspension fail.
             dropCheckConstraints("agent_run");
+            widenLegacyRunStatusEnum();
         } catch (Exception ignored) {
             // A missing table or a database-specific information schema must not
             // prevent application startup; the normal ORM schema creation still applies.
@@ -48,6 +49,20 @@ class H2RunEventSchemaCompatibility implements ApplicationRunner {
         for (String constraint : constraints) {
             jdbc.execute("alter table " + tableName + " drop constraint if exists \""
                     + constraint.replace("\"", "\"\"") + "\"");
+        }
+    }
+
+    private void widenLegacyRunStatusEnum() {
+        List<String> dataTypes = jdbc.queryForList(
+                """
+                select data_type from information_schema.columns
+                where upper(table_name) = 'AGENT_RUN' and upper(column_name) = 'STATUS'
+                """,
+                String.class);
+        if (dataTypes.stream().anyMatch("ENUM"::equalsIgnoreCase)) {
+            // Hibernate 7 generated H2 ENUM columns for older @Enumerated values.
+            // H2 does not extend that type when Java enum constants are added.
+            jdbc.execute("alter table agent_run alter column status varchar(255)");
         }
     }
 }

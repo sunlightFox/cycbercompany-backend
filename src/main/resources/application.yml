@@ -9,7 +9,7 @@ spring:
     enabled: false
   h2:
     console:
-      enabled: true
+      enabled: ${H2_CONSOLE_ENABLED:true}
       path: /h2-console
   jpa:
     hibernate:
@@ -21,7 +21,7 @@ spring:
   servlet:
     multipart:
       max-file-size: 20MB
-      max-request-size: 25MB
+      max-request-size: 100MB
 
 management:
   endpoints:
@@ -30,16 +30,44 @@ management:
         include: health,info,metrics
 
 server:
+  # 本地优先的安全默认值。远程部署必须显式修改，并通过启动安全校验。
+  address: ${SERVER_ADDRESS:127.0.0.1}
   port: ${PORT:8080}
 
 app:
   data-dir: ${APP_DATA_DIR:./data}
+  security:
+    mode: ${APP_SECURITY_MODE:LOCAL}
+    api-token: ${AGENT_STUDIO_API_TOKEN:}
+    tenant-id: ${APP_SECURITY_TENANT_ID:personal}
+    user-id: ${APP_SECURITY_USER_ID:remote-owner}
   run:
     timeout-seconds: 120
   web-search:
     enabled: ${WEB_SEARCH_ENABLED:true}
     max-results: ${WEB_SEARCH_MAX_RESULTS:5}
-    endpoint: ${WEB_SEARCH_ENDPOINT:https://html.duckduckgo.com/html/}
+    # Run the included SearXNG compose profile, then point this at its JSON API.
+    endpoint: ${SEARXNG_ENDPOINT:http://localhost:8888}
+    per-domain-limit: ${WEB_SEARCH_PER_DOMAIN_LIMIT:2}
+    min-unique-domains: ${WEB_SEARCH_MIN_UNIQUE_DOMAINS:3}
+    language: ${SEARXNG_LANGUAGE:zh-CN}
+    safe-search: ${SEARXNG_SAFESEARCH:1}
+    general-engines: ${SEARXNG_GENERAL_ENGINES:mwmbl,bing,baidu}
+    news-engines: ${SEARXNG_NEWS_ENGINES:bing news,reuters}
+    planning:
+      max-queries: ${WEB_SEARCH_MAX_QUERIES:3}
+      cache-ttl-seconds: ${WEB_SEARCH_CACHE_TTL_SECONDS:90}
+    page-reader:
+      enabled: ${WEB_SEARCH_PAGE_READER_ENABLED:true}
+      max-results: ${WEB_SEARCH_PAGE_READER_MAX_RESULTS:8}
+      max-excerpt-chars: ${WEB_SEARCH_PAGE_READER_MAX_EXCERPT_CHARS:1500}
+      max-response-bytes: ${WEB_SEARCH_PAGE_READER_MAX_RESPONSE_BYTES:1000000}
+      allow-private-hosts: ${WEB_SEARCH_PAGE_READER_ALLOW_PRIVATE_HOSTS:false}
+    news-sources:
+      gdelt-enabled: ${GDELT_NEWS_ENABLED:true}
+      gdelt-endpoint: ${GDELT_NEWS_ENDPOINT:https://api.gdeltproject.org/api/v2/doc/doc}
+      jina-reader-enabled: ${JINA_READER_ENABLED:true}
+      jina-reader-endpoint: ${JINA_READER_ENDPOINT:https://r.jina.ai/}
   skills:
     install-dir: ${SKILL_INSTALL_DIR:${APP_DATA_DIR:./data}/skills}
     max-archive-bytes: ${SKILL_MAX_ARCHIVE_BYTES:15728640}
@@ -47,11 +75,20 @@ app:
     max-file-bytes: ${SKILL_MAX_FILE_BYTES:1048576}
   mcp:
     config-dir: ${MCP_CONFIG_DIR:${APP_DATA_DIR:./data}/mcp-connections}
+  nodes:
+    websocket:
+      buffer-configured: ${APP_NODES_WEBSOCKET_BUFFER_CONFIGURED:true}
+    browser:
+      # 默认禁止浏览器访问本机和私网。仅本机联调时才精确配置，例如 localhost,127.0.0.1。
+      allowed-private-hosts: ${APP_NODES_BROWSER_ALLOWED_PRIVATE_HOSTS:}
+      max-url-length: ${APP_NODES_BROWSER_MAX_URL_LENGTH:4096}
   rag:
     embedding-enabled: ${RAG_EMBEDDING_ENABLED:false}
     embedding-model-profile-id: ${RAG_EMBEDDING_MODEL_PROFILE_ID:}
     max-embedding-chars: ${RAG_MAX_EMBEDDING_CHARS:6000}
-    vector-weight: ${RAG_VECTOR_WEIGHT:8.0}
+    # Relative vector-channel weight during Reciprocal Rank Fusion. 1.0 keeps
+    # lexical and semantic retrieval equally influential by default.
+    vector-weight: ${RAG_VECTOR_WEIGHT:1.0}
   ai:
     default-model-profile-id: minimax-m3
     seed-default-profile: true

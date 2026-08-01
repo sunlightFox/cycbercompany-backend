@@ -6,3 +6,16 @@ spring:
   jpa:
     hibernate:
       ddl-auto: create-drop
+
+app:
+  security:
+    mode: LOCAL
+    api-token: ""
+    tenant-id: test
+    user-id: test-user
+  nodes:
+    websocket:
+      buffer-configured: false
+    browser:
+      allowed-private-hosts: []
+      max-url-length: 4096

@@ -2,26 +2,40 @@ package io.github.yourname.agentstudio.security;
 
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.Set;
+import org.springframework.security.authentication.AuthenticationCredentialsNotFoundException;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 
 /**
  * 将 HTTP 请求转换为当前调用者上下文的本地开发适配器。
  *
- * <p>{@code X-Tenant-Id} 和 {@code X-User-Id} 仅用于演示、测试及观察租户隔离，
- * 并不是真正的身份认证。生产环境应在这个类的同一位置从 JWT 或 SSO Principal 构造上下文。
+ * <p>本地模式始终返回固定身份并忽略调用方请求头；远程模式只接受认证过滤器写入的
+ * {@link StudioPrincipal}。因此租户和用户范围不能再通过 HTTP Header 伪造。
  */
 @Component
 public class CurrentActorProvider {
 
-    public ActorContext current(HttpServletRequest request) {
-        // 不信任调用方未提供的字段时使用固定本地身份，确保每次服务调用都有完整租户范围。
-        String tenantId = headerOrDefault(request, "X-Tenant-Id", "local");
-        String userId = headerOrDefault(request, "X-User-Id", "local-user");
-        return new ActorContext(tenantId, userId, Set.of("LOCAL_USER"), Set.of("agent:run"));
+    private final SecurityProperties properties;
+
+    public CurrentActorProvider(SecurityProperties properties) {
+        this.properties = properties;
     }
 
-    private static String headerOrDefault(HttpServletRequest request, String name, String fallback) {
-        String value = request.getHeader(name);
-        return value == null || value.isBlank() ? fallback : value.trim();
+    public ActorContext current(HttpServletRequest request) {
+        if (!properties.tokenMode()) {
+            return ActorContext.local();
+        }
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication != null
+                && authentication.isAuthenticated()
+                && authentication.getPrincipal() instanceof StudioPrincipal principal) {
+            return new ActorContext(
+                    principal.tenantId(),
+                    principal.userId(),
+                    Set.of("REMOTE_USER", "NODE_TOOL_APPROVER"),
+                    Set.of("agent:run"));
+        }
+        throw new AuthenticationCredentialsNotFoundException("No authenticated Agent Studio principal.");
     }
 }

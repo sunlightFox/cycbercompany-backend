@@ -13,5 +13,31 @@ public record CreateRunCommand(
         List<String> mcpServerIds,
         List<String> toolNames,
         String nodeId,
-        String workingDirectory) {
+        String workingDirectory,
+        List<String> attachmentIds) {
+
+    public CreateRunCommand(
+            String conversationId,
+            String text,
+            String modelProfileId,
+            String agentId,
+            List<String> knowledgeBaseIds,
+            List<String> skillIds,
+            List<String> mcpServerIds,
+            List<String> toolNames,
+            String nodeId,
+            String workingDirectory) {
+        this(
+                conversationId,
+                text,
+                modelProfileId,
+                agentId,
+                knowledgeBaseIds,
+                skillIds,
+                mcpServerIds,
+                toolNames,
+                nodeId,
+                workingDirectory,
+                List.of());
+    }
 }

@@ -5,7 +5,13 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
+import jakarta.persistence.ElementCollection;
+import jakarta.persistence.FetchType;
 import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * 执行节点连接信息。
@@ -24,6 +30,12 @@ public class NodeConnectionEntity {
     private String osName;
     private String osArch;
     private String clientVersion;
+    @Column(length = 71)
+    private String capabilityRevision;
+    @ElementCollection(fetch = FetchType.EAGER)
+    private Map<String, String> runtimeVersions = new LinkedHashMap<>();
+    @ElementCollection(fetch = FetchType.EAGER)
+    private Set<String> features = new LinkedHashSet<>();
     @Column(length = 128)
     private String secretHash;
     private boolean enabled;
@@ -67,6 +79,9 @@ public class NodeConnectionEntity {
     public String osName() { return osName; }
     public String osArch() { return osArch; }
     public String clientVersion() { return clientVersion; }
+    public String capabilityRevision() { return capabilityRevision; }
+    public Map<String, String> runtimeVersions() { return Map.copyOf(runtimeVersions); }
+    public Set<String> features() { return Set.copyOf(features); }
     public String secretHash() { return secretHash; }
     public boolean enabled() { return enabled; }
     public NodeStatus status() { return status; }
@@ -111,6 +126,40 @@ public class NodeConnectionEntity {
         this.osName = blankToExisting(osName, this.osName);
         this.osArch = blankToExisting(osArch, this.osArch);
         this.clientVersion = blankToExisting(clientVersion, this.clientVersion);
+        this.updatedAt = now;
+    }
+
+    public void updateCapabilitySnapshot(
+            String revision,
+            Map<String, String> runtimes,
+            Set<String> reportedFeatures,
+            Instant now) {
+        this.capabilityRevision = revision == null || revision.isBlank() ? this.capabilityRevision : revision.trim();
+        this.runtimeVersions.clear();
+        if (runtimes != null) {
+            runtimes.forEach((name, version) -> {
+                if (name != null && !name.isBlank() && version != null && !version.isBlank()) {
+                    this.runtimeVersions.put(name.trim(), version.trim());
+                }
+            });
+        }
+        this.features.clear();
+        if (reportedFeatures != null) {
+            reportedFeatures.stream()
+                    .filter(value -> value != null && !value.isBlank())
+                    .map(String::trim)
+                    .forEach(this.features::add);
+        }
+        this.updatedAt = now;
+    }
+
+    /** 替换凭据摘要并让当前连接状态失效，明文密钥永远不会进入实体。 */
+    public void rotateSecret(String newSecretHash, Instant now) {
+        if (newSecretHash == null || newSecretHash.isBlank()) {
+            throw new IllegalArgumentException("Node secret hash is required.");
+        }
+        this.secretHash = newSecretHash;
+        this.status = enabled ? NodeStatus.OFFLINE : NodeStatus.DISABLED;
         this.updatedAt = now;
     }
 

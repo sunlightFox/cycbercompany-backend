@@ -33,7 +33,8 @@ class NodeServiceApprovalTest {
     private static final String TENANT = "tenant-a";
     private static final String NODE_ID = "node-1";
     private static final String TOOL_NAME = "shell.run";
-    private static final ActorContext ACTOR = new ActorContext(TENANT, "alice", Set.of(), Set.of());
+    private static final ActorContext ACTOR = new ActorContext(
+            TENANT, "alice", Set.of("NODE_TOOL_APPROVER"), Set.of());
 
     @Mock
     private NodeConnectionRepository nodes;
@@ -149,6 +150,67 @@ class NodeServiceApprovalTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> service.decideToolApproval(approval.id(), new DecideNodeToolApprovalCommand(true), otherTenant));
+        verify(sessions, never()).invoke(any(), any(), any(), any());
+    }
+
+    @Test
+    void approvalRequiresTheConfiguredRole() {
+        ActorContext viewer = new ActorContext(TENANT, "viewer", Set.of("REMOTE_USER"), Set.of());
+        when(approvals.findByIdAndTenantId(approval.id(), TENANT)).thenReturn(Optional.of(approval));
+
+        assertThrows(
+                org.springframework.security.access.AccessDeniedException.class,
+                () -> service.decideToolApproval(
+                        approval.id(), new DecideNodeToolApprovalCommand(true), viewer));
+        verify(sessions, never()).invoke(any(), any(), any(), any());
+    }
+
+    @Test
+    void expiredApprovalIsClosedWithoutExecuting() {
+        Instant now = Instant.now();
+        approval = new NodeToolApprovalEntity(
+                "expired",
+                TENANT,
+                NODE_ID,
+                TOOL_NAME,
+                "{\"command\":\"whoami\"}",
+                "unused-because-expired",
+                "NODE_TOOL_APPROVER",
+                45,
+                "alice",
+                now.minusSeconds(600),
+                now.minusSeconds(1));
+        when(approvals.findByIdAndTenantId(approval.id(), TENANT)).thenReturn(Optional.of(approval));
+
+        NodeToolApprovalDecisionView decision = service.decideToolApproval(
+                approval.id(), new DecideNodeToolApprovalCommand(true), ACTOR);
+
+        assertEquals(NodeToolApprovalStatus.EXPIRED, decision.approval().status());
+        assertNull(decision.execution());
+        verify(sessions, never()).invoke(any(), any(), any(), any());
+    }
+
+    @Test
+    void changedArgumentsCannotPassDigestBinding() {
+        Instant now = Instant.now();
+        approval = new NodeToolApprovalEntity(
+                "tampered",
+                TENANT,
+                NODE_ID,
+                TOOL_NAME,
+                "{\"command\":\"dangerous-command\"}",
+                "digest-of-a-different-request",
+                "NODE_TOOL_APPROVER",
+                45,
+                "alice",
+                now,
+                now.plusSeconds(300));
+        when(approvals.findByIdAndTenantId(approval.id(), TENANT)).thenReturn(Optional.of(approval));
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> service.decideToolApproval(
+                        approval.id(), new DecideNodeToolApprovalCommand(true), ACTOR));
         verify(sessions, never()).invoke(any(), any(), any(), any());
     }
 }

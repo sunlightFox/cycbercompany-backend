@@ -3,11 +3,18 @@ package io.github.yourname.agentstudio.nodeclient.transport;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.yourname.agentstudio.nodeclient.NodeConfig;
 import io.github.yourname.agentstudio.nodeclient.SystemInfo;
+import io.github.yourname.agentstudio.nodeclient.protocol.NodeProtocolLimits;
 import io.github.yourname.agentstudio.nodeclient.runtime.ToolRegistry;
+import io.github.yourname.agentstudio.nodeclient.runtime.ToolResultBudget;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.GeneralSecurityException;
+import java.util.HexFormat;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -38,7 +45,9 @@ public class NodeWebSocketClient implements WebSocket.Listener {
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     private final java.util.concurrent.ExecutorService toolExecutor = Executors.newVirtualThreadPerTaskExecutor();
     private final Object sendLock = new Object();
-    private final StringBuilder incomingMessage = new StringBuilder();
+    private final BoundedTextMessageAccumulator incomingMessage =
+            new BoundedTextMessageAccumulator(NodeProtocolLimits.MAX_CONTROL_MESSAGE_BYTES);
+    private final ToolResultBudget resultBudget;
     private volatile WebSocket webSocket;
     private volatile CountDownLatch disconnected = new CountDownLatch(1);
     private volatile java.util.concurrent.ScheduledFuture<?> heartbeatTask;
@@ -50,6 +59,7 @@ public class NodeWebSocketClient implements WebSocket.Listener {
         this.config = config;
         this.systemInfo = systemInfo;
         this.toolRegistry = new ToolRegistry(httpClient, workspaceRoot(config), config.resolvedAccessMode());
+        this.resultBudget = new ToolResultBudget(objectMapper);
     }
 
     public void startBlocking() throws Exception {
@@ -68,8 +78,12 @@ public class NodeWebSocketClient implements WebSocket.Listener {
             disconnected = new CountDownLatch(1);
             try {
                 URI uri = websocketUri();
-                System.out.println("Connecting to " + uri);
-                this.webSocket = httpClient.newWebSocketBuilder().buildAsync(uri, this).join();
+                System.out.println("Connecting to " + safeServerAddress(uri));
+                this.webSocket = httpClient.newWebSocketBuilder()
+                        .header("X-Agent-Studio-Node-Id", config.nodeId())
+                        .header("Authorization", "Bearer " + config.nodeSecret())
+                        .buildAsync(uri, this)
+                        .join();
                 retrySeconds = 1;
                 disconnected.await();
             } catch (Exception ex) {
@@ -93,20 +107,21 @@ public class NodeWebSocketClient implements WebSocket.Listener {
 
     @Override
     public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
-        String message;
-        synchronized (incomingMessage) {
-            incomingMessage.append(data);
-            if (!last) {
-                webSocket.request(1);
-                return null;
-            }
-            message = incomingMessage.toString();
-            incomingMessage.setLength(0);
+        BoundedTextMessageAccumulator.AppendResult append = incomingMessage.append(data, last);
+        if (append.status() == BoundedTextMessageAccumulator.Status.TOO_LARGE) {
+            System.err.println("Closing WebSocket because a protocol message exceeded the size limit.");
+            cancelHeartbeat();
+            webSocket.sendClose(1009, "protocol message too large");
+            return null;
         }
-        System.out.println("Received: " + message);
+        if (append.status() == BoundedTextMessageAccumulator.Status.INCOMPLETE) {
+            webSocket.request(1);
+            return null;
+        }
         try {
-            var root = objectMapper.readTree(message);
+            var root = objectMapper.readTree(append.message());
             String type = root.path("type").asText("");
+            logReceivedSummary(root, type);
             if ("node.accepted".equals(type)) {
                 // 认证通过后才上报本机工具能力，避免未认证连接泄露能力列表。
                 sendCapabilities();
@@ -120,12 +135,13 @@ public class NodeWebSocketClient implements WebSocket.Listener {
                     try {
                         handleToolInvoke(invocationId, toolName, arguments, executionSessionId);
                     } catch (Exception ex) {
-                        System.err.println("Tool invocation failed: " + ex.getMessage());
+                        System.err.println("Tool invocation failed: invocationId=" + safeLogToken(invocationId)
+                                + ", tool=" + safeLogToken(toolName));
                     }
                 });
             }
         } catch (Exception ex) {
-            System.err.println("Failed to handle server message: " + ex.getMessage());
+            System.err.println("Failed to handle server message: invalid protocol payload.");
         }
         webSocket.request(1);
         return null;
@@ -167,11 +183,33 @@ public class NodeWebSocketClient implements WebSocket.Listener {
     }
 
     private void sendCapabilities() throws Exception {
+        var capabilities = toolRegistry.capabilities();
+        var runtimes = toolRegistry.runtimeVersions();
+        var features = toolRegistry.features();
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type", "node.capabilities");
         payload.put("timestamp", Instant.now().toString());
-        payload.put("capabilities", toolRegistry.capabilities());
+        payload.put("capabilityRevision", capabilityRevision(capabilities, runtimes, features));
+        payload.put("runtimes", runtimes);
+        payload.put("features", features);
+        payload.put("capabilities", capabilities);
         send(payload);
+    }
+
+    private String capabilityRevision(Object capabilities, Object runtimes, Object features) {
+        try {
+            Map<String, Object> snapshot = new LinkedHashMap<>();
+            snapshot.put("capabilities", capabilities);
+            snapshot.put("runtimes", runtimes);
+            snapshot.put("features", features);
+            byte[] bytes = objectMapper.writeValueAsBytes(snapshot);
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(bytes);
+            return "sha256:" + HexFormat.of().formatHex(digest);
+        } catch (GeneralSecurityException ex) {
+            throw new IllegalStateException("SHA-256 is unavailable.", ex);
+        } catch (java.io.IOException ex) {
+            throw new IllegalStateException("Unable to serialize the node capability snapshot.", ex);
+        }
     }
 
     private void handleToolInvoke(
@@ -180,10 +218,10 @@ public class NodeWebSocketClient implements WebSocket.Listener {
             Map<String, Object> arguments,
             String executionSessionId) throws Exception {
         // 原样带回 invocationId，服务端才能完成正确的 Future。
-        var execution = toolRegistry.execute(
+        var execution = resultBudget.apply(toolRegistry.execute(
                 toolName,
                 arguments == null ? Collections.emptyMap() : arguments,
-                executionSessionId);
+                executionSessionId));
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type", "tool.result");
         payload.put("timestamp", Instant.now().toString());
@@ -195,6 +233,9 @@ public class NodeWebSocketClient implements WebSocket.Listener {
             payload.put("errorMessage", execution.errorMessage());
         }
         send(payload);
+        System.out.println("Sent tool.result: invocationId=" + safeLogToken(invocationId)
+                + ", tool=" + safeLogToken(toolName)
+                + ", status=" + (execution.success() ? "SUCCEEDED" : "FAILED"));
     }
 
     private Map<String, Object> heartbeatPayload() {
@@ -209,8 +250,13 @@ public class NodeWebSocketClient implements WebSocket.Listener {
     }
 
     private void send(Object payload) throws Exception {
+        String json = objectMapper.writeValueAsString(payload);
+        int payloadBytes = json.getBytes(StandardCharsets.UTF_8).length;
+        if (payloadBytes > NodeProtocolLimits.MAX_CONTROL_MESSAGE_BYTES) {
+            throw new IllegalArgumentException("Protocol payload exceeds the control message size limit.");
+        }
         synchronized (sendLock) {
-            webSocket.sendText(objectMapper.writeValueAsString(payload), true).join();
+            webSocket.sendText(json, true).join();
         }
     }
 
@@ -221,9 +267,45 @@ public class NodeWebSocketClient implements WebSocket.Listener {
         return Path.of(config.workspaceRoot()).toAbsolutePath().normalize();
     }
 
-    private URI websocketUri() {
+    URI websocketUri() {
         // REST 的 http(s) 地址转换为 WebSocket 所需的 ws(s) 地址。
         String base = config.serverUrl().replace("https://", "wss://").replace("http://", "ws://");
-        return URI.create(base + config.websocketUrl());
+        URI configured = URI.create(base + config.websocketUrl());
+        try {
+            // 兼容旧配置文件：即使 websocketUrl 曾包含 nodeSecret query，也必须在真正连接前丢弃。
+            return new URI(
+                    configured.getScheme(),
+                    configured.getUserInfo(),
+                    configured.getHost(),
+                    configured.getPort(),
+                    configured.getPath(),
+                    null,
+                    null);
+        } catch (URISyntaxException ex) {
+            throw new IllegalArgumentException("Configured WebSocket URL is invalid.");
+        }
+    }
+
+    static String safeServerAddress(URI uri) {
+        int port = uri.getPort();
+        return uri.getScheme() + "://" + uri.getHost() + (port < 0 ? "" : ":" + port);
+    }
+
+    private static void logReceivedSummary(com.fasterxml.jackson.databind.JsonNode root, String type) {
+        if ("tool.invoke".equals(type)) {
+            System.out.println("Received tool.invoke: invocationId="
+                    + safeLogToken(root.path("invocationId").asText(""))
+                    + ", tool=" + safeLogToken(root.path("toolName").asText("")));
+            return;
+        }
+        System.out.println("Received protocol message: type=" + safeLogToken(type));
+    }
+
+    private static String safeLogToken(String value) {
+        if (value == null || value.isBlank()) {
+            return "unknown";
+        }
+        String safe = value.replaceAll("[^A-Za-z0-9._:-]", "_");
+        return safe.length() <= 120 ? safe : safe.substring(0, 120);
     }
 }

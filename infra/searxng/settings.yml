@@ -1,0 +1,39 @@
+use_default_settings: true
+
+general:
+  instance_name: Agent Studio SearXNG
+
+server:
+  secret_key: change-this-local-searxng-secret-before-exposing-the-service
+  bind_address: "0.0.0.0"
+
+search:
+  formats:
+    - html
+    - json
+
+# The default general engines are frequently rate-limited. These three
+# key-free engines were verified from the same network used by Agent Studio.
+engines:
+  - name: brave
+    disabled: true
+  - name: duckduckgo
+    disabled: true
+  - name: google cse
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: brave.news
+    disabled: true
+  - name: duckduckgo news
+    disabled: true
+  - name: google news
+    disabled: true
+  - name: startpage news
+    disabled: true
+  - name: mwmbl
+    disabled: false
+  - name: bing
+    disabled: false
+  - name: baidu
+    disabled: false

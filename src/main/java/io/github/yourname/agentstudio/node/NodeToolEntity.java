@@ -25,6 +25,7 @@ public class NodeToolEntity {
     private String tenantId;
     private String nodeId;
     private String name;
+    private String capabilityVersion;
     @Column(length = 2_000)
     private String description;
     @Enumerated(EnumType.STRING)
@@ -52,6 +53,7 @@ public class NodeToolEntity {
         this.tenantId = tenantId;
         this.nodeId = nodeId;
         this.name = name;
+        this.capabilityVersion = "1";
         this.description = description;
         this.riskLevel = riskLevel;
         this.enabled = enabled;
@@ -65,6 +67,7 @@ public class NodeToolEntity {
     public String tenantId() { return tenantId; }
     public String nodeId() { return nodeId; }
     public String name() { return name; }
+    public String capabilityVersion() { return capabilityVersion == null ? "1" : capabilityVersion; }
     public String description() { return description; }
     public RiskLevel riskLevel() { return riskLevel; }
     public boolean enabled() { return enabled; }
@@ -85,9 +88,21 @@ public class NodeToolEntity {
      * Refreshes node-reported metadata while preserving the administrator's runtime policy.
      */
     public void refreshCapability(String description, RiskLevel riskLevel, String inputSchemaJson, Instant now) {
+        refreshCapability(description, riskLevel, inputSchemaJson, "1", now);
+    }
+
+    public void refreshCapability(
+            String description,
+            RiskLevel riskLevel,
+            String inputSchemaJson,
+            String capabilityVersion,
+            Instant now) {
         this.description = description;
         this.riskLevel = riskLevel == null ? RiskLevel.MEDIUM : riskLevel;
         this.inputSchemaJson = inputSchemaJson;
+        this.capabilityVersion = capabilityVersion == null || capabilityVersion.isBlank()
+                ? "1"
+                : capabilityVersion.trim();
         this.updatedAt = now;
     }
 

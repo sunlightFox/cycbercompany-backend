@@ -1,0 +1,9 @@
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: agent-studio-searxng
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8888:8080"
+    volumes:
+      - ./infra/searxng/settings.yml:/etc/searxng/settings.yml:ro

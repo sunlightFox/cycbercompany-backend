@@ -1,6 +1,8 @@
 package io.github.yourname.agentstudio.node;
 
 import java.time.Instant;
+import java.util.Map;
+import java.util.Set;
 
 public record NodeConnectionView(
         String id,
@@ -9,6 +11,9 @@ public record NodeConnectionView(
         String osName,
         String osArch,
         String clientVersion,
+        String capabilityRevision,
+        Map<String, String> runtimeVersions,
+        Set<String> features,
         boolean enabled,
         NodeStatus status,
         Instant lastSeenAt,
@@ -23,6 +28,9 @@ public record NodeConnectionView(
                 entity.osName(),
                 entity.osArch(),
                 entity.clientVersion(),
+                entity.capabilityRevision(),
+                entity.runtimeVersions(),
+                entity.features(),
                 entity.enabled(),
                 entity.status(),
                 entity.lastSeenAt(),

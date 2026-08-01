@@ -14,7 +14,10 @@ import static org.mockito.Mockito.when;
 import io.github.yourname.agentstudio.model.ModelGateway;
 import io.github.yourname.agentstudio.model.ModelRateLimitException;
 import io.github.yourname.agentstudio.security.ActorContext;
-import io.github.yourname.agentstudio.tool.CodingToolAdapter;
+import io.github.yourname.agentstudio.tool.ResolvedToolBinding;
+import io.github.yourname.agentstudio.tool.RiskLevel;
+import io.github.yourname.agentstudio.tool.ToolProviderResult;
+import io.github.yourname.agentstudio.tool.ToolRouter;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -47,7 +50,7 @@ class CodingAgentLoopTest {
     @Test
     void cancelledRunDoesNotAskTheModelOrInvokeTools() {
         ModelGateway modelGateway = mock(ModelGateway.class);
-        CodingToolAdapter tools = mock(CodingToolAdapter.class);
+        ToolRouter tools = mock(ToolRouter.class);
         RunExecutionRegistry executions = new RunExecutionRegistry();
         executions.cancel("run-cancelled");
         ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
@@ -55,7 +58,7 @@ class CodingAgentLoopTest {
                 modelGateway, tools, mock(RunEventPublisher.class), executions, duration -> { });
 
         assertThatThrownBy(() -> loop.execute(
-                "run-cancelled", "model-a", "node-a", new java.util.ArrayList<>(), actor))
+                "run-cancelled", "model-a", List.of(), new java.util.ArrayList<>(), actor))
                 .hasMessageContaining("was cancelled");
         verifyNoInteractions(modelGateway);
     }
@@ -63,32 +66,24 @@ class CodingAgentLoopTest {
     @Test
     void rejectsAPlainTextResponseBeforeAnyCodingToolWasCalled() {
         ModelGateway gateway = mock(ModelGateway.class);
-        CodingToolAdapter tools = mock(CodingToolAdapter.class);
+        ToolRouter tools = mock(ToolRouter.class);
         RunEventPublisher events = mock(RunEventPublisher.class);
         ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
-        var declaredTool = new CodingToolAdapter.AvailableTool(
-                "node_tool_7", "node-a", "fs.read", new ModelGateway.ModelTool("node_tool_7", "Read", Map.of()));
-        when(tools.availableTools("node-a", actor)).thenReturn(List.of(declaredTool));
+        var declaredTool = binding("node_tool_7", "fs.read");
         when(gateway.complete(any())).thenReturn(new ModelGateway.ModelAnswer("I will inspect it.", null, null, "test"));
 
         assertThatThrownBy(() -> new CodingAgentLoop(gateway, tools, events).execute(
-                        "run-a", "model-a", "node-a", new java.util.ArrayList<>(), actor))
+                        "run-a", "model-a", List.of(declaredTool), new java.util.ArrayList<>(), actor))
                 .hasMessageContaining("without calling any coding tool");
     }
 
     @Test
     void feedsNodeToolResultBackToModelBeforeFinalAnswer() {
         ModelGateway gateway = mock(ModelGateway.class);
-        CodingToolAdapter tools = mock(CodingToolAdapter.class);
+        ToolRouter tools = mock(ToolRouter.class);
         RunEventPublisher events = mock(RunEventPublisher.class);
         ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
-        var declaredTool = new CodingToolAdapter.AvailableTool(
-                "node_tool_7",
-                "node-a",
-                "fs.read",
-                new ModelGateway.ModelTool("node_tool_7", "Read a workspace file.", Map.of("type", "object")));
-
-        when(tools.availableTools("node-a", actor)).thenReturn(List.of(declaredTool));
+        var declaredTool = binding("node_tool_7", "fs.read");
         when(gateway.complete(any()))
                 .thenReturn(new ModelGateway.ModelAnswer(
                         "I will inspect the file.",
@@ -98,19 +93,19 @@ class CodingAgentLoopTest {
                         List.of(new ModelGateway.ModelToolCall("call-1", "node_tool_7", Map.of("path", "README.md"))),
                         "tool_calls"))
                 .thenReturn(new ModelGateway.ModelAnswer("The fix is verified.", null, null, "test-model"));
-        when(tools.execute(eq("run-a"), eq(declaredTool), any(), eq(actor), any()))
-                .thenReturn(new CodingToolAdapter.ToolExecution(true, "{\"status\":\"SUCCEEDED\",\"result\":{}}"));
-        when(tools.cleanupRun("run-a", actor)).thenReturn(List.of());
+        when(tools.invoke(any()))
+                .thenReturn(new ToolProviderResult("SUCCEEDED", true, Map.of(), "", null));
+        when(tools.cleanup("run-a", actor)).thenReturn(List.of());
 
         String answer = new CodingAgentLoop(gateway, tools, events).execute(
                 "run-a",
                 "model-a",
-                "node-a",
+                List.of(declaredTool),
                 new java.util.ArrayList<>(List.of(new ModelGateway.ModelMessage("user", "Inspect README"))),
                 actor);
 
         assertThat(answer).isEqualTo("The fix is verified.");
-        verify(tools).execute(eq("run-a"), eq(declaredTool), any(), eq(actor), any());
+        verify(tools).invoke(any());
         verify(events).publish("run-a", RunEventType.TOOL_CALL_COMPLETED, "tool=fs.read", actor);
 
         ArgumentCaptor<ModelGateway.ModelCompletionRequest> requests = ArgumentCaptor.forClass(ModelGateway.ModelCompletionRequest.class);
@@ -119,21 +114,16 @@ class CodingAgentLoopTest {
         assertThat(requests.getAllValues().get(1).toolChoice()).isEqualTo(ModelGateway.ToolChoice.AUTO);
         assertThat(requests.getAllValues().get(1).messages())
                 .anyMatch(message -> "tool".equals(message.role()) && "call-1".equals(message.toolCallId()));
-        verify(tools).cleanupRun("run-a", actor);
+        verify(tools).cleanup("run-a", actor);
     }
 
     @Test
     void retriesProviderRateLimitsWithoutRepeatingToolExecution() {
         ModelGateway gateway = mock(ModelGateway.class);
-        CodingToolAdapter tools = mock(CodingToolAdapter.class);
+        ToolRouter tools = mock(ToolRouter.class);
         RunEventPublisher events = mock(RunEventPublisher.class);
         ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
-        var declaredTool = new CodingToolAdapter.AvailableTool(
-                "node_tool_7",
-                "node-a",
-                "fs.read",
-                new ModelGateway.ModelTool("node_tool_7", "Read a workspace file.", Map.of("type", "object")));
-        when(tools.availableTools("node-a", actor)).thenReturn(List.of(declaredTool));
+        var declaredTool = binding("node_tool_7", "fs.read");
         when(gateway.complete(any()))
                 .thenThrow(new ModelRateLimitException("provider limited", Duration.ofSeconds(2), null))
                 .thenReturn(new ModelGateway.ModelAnswer(
@@ -144,35 +134,30 @@ class CodingAgentLoopTest {
                         List.of(new ModelGateway.ModelToolCall("call-1", "node_tool_7", Map.of("path", "README.md"))),
                         "tool_calls"))
                 .thenReturn(new ModelGateway.ModelAnswer("Verified after retry.", null, null, "test-model"));
-        when(tools.execute(eq("run-a"), eq(declaredTool), any(), eq(actor), any()))
-                .thenReturn(new CodingToolAdapter.ToolExecution(true, "{\"status\":\"SUCCEEDED\"}"));
+        when(tools.invoke(any()))
+                .thenReturn(new ToolProviderResult("SUCCEEDED", true, Map.of(), "", null));
         List<Duration> delays = new ArrayList<>();
 
         String answer = new CodingAgentLoop(gateway, tools, events, delays::add).execute(
                 "run-a",
                 "model-a",
-                "node-a",
+                List.of(declaredTool),
                 new ArrayList<>(List.of(new ModelGateway.ModelMessage("user", "Inspect README"))),
                 actor);
 
         assertThat(answer).isEqualTo("Verified after retry.");
         assertThat(delays).containsExactly(Duration.ofSeconds(2));
         verify(events).publish("run-a", RunEventType.MODEL_RATE_LIMITED, "retry=1, delaySeconds=2", actor);
-        verify(tools, times(1)).execute(eq("run-a"), eq(declaredTool), any(), eq(actor), any());
+        verify(tools, times(1)).invoke(any());
     }
 
     @Test
     void pausesForApprovalWithoutCleaningUpManagedProcesses() {
         ModelGateway gateway = mock(ModelGateway.class);
-        CodingToolAdapter tools = mock(CodingToolAdapter.class);
+        ToolRouter tools = mock(ToolRouter.class);
         RunEventPublisher events = mock(RunEventPublisher.class);
         ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
-        var declaredTool = new CodingToolAdapter.AvailableTool(
-                "node_tool_9",
-                "node-a",
-                "process.start",
-                new ModelGateway.ModelTool("node_tool_9", "Start a development server.", Map.of("type", "object")));
-        when(tools.availableTools("node-a", actor)).thenReturn(List.of(declaredTool));
+        var declaredTool = binding("node_tool_9", "process.start");
         when(gateway.complete(any())).thenReturn(new ModelGateway.ModelAnswer(
                 "I need to start the server.",
                 null,
@@ -180,15 +165,13 @@ class CodingAgentLoopTest {
                 "test-model",
                 List.of(new ModelGateway.ModelToolCall("call-approval", "node_tool_9", Map.of("command", "java App"))),
                 "tool_calls"));
-        when(tools.execute(eq("run-a"), eq(declaredTool), any(), eq(actor), any()))
-                .thenReturn(new CodingToolAdapter.ToolExecution(
-                        false,
-                        "{\"status\":\"APPROVAL_REQUIRED\"}",
-                        "approval-1"));
+        when(tools.invoke(any()))
+                .thenReturn(new ToolProviderResult(
+                        "APPROVAL_REQUIRED", false, Map.of(), "", "approval-1"));
 
         List<ModelGateway.ModelMessage> messages = new ArrayList<>(List.of(new ModelGateway.ModelMessage("user", "Start it")));
         assertThatThrownBy(() -> new CodingAgentLoop(gateway, tools, events).execute(
-                        "run-a", "model-a", "node-a", messages, actor))
+                        "run-a", "model-a", List.of(declaredTool), messages, actor))
                 .isInstanceOfSatisfying(CodingApprovalRequiredException.class, exception -> {
                     assertThat(exception.approvalId()).isEqualTo("approval-1");
                     assertThat(exception.toolCallId()).isEqualTo("call-approval");
@@ -201,25 +184,23 @@ class CodingAgentLoopTest {
                 RunEventType.TOOL_APPROVAL_REQUIRED,
                 "tool=process.start, approvalId=approval-1",
                 actor);
-        verify(tools, never()).cleanupRun("run-a", actor);
+        verify(tools, never()).cleanup("run-a", actor);
     }
 
     @Test
     void resumedRunMayReturnFinalAnswerWithoutAnotherToolCall() {
         ModelGateway gateway = mock(ModelGateway.class);
-        CodingToolAdapter tools = mock(CodingToolAdapter.class);
+        ToolRouter tools = mock(ToolRouter.class);
         RunEventPublisher events = mock(RunEventPublisher.class);
         ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
-        var declaredTool = new CodingToolAdapter.AvailableTool(
-                "node_tool_7", "node-a", "fs.read", new ModelGateway.ModelTool("node_tool_7", "Read", Map.of()));
-        when(tools.availableTools("node-a", actor)).thenReturn(List.of(declaredTool));
+        var declaredTool = binding("node_tool_7", "fs.read");
         when(gateway.complete(any())).thenReturn(new ModelGateway.ModelAnswer("The approved command is complete.", null, null, "test"));
-        when(tools.cleanupRun("run-a", actor)).thenReturn(List.of());
+        when(tools.cleanup("run-a", actor)).thenReturn(List.of());
 
         String answer = new CodingAgentLoop(gateway, tools, events).resume(
                 "run-a",
                 "model-a",
-                "node-a",
+                List.of(declaredTool),
                 new ArrayList<>(List.of(
                         new ModelGateway.ModelMessage("user", "Start it"),
                         ModelGateway.ModelMessage.toolResult("call-approval", "{\"status\":\"SUCCEEDED\"}"))),
@@ -229,5 +210,19 @@ class CodingAgentLoopTest {
         ArgumentCaptor<ModelGateway.ModelCompletionRequest> request = ArgumentCaptor.forClass(ModelGateway.ModelCompletionRequest.class);
         verify(gateway).complete(request.capture());
         assertThat(request.getValue().toolChoice()).isEqualTo(ModelGateway.ToolChoice.AUTO);
+    }
+
+    private static ResolvedToolBinding binding(String modelName, String logicalName) {
+        return new ResolvedToolBinding(
+                "node:node-a:" + logicalName,
+                modelName,
+                logicalName,
+                "node",
+                logicalName,
+                "Node tool " + logicalName,
+                RiskLevel.LOW,
+                false,
+                Map.of("type", "object"),
+                Map.of("nodeId", "node-a"));
     }
 }

@@ -4,33 +4,50 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.yourname.agentstudio.agent.AgentCatalog;
 import io.github.yourname.agentstudio.config.AppProperties;
+import io.github.yourname.agentstudio.conversation.ConversationAttachmentService;
 import io.github.yourname.agentstudio.conversation.ConversationService;
 import io.github.yourname.agentstudio.conversation.MessageRole;
 import io.github.yourname.agentstudio.knowledge.EvidenceBundle;
 import io.github.yourname.agentstudio.knowledge.KnowledgeQueryService;
-import io.github.yourname.agentstudio.knowledge.KnowledgeSearchCommand;
 import io.github.yourname.agentstudio.model.ModelGateway;
 import io.github.yourname.agentstudio.model.ModelCatalog;
-import io.github.yourname.agentstudio.mcp.McpConnectionService;
+import io.github.yourname.agentstudio.model.ModelCapability;
 import io.github.yourname.agentstudio.mcp.McpToolCallResult;
 import io.github.yourname.agentstudio.node.NodeToolApprovalDecisionView;
+import io.github.yourname.agentstudio.node.CodingRunEvidenceView;
 import io.github.yourname.agentstudio.node.NodeService;
 import io.github.yourname.agentstudio.security.ActorContext;
-import io.github.yourname.agentstudio.tool.WebSearchCommand;
+import io.github.yourname.agentstudio.skill.SkillCatalog;
+import io.github.yourname.agentstudio.skill.SkillRunBinding;
+import io.github.yourname.agentstudio.skill.SkillAnalysis;
+import io.github.yourname.agentstudio.skill.SkillAnalyzer;
+import io.github.yourname.agentstudio.skill.SkillCompatibilityException;
+import io.github.yourname.agentstudio.skill.SkillCompatibilityService;
+import io.github.yourname.agentstudio.skill.CompatibilityReport;
+import io.github.yourname.agentstudio.tool.WebSearchMode;
 import io.github.yourname.agentstudio.tool.WebSearchResponse;
 import io.github.yourname.agentstudio.tool.WebSearchResult;
-import io.github.yourname.agentstudio.tool.WebSearchService;
+import io.github.yourname.agentstudio.tool.WebSearchTrace;
 import io.github.yourname.agentstudio.tool.CodingWorkspaceScope;
+import io.github.yourname.agentstudio.tool.ResolvedToolBinding;
+import io.github.yourname.agentstudio.tool.ToolDiscoveryRequest;
+import io.github.yourname.agentstudio.tool.ToolInvocationRequest;
+import io.github.yourname.agentstudio.tool.ToolProviderResult;
+import io.github.yourname.agentstudio.tool.ToolRouter;
+import io.github.yourname.agentstudio.tool.ToolApprovalDecisionView;
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -47,16 +64,12 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 @Service
 public class RunCommandService {
 
-    /**
-     * Matches compact technical/product tokens that users often place inside a
-     * Chinese request, such as "assistant-ui", "GitHub", "Next.js", or a URL.
-     */
-    private static final Pattern LATIN_SEARCH_TOKEN =
-            Pattern.compile("[A-Za-z0-9][A-Za-z0-9._:/#@+\\-]{1,}");
     private static final Pattern TOOL_CALL_BLOCK =
             Pattern.compile("(?is)<tool_call>.*?</tool_call>");
     private static final Pattern TOOL_RESULT_BLOCK =
             Pattern.compile("(?is)<tool_result>.*?</tool_result>");
+    private static final Pattern MM_THINK_BLOCK =
+            Pattern.compile("(?is)<mm:think>.*?</mm:think>");
     private static final DateTimeFormatter SERVER_TIME_FORMAT =
             DateTimeFormatter.ISO_OFFSET_DATE_TIME.withZone(ZoneId.systemDefault());
 
@@ -64,47 +77,61 @@ public class RunCommandService {
     private final AgentRunRepository runs;
     private final CodingRunContinuationRepository continuations;
     private final ConversationService conversations;
-    private final AgentCatalog agents;
+    private final ConversationAttachmentService attachments;
     private final KnowledgeQueryService knowledge;
-    private final WebSearchService webSearch;
-    private final McpConnectionService mcpConnections;
+    private final AgentCatalog agents;
+    private final SkillCatalog skills;
+    private final SkillAnalyzer skillAnalyzer;
+    private final SkillCompatibilityService skillCompatibility;
     private final ModelCatalog models;
     private final ModelGateway modelGateway;
     private final CodingAgentLoop codingAgentLoop;
+    private final ToolRouter toolRouter;
     private final NodeService nodes;
     private final RunExecutionRegistry executions;
+    private final ConversationRunQueue queue;
     private final RunEventPublisher events;
     private final ObjectMapper objectMapper;
+    // 门禁是纯服务端规则，不接收客户端传来的“是否通过”标记。
+    private final CodingDeliveryGate deliveryGate = new CodingDeliveryGate();
 
     public RunCommandService(
             AppProperties properties,
             AgentRunRepository runs,
             CodingRunContinuationRepository continuations,
             ConversationService conversations,
-            AgentCatalog agents,
+            ConversationAttachmentService attachments,
             KnowledgeQueryService knowledge,
-            WebSearchService webSearch,
-            McpConnectionService mcpConnections,
+            AgentCatalog agents,
+            SkillCatalog skills,
+            SkillAnalyzer skillAnalyzer,
+            SkillCompatibilityService skillCompatibility,
             ModelCatalog models,
             ModelGateway modelGateway,
             CodingAgentLoop codingAgentLoop,
+            ToolRouter toolRouter,
             NodeService nodes,
             RunExecutionRegistry executions,
+            ConversationRunQueue queue,
             RunEventPublisher events,
             ObjectMapper objectMapper) {
         this.properties = properties;
         this.runs = runs;
         this.continuations = continuations;
         this.conversations = conversations;
-        this.agents = agents;
+        this.attachments = attachments;
         this.knowledge = knowledge;
-        this.webSearch = webSearch;
-        this.mcpConnections = mcpConnections;
+        this.agents = agents;
+        this.skills = skills;
+        this.skillAnalyzer = skillAnalyzer;
+        this.skillCompatibility = skillCompatibility;
         this.models = models;
         this.modelGateway = modelGateway;
         this.codingAgentLoop = codingAgentLoop;
+        this.toolRouter = toolRouter;
         this.nodes = nodes;
         this.executions = executions;
+        this.queue = queue;
         this.events = events;
         this.objectMapper = objectMapper;
     }
@@ -112,73 +139,236 @@ public class RunCommandService {
     @Transactional
     public CreateRunResponse create(CreateRunCommand command, ActorContext actor) {
         CodingWorkspaceScope.from(command.workingDirectory());
-        conversations.append(command.conversationId(), MessageRole.USER, command.text(), null, actor);
+        // Skill 必须在 Run 入队前完成解析和版本锁定。失败时不会留下排队任务，更不会调用模型。
+        List<SkillRunBinding> skillBindings = skills.resolveForRun(command.skillIds());
+        String skillBindingsJson = serializeSkillBindings(skillBindings);
+        String skillSnapshotDigest = sha256Digest(skillBindingsJson);
+        String attachmentContext = attachments.modelContext(command.conversationId(), command.attachmentIds(), actor);
         String agentId = blankToDefault(command.agentId(), "default-assistant");
         String modelId = blankToDefault(command.modelProfileId(), models.defaultModelProfileId());
-        var run = runs.save(new AgentRunEntity(
-                UUID.randomUUID().toString(),
+        var agent = agents.get(agentId);
+        List<String> knowledgeBaseIds = knowledge.resolveKnowledgeBaseIds(command.knowledgeBaseIds(), actor);
+        if (!agent.enabled()) {
+            throw new IllegalArgumentException("Agent is disabled: " + agentId);
+        }
+        var model = models.get(modelId);
+        if (!model.enabled()) {
+            throw new IllegalArgumentException("Model profile is disabled: " + modelId);
+        }
+        if (command.nodeId() != null
+                && !command.nodeId().isBlank()
+                && !model.capabilities().contains(ModelCapability.TOOLS)) {
+            throw new IllegalArgumentException("Selected model does not support native tool calling: " + modelId);
+        }
+        String runId = UUID.randomUUID().toString();
+        List<ResolvedToolBinding> toolBindings = toolRouter.resolve(
+                new ToolDiscoveryRequest(
+                        runId,
+                        command.nodeId(),
+                        knowledgeBaseIds,
+                        command.mcpServerIds(),
+                        actor),
+                command.toolNames(),
+                agent.toolAllowList());
+        if (command.nodeId() != null
+                && !command.nodeId().isBlank()
+                && toolBindings.stream().noneMatch(binding -> "node".equals(binding.providerId()))) {
+            throw new IllegalArgumentException(
+                    "The selected Agent and Run policy expose no enabled tools on node " + command.nodeId() + ".");
+        }
+        List<SkillAnalysis> skillAnalyses = skillAnalyzer.analyze(skillBindings);
+        CompatibilityReport compatibilityReport = skillCompatibility.check(
+                skillAnalyses,
+                toolBindings,
+                command.nodeId() == null || command.nodeId().isBlank()
+                        ? null
+                        : nodes.get(command.nodeId(), actor));
+        if (!compatibilityReport.compatible()) {
+            throw new SkillCompatibilityException(compatibilityReport);
+        }
+        // 编译动作同时完成不可变 Release 的摘要复核，失败时 Run 尚未保存。
+        String skillInstructions = skills.compileInstructions(skillBindings);
+        String modelCapabilityRevision = sha256Digest(serializeForDigest(model));
+        String agentPromptDigest = sha256Digest(agent.systemPrompt());
+        String skillInstructionsDigest = sha256Digest(skillInstructions);
+        String capabilityRevision = sha256Digest(serializeForDigest(toolBindings));
+        String policyRevision = sha256Digest(serializeForDigest(Map.of(
+                "agentAllowList", agent.toolAllowList(),
+                "requestedTools", command.toolNames() == null ? List.of() : command.toolNames(),
+                "approvalMode", "on-request")));
+        RunSpec runSpec = new RunSpec(
+                RunSpec.CURRENT_VERSION,
+                command.conversationId(),
+                command.text(),
+                modelId,
+                modelCapabilityRevision,
+                agentId,
+                agent.systemPrompt(),
+                agentPromptDigest,
+                agent.toolAllowList(),
+                skillBindings,
+                skillSnapshotDigest,
+                skillInstructionsDigest,
+                skillAnalyses,
+                compatibilityReport,
+                knowledgeBaseIds,
+                command.mcpServerIds(),
+                command.toolNames(),
+                toolBindings,
+                command.nodeId(),
+                CodingWorkspaceScope.from(command.workingDirectory()).relativePath(),
+                command.attachmentIds(),
+                attachmentContext,
+                capabilityRevision,
+                policyRevision,
+                "on-request",
+                actor.tenantId(),
+                actor.userId(),
+                actor.roles(),
+                actor.scopes());
+        String runSpecJson = serializeRunSpec(runSpec);
+        String runSpecDigest = sha256Digest(runSpecJson);
+        var runEntity = new AgentRunEntity(
+                runId,
                 actor.tenantId(),
                 actor.userId(),
                 command.conversationId(),
                 modelId,
                 agentId,
-                Instant.now()));
+                Instant.now());
+        runEntity.bindSkillSnapshot(skillBindingsJson, skillSnapshotDigest);
+        runEntity.bindRunSpec(runSpecJson, runSpecDigest);
+        var run = runs.save(runEntity);
+        conversations.append(command.conversationId(), MessageRole.USER, command.text(), run.id(), actor);
+        events.publish(
+                run.id(),
+                RunEventType.SKILLS_RESOLVED,
+                "count=" + skillBindings.size() + ", snapshot=" + skillSnapshotDigest,
+                actor);
+        events.publish(
+                run.id(),
+                RunEventType.RUN_SPEC_RESOLVED,
+                "version=" + RunSpec.CURRENT_VERSION + ", digest=" + runSpecDigest
+                        + ", tools=" + toolBindings.size(),
+                actor);
 
-        // The worker reads the run back from the database. Schedule it only after this
-        // transaction commits; otherwise a fast worker can observe no run yet.
-        scheduleAfterCommit(() -> executions.submit(run.id(), () -> execute(run.id(), command, actor)));
-        return new CreateRunResponse(run.id(), RunStatus.CREATED, "/api/v1/runs/" + run.id() + "/events");
+        var queueKey = new ConversationRunQueue.QueueKey(actor.tenantId(), command.conversationId());
+        int queuePosition = queue.reserve(
+                queueKey,
+                run.id(),
+                () -> executions.submit(run.id(), () -> executeQueued(run.id())));
+        events.publish(run.id(), RunEventType.RUN_QUEUED, "position=" + queuePosition, actor);
+        releaseReservationOnRollback(queueKey, run.id());
+
+        // The first worker is not started until the database transaction commits. The queue then
+        // starts at most one run for this conversation, preserving message order in model context.
+        scheduleAfterCommit(() -> queue.activate(queueKey));
+        return new CreateRunResponse(run.id(), RunStatus.QUEUED, queuePosition, "/api/v1/runs/" + run.id() + "/events");
     }
 
     @Transactional
     public RunView cancel(String runId, ActorContext actor) {
         AgentRunEntity run = runs.findByIdAndTenantId(runId, actor.tenantId())
                 .orElseThrow(() -> new IllegalArgumentException("Run not found: " + runId));
+        var queueKey = new ConversationRunQueue.QueueKey(actor.tenantId(), run.conversationId());
+        boolean wasWaitingForApproval = run.status() == RunStatus.WAITING_APPROVAL;
         run.cancel();
         continuations.findByRunIdAndTenantId(runId, actor.tenantId()).ifPresent(continuations::delete);
         runs.save(run);
         executions.cancel(runId);
+        queue.cancelPending(queueKey, runId);
         codingAgentLoop.cleanupManagedProcesses(runId, actor);
         events.publish(runId, RunEventType.RUN_CANCELLED, "Run cancelled by user.", actor);
+        scheduleAfterCommit(() -> {
+            if (wasWaitingForApproval) {
+                queue.complete(queueKey, runId);
+            } else {
+                queue.activate(queueKey);
+            }
+        });
         return RunView.from(run);
     }
 
-    private void execute(String runId, CreateRunCommand command, ActorContext actor) {
+    private void executeQueued(String runId) {
+        AgentRunEntity persisted = runs.findById(runId)
+                .orElseThrow(() -> new IllegalArgumentException("Run not found: " + runId));
+        RunSpec spec = deserializeRunSpec(persisted);
+        ActorContext actor = spec.actor();
+        var queueKey = new ConversationRunQueue.QueueKey(actor.tenantId(), spec.conversationId());
+        try {
+            execute(runId, spec, actor);
+        } finally {
+            releaseQueueSlotWhenTerminal(runId, actor, queueKey);
+        }
+    }
+
+    private void execute(String runId, RunSpec spec, ActorContext actor) {
+        CreateRunCommand command = spec.commandSnapshot();
+        String attachmentContext = spec.attachmentContext();
         try {
             CodingWorkspaceScope workspaceScope = CodingWorkspaceScope.from(command.workingDirectory());
             AgentRunEntity run = runs.findByIdAndTenantId(runId, actor.tenantId()).orElseThrow();
+            if (run.status() != RunStatus.QUEUED && run.status() != RunStatus.CREATED) {
+                return;
+            }
             run.start();
             runs.save(run);
             events.publish(runId, RunEventType.RUN_STARTED, "Run accepted by local coordinator.", actor);
             events.publish(runId, RunEventType.STEP_STARTED, "single-agent", actor);
 
-            var agent = agents.get(run.agentId());
-            EvidenceBundle evidence = knowledge.search(
-                    new KnowledgeSearchCommand(command.knowledgeBaseIds(), command.text(), 5),
-                    actor);
+            // 运行时只反序列化 Run 中持久化的绑定，再从不可变 Release Store 读取正文。
+            // 绝不回头读取当前选择项或用活动安装目录替换旧版本。
+            String skillInstructions = skills.compileInstructions(spec.skillBindings());
+            if (!sha256Digest(skillInstructions).equals(spec.skillInstructionsDigest())) {
+                throw new IllegalStateException("Run Skill instruction digest no longer matches its immutable snapshot.");
+            }
+            // 预检索与模型工具调用使用同一份 RunSpec binding。这样 Agent/Run 没有授权的
+            // knowledge_search、web_search 或 MCP 工具，不会因为“自动检索”路径而被绕过。
+            boolean webSearchRequested = shouldSearchWeb(command, spec.toolBindings());
+            EvidenceBundle evidence = suppressAutomaticKnowledgeForCurrentWebRequest(command, webSearchRequested)
+                    ? new EvidenceBundle(List.of())
+                    : invokeKnowledgeRetrieval(spec.toolBindings(), command.text(), runId, workspaceScope, actor);
 
             String webQuery = webSearchQuery(command.text());
             String webRetrievalNote = "";
             String webRetrievalTrace = "";
             List<WebSearchResult> webResults = List.of();
             List<McpToolCallResult> mcpResults = List.of();
-            if (shouldSearchWeb(command)) {
+            if (webSearchRequested) {
                 try {
-                    WebSearchResponse response = webSearch.searchDetailed(new WebSearchCommand(webQuery, 5));
+                    WebSearchResponse response = invokeWebRetrieval(
+                            spec.toolBindings(), webQuery, runId, workspaceScope, actor);
                     webResults = response.results();
+                    List<WebSearchResult> verifiedCurrentResults = webResults.stream()
+                            .filter(RunCommandService::isVerifiedWebResult)
+                            .toList();
+                    if (isCurrentInformationRequest(command.text())) {
+                        webResults = verifiedCurrentResults;
+                    }
                     webRetrievalTrace = response.trace().summary();
                     boolean everyProviderFailed = !response.trace().providers().isEmpty()
                             && response.trace().providers().stream()
                                     .allMatch(provider -> "FAILED".equals(provider.status()));
                     if (everyProviderFailed) {
                         webRetrievalNote = "Web search providers were unavailable: " + webRetrievalTrace;
+                    } else if (response.trace().freshnessFilteredCount() > 0 && webResults.isEmpty()) {
+                        webRetrievalNote = "Search candidates were found, but none had a verifiable publication time within the requested current-news window.";
+                    } else if (webResults.isEmpty()) {
+                        webRetrievalNote = "Web search returned no current results for this query.";
+                    } else if (response.trace().pagesRead() > 0 && response.trace().verifiedPages() == 0) {
+                        webRetrievalNote = "Search results were found, but no result page could be verified. Do not present their snippets as confirmed facts.";
                     }
                 } catch (Exception searchFailure) {
                     webRetrievalNote = "Web search was requested but failed: " + safeErrorMessage(searchFailure);
                 }
             }
-            if (shouldUseSelectedMcpSearch(command)) {
-                mcpResults = mcpConnections.callLikelySearchTools(command.mcpServerIds(), webQuery.isBlank() ? command.text() : webQuery);
+            if (shouldUseSelectedMcpSearch(command, spec.toolBindings())) {
+                mcpResults = invokeMcpRetrieval(
+                        spec.toolBindings(),
+                        webQuery.isBlank() ? command.text() : webQuery,
+                        runId,
+                        workspaceScope,
+                        actor);
             }
             events.publish(
                     runId,
@@ -190,21 +380,33 @@ public class RunCommandService {
                             + (webRetrievalTrace.isBlank() ? "" : ", " + webRetrievalTrace)
                             + (webRetrievalNote.isBlank() ? "" : ", note=" + webRetrievalNote),
                     actor);
+            String citationsPayload = retrievalSourcesPayload(evidence, webResults);
+            if (!"[]".equals(citationsPayload)) {
+                events.publish(runId, RunEventType.RETRIEVAL_SOURCES, citationsPayload, actor);
+            }
 
             List<ModelGateway.ModelMessage> messages = new ArrayList<>();
             messages.add(new ModelGateway.ModelMessage(
                     "system",
-                    buildSystemPrompt(agent.systemPrompt(), command, evidence, webResults, mcpResults, webQuery, webRetrievalNote)));
+                    buildSystemPrompt(
+                            spec.agentSystemPrompt(), command, evidence, webResults, mcpResults,
+                            webQuery, webRetrievalNote, skillInstructions)));
             conversations.history(run.conversationId(), actor).forEach(message ->
-                    messages.add(new ModelGateway.ModelMessage(message.role().name().toLowerCase(), message.content())));
+                    messages.add(new ModelGateway.ModelMessage(
+                            message.role().name().toLowerCase(),
+                            message.runId() != null && message.runId().equals(runId)
+                                    ? withAttachmentContext(message.content(), attachmentContext)
+                                    : message.content())));
 
             String answerContent;
-            if (command.nodeId() != null && !command.nodeId().isBlank()) {
+            if (shouldReturnCurrentSearchLimitation(command, evidence, webResults, mcpResults, webRetrievalNote)) {
+                answerContent = currentSearchLimitationAnswer(webRetrievalNote);
+            } else if (command.nodeId() != null && !command.nodeId().isBlank()) {
                 events.publish(runId, RunEventType.STEP_STARTED, "coding-agent", actor);
                 answerContent = sanitizeModelOutput(codingAgentLoop.execute(
                         runId,
                         run.modelProfileId(),
-                        command.nodeId(),
+                        spec.toolBindings(),
                         messages,
                         actor,
                         workspaceScope));
@@ -213,12 +415,12 @@ public class RunCommandService {
                 var answer = modelGateway.complete(new ModelGateway.ModelCompletionRequest(run.modelProfileId(), messages));
                 answerContent = sanitizeModelOutput(answer.content());
             }
+            answerContent = finalizeCodingDelivery(run, command.nodeId(), answerContent, actor);
             for (String part : tokenBatches(answerContent)) {
                 events.publish(runId, RunEventType.TOKEN_DELTA, part, actor);
             }
 
             conversations.append(run.conversationId(), MessageRole.ASSISTANT, answerContent, runId, actor);
-            run.succeed(answerContent);
             runs.save(run);
             events.publish(runId, RunEventType.STEP_COMPLETED, "single-agent", actor);
             events.publish(runId, RunEventType.FINAL_ANSWER, answerContent, actor);
@@ -259,22 +461,74 @@ public class RunCommandService {
         run.resume();
         runs.save(run);
         events.publish(run.id(), RunEventType.RUN_RESUMED, "approvalId=" + approval.id(), actor);
-        scheduleAfterCommit(() -> executions.submit(run.id(), () -> executeResumedCoding(
-                run.id(),
-                continuation.nodeId(),
-                continuation.workingDirectory(),
-                messages,
-                actor)));
+        var queueKey = new ConversationRunQueue.QueueKey(actor.tenantId(), run.conversationId());
+        scheduleAfterCommit(() -> {
+            Runnable worker = () -> executions.submit(run.id(), () -> executeResumedQueued(
+                    run.id(), messages, actor, queueKey));
+            if (!queue.resume(queueKey, run.id(), worker)) {
+                // Runs created before queueing was introduced have no in-memory queue reservation.
+                worker.run();
+            }
+        });
+    }
+
+    /** MCP/后端 Provider 的通用审批恢复入口。 */
+    @Transactional
+    public void resumeAfterToolApproval(ToolApprovalDecisionView decision, ActorContext reviewer) {
+        if (decision == null || decision.approval() == null
+                || decision.approval().runId() == null || decision.approval().runId().isBlank()) {
+            return;
+        }
+        var approval = decision.approval();
+        var continuation = continuations.findByRunIdAndTenantId(
+                approval.runId(), reviewer.tenantId()).orElse(null);
+        if (continuation == null
+                || !continuation.approvalId().equals(approval.id())
+                || !continuation.toolCallId().equals(approval.toolCallId())) {
+            return;
+        }
+        var run = runs.findByIdAndTenantId(approval.runId(), reviewer.tenantId()).orElse(null);
+        if (run == null || run.status() != RunStatus.WAITING_APPROVAL) {
+            return;
+        }
+        RunSpec spec = deserializeRunSpec(run);
+        ActorContext executionActor = spec.actor();
+        List<ModelGateway.ModelMessage> messages = deserializeMessages(continuation.messagesJson());
+        messages.add(ModelGateway.ModelMessage.toolResult(
+                approval.toolCallId(), approvalResult(decision)));
+        continuations.delete(continuation);
+        run.resume();
+        runs.save(run);
+        events.publish(run.id(), RunEventType.RUN_RESUMED, "approvalId=" + approval.id(), executionActor);
+        var queueKey = new ConversationRunQueue.QueueKey(executionActor.tenantId(), run.conversationId());
+        scheduleAfterCommit(() -> {
+            Runnable worker = () -> executions.submit(run.id(), () -> executeResumedQueued(
+                    run.id(), messages, executionActor, queueKey));
+            if (!queue.resume(queueKey, run.id(), worker)) {
+                worker.run();
+            }
+        });
+    }
+
+    private void executeResumedQueued(
+            String runId,
+            List<ModelGateway.ModelMessage> messages,
+            ActorContext actor,
+            ConversationRunQueue.QueueKey queueKey) {
+        try {
+            executeResumedCoding(runId, messages, actor);
+        } finally {
+            releaseQueueSlotWhenTerminal(runId, actor, queueKey);
+        }
     }
 
     private void executeResumedCoding(
             String runId,
-            String nodeId,
-            String workingDirectory,
             List<ModelGateway.ModelMessage> messages,
             ActorContext actor) {
         try {
             AgentRunEntity run = runs.findByIdAndTenantId(runId, actor.tenantId()).orElseThrow();
+            RunSpec spec = deserializeRunSpec(run);
             if (run.status() != RunStatus.RUNNING) {
                 return;
             }
@@ -282,24 +536,78 @@ public class RunCommandService {
             String answer = sanitizeModelOutput(codingAgentLoop.resume(
                     runId,
                     run.modelProfileId(),
-                    nodeId,
+                    spec.toolBindings(),
                     messages,
                     actor,
-                    CodingWorkspaceScope.from(workingDirectory)));
+                    CodingWorkspaceScope.from(spec.workingDirectory())));
             events.publish(runId, RunEventType.STEP_COMPLETED, "coding-agent resumed", actor);
+            answer = finalizeCodingDelivery(run, spec.nodeId(), answer, actor);
             for (String part : tokenBatches(answer)) {
                 events.publish(runId, RunEventType.TOKEN_DELTA, part, actor);
             }
             conversations.append(run.conversationId(), MessageRole.ASSISTANT, answer, runId, actor);
-            run.succeed(answer);
             runs.save(run);
             events.publish(runId, RunEventType.STEP_COMPLETED, "single-agent", actor);
             events.publish(runId, RunEventType.FINAL_ANSWER, answer, actor);
         } catch (CodingApprovalRequiredException approvalRequired) {
-            suspendForApproval(runId, nodeId, workingDirectory, approvalRequired, actor);
+            AgentRunEntity run = runs.findByIdAndTenantId(runId, actor.tenantId()).orElseThrow();
+            RunSpec spec = deserializeRunSpec(run);
+            suspendForApproval(runId, spec.nodeId(), spec.workingDirectory(), approvalRequired, actor);
         } catch (Exception ex) {
             failUnlessCancelled(runId, ex, actor);
         }
+    }
+
+    /**
+     * 在持久化成功状态之前执行唯一的服务端交付判断。
+     *
+     * <p>没有选择节点的普通对话不属于编码交付，沿用正常成功流程。编码任务则只读取服务器保存的
+     * 调用审计，不能相信模型回答或客户端额外上报的布尔字段。即使审计读取异常，也宁可停在
+     * NEEDS_VERIFICATION，不能错误地把任务标记为 SUCCEEDED。
+     */
+    private String finalizeCodingDelivery(AgentRunEntity run, String nodeId, String agentAnswer, ActorContext actor) {
+        if (nodeId == null || nodeId.isBlank()) {
+            run.succeed(agentAnswer);
+            return agentAnswer;
+        }
+
+        CodingRunEvidenceView evidence = null;
+        try {
+            evidence = nodes.codingEvidence(run.id(), actor);
+        } catch (Exception ignored) {
+            // evaluate(null) 会生成不泄露内部异常信息的、面向用户的待验证原因。
+        }
+        CodingDeliveryGate.Decision decision = deliveryGate.evaluate(evidence);
+        if (decision.passed()) {
+            run.succeed(agentAnswer);
+            return agentAnswer;
+        }
+
+        String explanation = String.join("；", decision.reasons());
+        String gatedAnswer = deliveryGateAnswer(agentAnswer, decision.reasons());
+        run.needsVerification(gatedAnswer, explanation);
+        events.publish(
+                run.id(),
+                RunEventType.RUN_NEEDS_VERIFICATION,
+                "服务端交付门禁未通过：" + explanation,
+                actor);
+        return gatedAnswer;
+    }
+
+    /**
+     * 把模型工作报告明确降级为“未验证信息”。这样模型即使误称完成，API 与 SSE 的最终状态也不会
+     * 对用户造成已经交付的误导。
+     */
+    private static String deliveryGateAnswer(String agentAnswer, List<String> reasons) {
+        StringBuilder message = new StringBuilder("服务端交付门禁：本次编码工作尚未被标记为完成。\n");
+        for (String reason : reasons) {
+            message.append("- ").append(reason).append('\n');
+        }
+        if (agentAnswer != null && !agentAnswer.isBlank()) {
+            message.append("\n以下是模型的未验证工作报告，不应视为已交付结论：\n")
+                    .append(agentAnswer);
+        }
+        return message.toString();
     }
 
     private void suspendForApproval(
@@ -344,6 +652,15 @@ public class RunCommandService {
         }
     }
 
+    private void releaseQueueSlotWhenTerminal(
+            String runId, ActorContext actor, ConversationRunQueue.QueueKey queueKey) {
+        runs.findByIdAndTenantId(runId, actor.tenantId())
+                .filter(run -> run.status() != RunStatus.QUEUED
+                        && run.status() != RunStatus.RUNNING
+                        && run.status() != RunStatus.WAITING_APPROVAL)
+                .ifPresent(ignored -> queue.complete(queueKey, runId));
+    }
+
     private String approvalResult(NodeToolApprovalDecisionView decision) {
         var result = new LinkedHashMap<String, Object>();
         result.put("tool", decision.approval().toolName());
@@ -359,6 +676,25 @@ public class RunCommandService {
             return objectMapper.writeValueAsString(result);
         } catch (Exception ex) {
             throw new IllegalStateException("Unable to serialize approved node tool result.", ex);
+        }
+    }
+
+    private String approvalResult(ToolApprovalDecisionView decision) {
+        var result = new LinkedHashMap<String, Object>();
+        result.put("tool", decision.approval().providerToolName());
+        result.put("provider", decision.approval().providerId());
+        if (decision.execution() == null) {
+            result.put("status", "REJECTED");
+            result.put("error", "The user rejected this tool call.");
+        } else {
+            result.put("status", decision.execution().status());
+            result.put("result", decision.execution().result());
+            result.put("error", decision.execution().errorMessage());
+        }
+        try {
+            return objectMapper.writeValueAsString(result);
+        } catch (Exception ex) {
+            throw new IllegalStateException("Unable to serialize approved tool result.", ex);
         }
     }
 
@@ -381,15 +717,104 @@ public class RunCommandService {
         }
     }
 
+    private String serializeSkillBindings(List<SkillRunBinding> bindings) {
+        try {
+            return objectMapper.writeValueAsString(bindings == null ? List.of() : bindings);
+        } catch (Exception ex) {
+            throw new IllegalStateException("Unable to persist the Run Skill snapshot.", ex);
+        }
+    }
+
+    private String serializeRunSpec(RunSpec spec) {
+        try {
+            return objectMapper.writeValueAsString(spec);
+        } catch (Exception ex) {
+            throw new IllegalStateException("Unable to persist the immutable RunSpec.", ex);
+        }
+    }
+
+    private RunSpec deserializeRunSpec(AgentRunEntity run) {
+        if (run.runSpecJson() == null || run.runSpecJson().isBlank()) {
+            throw new IllegalStateException(
+                    "Run " + run.id() + " predates immutable RunSpec support and cannot be resumed automatically.");
+        }
+        String actualDigest = sha256Digest(run.runSpecJson());
+        if (!actualDigest.equals(run.runSpecDigest())) {
+            throw new IllegalStateException("RunSpec digest verification failed for Run " + run.id() + ".");
+        }
+        try {
+            RunSpec spec = objectMapper.readValue(run.runSpecJson(), RunSpec.class);
+            if (spec.version() != RunSpec.CURRENT_VERSION) {
+                throw new IllegalStateException("Unsupported RunSpec version: " + spec.version());
+            }
+            if (!run.id().isBlank()
+                    && (!run.tenantId().equals(spec.tenantId()) || !run.userId().equals(spec.userId()))) {
+                throw new IllegalStateException("RunSpec actor does not match the owning Run.");
+            }
+            return spec;
+        } catch (IllegalStateException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new IllegalStateException("Unable to restore the immutable RunSpec.", ex);
+        }
+    }
+
+    private String serializeForDigest(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception ex) {
+            throw new IllegalStateException("Unable to calculate a configuration digest.", ex);
+        }
+    }
+
+    private List<SkillRunBinding> deserializeSkillBindings(String bindingsJson) {
+        if (bindingsJson == null || bindingsJson.isBlank()) {
+            // 兼容 P0 上线前已经存在的 Run；它们没有选择可复现 Skill，按空列表恢复。
+            return List.of();
+        }
+        try {
+            return objectMapper.readValue(
+                    bindingsJson,
+                    new TypeReference<List<SkillRunBinding>>() {
+                    });
+        } catch (Exception ex) {
+            throw new IllegalStateException("Unable to restore the Run Skill snapshot.", ex);
+        }
+    }
+
+    private static String sha256Digest(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(value.getBytes(StandardCharsets.UTF_8));
+            return "sha256:" + HexFormat.of().formatHex(bytes);
+        } catch (GeneralSecurityException ex) {
+            throw new IllegalStateException("SHA-256 is not available in this Java runtime.", ex);
+        }
+    }
+
     private static void scheduleAfterCommit(Runnable task) {
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            CompletableFuture.runAsync(task);
+            task.run();
             return;
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                CompletableFuture.runAsync(task);
+                task.run();
+            }
+        });
+    }
+
+    private void releaseReservationOnRollback(ConversationRunQueue.QueueKey queueKey, String runId) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status != STATUS_COMMITTED) {
+                    queue.cancelPending(queueKey, runId);
+                }
             }
         });
     }
@@ -402,11 +827,25 @@ public class RunCommandService {
             List<McpToolCallResult> mcpResults,
             String webQuery,
             String webRetrievalNote) {
+        return buildSystemPrompt(
+                agentPrompt, command, evidence, webResults, mcpResults, webQuery, webRetrievalNote, "");
+    }
+
+    static String buildSystemPrompt(
+            String agentPrompt,
+            CreateRunCommand command,
+            EvidenceBundle evidence,
+            List<WebSearchResult> webResults,
+            List<McpToolCallResult> mcpResults,
+            String webQuery,
+            String webRetrievalNote,
+            String skillInstructions) {
         String capabilityContext = buildCapabilityContext(command);
         if (evidence.isEmpty()
                 && webResults.isEmpty()
                 && mcpResults.isEmpty()
                 && webRetrievalNote.isBlank()
+                && (skillInstructions == null || skillInstructions.isBlank())
                 && capabilityContext.isBlank()
                 && (command.nodeId() == null || command.nodeId().isBlank())) {
             return agentPrompt;
@@ -422,11 +861,26 @@ public class RunCommandService {
         if (!capabilityContext.isBlank()) {
             builder.append(capabilityContext);
         }
+        if (skillInstructions != null && !skillInstructions.isBlank()) {
+            // Skill 位于 Agent 指令之后、检索证据之前。Skill 内容可能不可信，权限仍由代码策略决定。
+            builder.append("\nEnabled Skill instructions:\n")
+                    .append(skillInstructions);
+        }
         builder.append("\nRetrieved evidence:\n");
         for (EvidenceBundle.Evidence item : evidence.evidence()) {
             builder.append("- [")
                     .append(item.sourceName()).append("#").append(item.chunkIndex())
                     .append("] ").append(item.quote()).append('\n');
+        }
+        if (!evidence.isEmpty()) {
+            builder.append("""
+
+                    Grounded-answer rules:
+                    - Treat the retrieved evidence as the only support for factual claims about the selected knowledge bases.
+                    - Do not infer that a source document is missing, incomplete, or truncated merely because only relevant excerpts are shown here.
+                    - Do not ask the user to upload or provide the complete document unless the runtime context explicitly reports a retrieval or parsing failure.
+                    - When the evidence does not support an answer, state that limitation plainly instead of inventing details or document-processing caveats.
+                    """);
         }
 
         if (!webResults.isEmpty()) {
@@ -437,6 +891,16 @@ public class RunCommandService {
             builder.append("- title: ").append(item.title()).append('\n')
                     .append("  snippet: ").append(item.snippet()).append('\n')
                     .append("  url: ").append(item.url()).append('\n');
+            if (item.publishedAt() != null) {
+                builder.append("  published at: ").append(item.publishedAt()).append('\n');
+            }
+            if (item.evidence() != null) {
+                builder.append("  page verification: ").append(item.evidence().verification()).append('\n');
+                if (item.evidence().readable()) {
+                    builder.append("  page title: ").append(item.evidence().pageTitle()).append('\n')
+                            .append("  verified excerpt: ").append(truncate(item.evidence().excerpt(), 1500)).append('\n');
+                }
+            }
         }
         if (!mcpResults.isEmpty()) {
             builder.append("\nMCP tool results. Treat them as external tool evidence and cite the MCP server/tool name when relevant:\n");
@@ -447,11 +911,14 @@ public class RunCommandService {
             }
         }
         if (!webResults.isEmpty()) {
-            builder.append("\nWhen using web evidence, include source URLs in the answer when they materially support a claim.\n");
+            builder.append("\nWhen using web evidence, include source URLs in the answer when they materially support a claim. "
+                    + "Use verified page excerpts for factual claims; search snippets are discovery hints only.\n");
         }
         if (!webRetrievalNote.isBlank()) {
             builder.append("\n").append(webRetrievalNote)
-                    .append("\nIf current information is required, explain that live search is temporarily unavailable and ask the user to retry or narrow the query.\n");
+                    .append("\nIf current information is required, state the precise retrieval limitation in the final answer. "
+                            + "Do not say that you will search or that you are about to provide results: retrieval has already finished. "
+                            + "Do not turn snippets or older material into current facts; ask the user to retry or narrow the query when appropriate.\n");
         }
         return builder.toString();
     }
@@ -461,7 +928,7 @@ public class RunCommandService {
                 - You are working in a developer workspace through native tools. You MUST call a relevant native tool before giving any final answer. Never claim a command or test passed unless its tool result says so.
                 - Follow the coding workflow strictly: treat any target directory named by the user as the only project scope. If it does not exist, create that directory and its required parents; do not inspect unrelated samples, previous experiments, or sibling projects.
                 - Start with only the minimum inspection needed for the requested files. For an existing or unfamiliar repository, call project.map once to identify module, source, test, and configuration boundaries. If the target may contain separate frontend, backend, or modules, call project.discover once; then call project.inspect for the specific module before choosing build, test, package-manager, or start commands. Use only manifest-backed recommendations unless later inspection proves a different command is required. Once the target is known, use fs.search to locate symbols or error text and then read only the matching files inside it. For a large file, use fs.read with startLine and endLine instead of consuming its entire content. Do not repeatedly inspect the workspace root or browse unrelated README files for inspiration.
-                - Work in coherent stages: create or edit the implementation, run the smallest relevant compile/test command, then start a managed development process only when live verification is needed. If a command fails, use its structured stdout/stderr and exit code as the diagnosis input before changing code. Use HTTP or browser tools to validate the user-facing path before reporting completion. For browser verification, call browser.snapshot to get visible controls and their selectors, use browser.wait after asynchronous transitions, then interact and snapshot again to prove the result.
+                - Work in coherent stages: create or edit the implementation, run the smallest relevant compile/test command, then start a managed development process only when live verification is needed. If a command fails, use its structured stdout/stderr and exit code as the diagnosis input before changing code. Use HTTP or browser tools to validate the user-facing path before reporting completion. For browser verification, call browser.snapshot to get visible controls and their selectors, use browser.wait after asynchronous transitions, then interact and snapshot again to prove the result. For a non-trivial browser interaction, call browser.trace.start after opening the page and browser.trace.stop after verification so the server audit contains a replayable trace artifact.
                 - When a check fails, first read the returned diagnosis (failedTests, sourceLocations, suggestedSearchTerms) and the relevant error output. Use fs.search or fs.read on those reported files, make one focused correction, then repeat the same check. Do not make unrelated edits before reproducing the failure. Prefer direct file writes for new files and focused patches for changes. Keep tool calls purposeful because each coding run has a finite tool budget.
                 - In the final answer, state the files changed, the concrete verification performed, any process URL that remains running, and any limitation that was not verified.
                 """);
@@ -470,14 +937,150 @@ public class RunCommandService {
                 .append(". All file paths and working directories must be relative to this scope.\n");
     }
 
-    private static boolean shouldSearchWeb(CreateRunCommand command) {
-        boolean requestScopedCapabilities = command.toolNames() != null || command.skillIds() != null;
-        if (requestScopedCapabilities
-                && !isCapabilitySelected(command.toolNames(), "web_search")
-                && !isCapabilitySelected(command.skillIds(), "web-research")) {
-            return false;
+    private EvidenceBundle invokeKnowledgeRetrieval(
+            List<ResolvedToolBinding> bindings,
+            String query,
+            String runId,
+            CodingWorkspaceScope workspaceScope,
+            ActorContext actor) {
+        ResolvedToolBinding binding = findBinding(bindings, "backend", "knowledge_search");
+        if (binding == null) {
+            return new EvidenceBundle(List.of());
         }
-        String text = command.text();
+        ToolProviderResult result = invokeBoundTool(
+                runId, "retrieval_knowledge", binding, Map.of("query", query, "limit", 5), workspaceScope, actor);
+        if (!result.succeeded()) {
+            throw new IllegalStateException("Knowledge retrieval failed: " + result.errorMessage());
+        }
+        try {
+            List<EvidenceBundle.Evidence> evidence = objectMapper.convertValue(
+                    result.result().getOrDefault("matches", List.of()),
+                    new TypeReference<List<EvidenceBundle.Evidence>>() { });
+            return new EvidenceBundle(evidence);
+        } catch (Exception ex) {
+            throw new IllegalStateException("Knowledge ToolProvider returned an invalid result.", ex);
+        }
+    }
+
+    private WebSearchResponse invokeWebRetrieval(
+            List<ResolvedToolBinding> bindings,
+            String query,
+            String runId,
+            CodingWorkspaceScope workspaceScope,
+            ActorContext actor) {
+        ResolvedToolBinding binding = findBinding(bindings, "backend", "web_search");
+        if (binding == null) {
+            throw new IllegalStateException("web_search is not available in the immutable RunSpec.");
+        }
+        ToolProviderResult result = invokeBoundTool(
+                runId, "retrieval_web", binding, Map.of("query", query, "limit", 5), workspaceScope, actor);
+        if (!result.succeeded()) {
+            throw new IllegalStateException("Web retrieval failed: " + result.errorMessage());
+        }
+        try {
+            String responseQuery = String.valueOf(result.result().getOrDefault("query", query));
+            WebSearchMode intent = objectMapper.convertValue(
+                    result.result().getOrDefault("intent", WebSearchMode.AUTO), WebSearchMode.class);
+            List<WebSearchResult> results = objectMapper.convertValue(
+                    result.result().getOrDefault("results", List.of()),
+                    new TypeReference<List<WebSearchResult>>() { });
+            WebSearchTrace trace = objectMapper.convertValue(
+                    result.result().get("trace"), WebSearchTrace.class);
+            return new WebSearchResponse(responseQuery, intent, results, trace);
+        } catch (Exception ex) {
+            throw new IllegalStateException("Web ToolProvider returned an invalid result.", ex);
+        }
+    }
+
+    private List<McpToolCallResult> invokeMcpRetrieval(
+            List<ResolvedToolBinding> bindings,
+            String query,
+            String runId,
+            CodingWorkspaceScope workspaceScope,
+            ActorContext actor) {
+        List<McpToolCallResult> results = new ArrayList<>();
+        int index = 0;
+        for (ResolvedToolBinding binding : bindings == null ? List.<ResolvedToolBinding>of() : bindings) {
+            if (!"mcp".equals(binding.providerId()) || !isSearchLikeTool(binding.providerToolName())) {
+                continue;
+            }
+            // 后台预检索不能替用户批准有副作用的 MCP 工具；模型仍可在正式循环中请求并暂停审批。
+            if (binding.requiresApproval()) {
+                continue;
+            }
+            ToolProviderResult result = invokeBoundTool(
+                    runId,
+                    "retrieval_mcp_" + (++index),
+                    binding,
+                    Map.of("query", query),
+                    workspaceScope,
+                    actor);
+            try {
+                List<Map<String, Object>> content = objectMapper.convertValue(
+                        result.result().getOrDefault("content", List.of()),
+                        new TypeReference<List<Map<String, Object>>>() { });
+                results.add(new McpToolCallResult(
+                        binding.attributes().get("connectionId"),
+                        binding.providerToolName(),
+                        !result.succeeded(),
+                        String.valueOf(result.result().getOrDefault("text", result.errorMessage())),
+                        content,
+                        result.result()));
+            } catch (Exception ex) {
+                results.add(new McpToolCallResult(
+                        binding.attributes().get("connectionId"),
+                        binding.providerToolName(),
+                        true,
+                        "MCP ToolProvider returned an invalid result.",
+                        List.of(),
+                        Map.of()));
+            }
+        }
+        return List.copyOf(results);
+    }
+
+    private ToolProviderResult invokeBoundTool(
+            String runId,
+            String toolCallId,
+            ResolvedToolBinding binding,
+            Map<String, Object> arguments,
+            CodingWorkspaceScope workspaceScope,
+            ActorContext actor) {
+        ToolProviderResult result = toolRouter.invoke(new ToolInvocationRequest(
+                runId, toolCallId, binding, arguments, null, workspaceScope, actor));
+        if (result == null) {
+            throw new IllegalStateException("ToolProvider returned no result for " + binding.bindingId() + ".");
+        }
+        return result;
+    }
+
+    private static ResolvedToolBinding findBinding(
+            List<ResolvedToolBinding> bindings,
+            String providerId,
+            String providerToolName) {
+        return (bindings == null ? List.<ResolvedToolBinding>of() : bindings).stream()
+                .filter(binding -> providerId.equals(binding.providerId()))
+                .filter(binding -> providerToolName.equals(binding.providerToolName()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private static boolean shouldSearchWeb(
+            CreateRunCommand command,
+            List<ResolvedToolBinding> bindings) {
+        return findBinding(bindings, "backend", "web_search") != null
+                && requestsExternalSearch(command.text());
+    }
+
+    private static boolean suppressAutomaticKnowledgeForCurrentWebRequest(
+            CreateRunCommand command,
+            boolean webSearchRequested) {
+        return webSearchRequested
+                && isCurrentInformationRequest(command.text())
+                && (command.knowledgeBaseIds() == null || command.knowledgeBaseIds().isEmpty());
+    }
+
+    private static boolean requestsExternalSearch(String text) {
         String normalized = text == null ? "" : text.toLowerCase(Locale.ROOT);
         return normalized.contains("\u8054\u7f51")
                 || normalized.contains("\u641c\u7d22")
@@ -497,10 +1100,72 @@ public class RunCommandService {
                 || normalized.contains("search");
     }
 
-    private static boolean shouldUseSelectedMcpSearch(CreateRunCommand command) {
+    private static boolean shouldReturnCurrentSearchLimitation(
+            CreateRunCommand command,
+            EvidenceBundle knowledgeEvidence,
+            List<WebSearchResult> webResults,
+            List<McpToolCallResult> mcpResults,
+            String webRetrievalNote) {
+        return !webRetrievalNote.isBlank()
+                && webResults.stream().noneMatch(RunCommandService::isVerifiedWebResult)
+                && knowledgeEvidence.isEmpty()
+                && mcpResults.isEmpty()
+                && isCurrentInformationRequest(command.text());
+    }
+
+    private static boolean isVerifiedWebResult(WebSearchResult result) {
+        return result != null
+                && result.evidence() != null
+                && result.evidence().readable()
+                && result.evidence().relevant();
+    }
+
+    private static boolean isCurrentInformationRequest(String text) {
+        String normalized = text == null ? "" : text.toLowerCase(Locale.ROOT);
+        return normalized.contains("\u4eca\u65e5")
+                || normalized.contains("\u4eca\u5929")
+                || normalized.contains("\u6700\u65b0")
+                || normalized.contains("\u65b0\u95fb")
+                || normalized.contains("\u8d44\u8baf")
+                || normalized.contains("today")
+                || normalized.contains("latest")
+                || normalized.contains("current news")
+                || normalized.contains("news");
+    }
+
+    private static String currentSearchLimitationAnswer(String retrievalNote) {
+        if (retrievalNote.startsWith("Web search providers were unavailable")) {
+            return "暂时无法获取今日最新资讯：网页检索服务当前不可用。请稍后重试，或指定地区和类别后再查询。";
+        }
+        if (retrievalNote.startsWith("Search candidates were found")) {
+            return "暂未找到可验证为今日发布的资讯。检索到的候选缺少可靠发布时间，不能作为今日新闻呈现。"
+                    + "请稍后重试，或指定地区和类别后再查询。";
+        }
+        if (retrievalNote.startsWith("Search results were found")) {
+            return "检索到了当前候选，但未能读取到可验证的页面内容，因此不能据此生成今日新闻摘要。"
+                    + "请稍后重试，或指定地区和类别后再查询。";
+        }
+        return "暂未检索到可验证的当前资讯，因此不能据此生成今日新闻摘要。请稍后重试，或指定地区和类别后再查询。";
+    }
+
+    private static boolean shouldUseSelectedMcpSearch(
+            CreateRunCommand command,
+            List<ResolvedToolBinding> bindings) {
         return command.mcpServerIds() != null
                 && !command.mcpServerIds().isEmpty()
-                && shouldSearchWeb(command);
+                && requestsExternalSearch(command.text())
+                && (bindings == null ? List.<ResolvedToolBinding>of() : bindings).stream()
+                        .anyMatch(binding -> "mcp".equals(binding.providerId())
+                                && isSearchLikeTool(binding.providerToolName())
+                                && !binding.requiresApproval());
+    }
+
+    private static boolean isSearchLikeTool(String toolName) {
+        String normalized = toolName == null ? "" : toolName.toLowerCase(Locale.ROOT);
+        return normalized.contains("search")
+                || normalized.contains("query")
+                || normalized.contains("find")
+                || normalized.contains("lookup");
     }
 
     private static String buildCapabilityContext(CreateRunCommand command) {
@@ -532,25 +1197,13 @@ public class RunCommandService {
      * instruction. For example, "search assistant-ui GitHub and cite sources"
      * should search for "assistant-ui GitHub".
      */
-    private static String webSearchQuery(String text) {
+    static String webSearchQuery(String text) {
         if (text == null || text.isBlank()) {
             return "";
         }
 
-        StringBuilder latinTokens = new StringBuilder();
-        var matcher = LATIN_SEARCH_TOKEN.matcher(text);
-        while (matcher.find()) {
-            if (!latinTokens.isEmpty()) {
-                latinTokens.append(' ');
-            }
-            latinTokens.append(matcher.group());
-        }
-        if (!latinTokens.isEmpty()) {
-            return latinTokens.toString();
-        }
-
-        return text
-                .replaceAll("(?i)\\b(search|please|find|current|latest|today|news|source|sources|link|links)\\b", " ")
+        String cleaned = text
+                .replaceAll("(?i)\\b(search|please|find|source|sources|link|links)\\b", " ")
                 .replace("\u641c\u7d22\u4e00\u4e0b", " ")
                 .replace("\u641c\u7d22", " ")
                 .replace("\u8054\u7f51", " ")
@@ -564,6 +1217,7 @@ public class RunCommandService {
                 .replaceAll("[\\p{Punct}\\p{IsPunctuation}]", " ")
                 .replaceAll("\\s+", " ")
                 .trim();
+        return cleaned.isBlank() ? text.trim() : cleaned;
     }
 
     private static String safeErrorMessage(Exception ex) {
@@ -581,11 +1235,46 @@ public class RunCommandService {
         return value.length() <= maxLength ? value : value.substring(0, maxLength) + "...";
     }
 
+    private String retrievalSourcesPayload(EvidenceBundle evidence, List<WebSearchResult> webResults) {
+        List<RunCitation> citations = new ArrayList<>();
+        if (evidence != null && !evidence.isEmpty()) {
+            evidence.evidence().forEach(item -> citations.add(new RunCitation(
+                    "knowledge-" + item.chunkId(),
+                    "Knowledge base",
+                    item.sourceName(),
+                    truncate(item.quote(), 800),
+                    item.knowledgeBaseId() + "/" + item.documentId() + "#chunk=" + item.chunkIndex(),
+                    "knowledge")));
+        }
+        if (webResults != null) {
+            webResults.stream()
+                    .filter(RunCommandService::isVerifiedWebResult)
+                    .forEach(item -> citations.add(new RunCitation(
+                            "web-" + Integer.toUnsignedString(item.url().hashCode(), 36),
+                            "Web",
+                            item.title(),
+                            truncate(item.evidence().excerpt(), 800),
+                            item.url(),
+                            "web")));
+        }
+        if (citations.isEmpty()) {
+            return "[]";
+        }
+        try {
+            return objectMapper.writeValueAsString(citations);
+        } catch (Exception ignored) {
+            return "[]";
+        }
+    }
+
     private static String sanitizeModelOutput(String content) {
         if (content == null || content.isBlank()) {
             return "";
         }
-        return TOOL_RESULT_BLOCK.matcher(TOOL_CALL_BLOCK.matcher(content).replaceAll(""))
+        return MM_THINK_BLOCK.matcher(TOOL_RESULT_BLOCK.matcher(TOOL_CALL_BLOCK.matcher(content).replaceAll(""))
+                .replaceAll("")
+                .replace("<mm:think>", "")
+                .replace("</mm:think>", ""))
                 .replaceAll("")
                 .replaceAll("(?m)^\\s*\\]<\\]minimax\\[>.*$", "")
                 .replaceAll("\\n{3,}", "\n\n")
@@ -605,5 +1294,21 @@ public class RunCommandService {
 
     private static String blankToDefault(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private static String withAttachmentContext(String message, String attachmentContext) {
+        if (attachmentContext == null || attachmentContext.isBlank()) {
+            return message;
+        }
+        return message + "\n\n" + attachmentContext;
+    }
+
+    private record RunCitation(
+            String id,
+            String source,
+            String title,
+            String quote,
+            String location,
+            String type) {
     }
 }

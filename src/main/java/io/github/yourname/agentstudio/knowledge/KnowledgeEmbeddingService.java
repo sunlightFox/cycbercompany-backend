@@ -19,7 +19,7 @@ import org.springframework.stereotype.Service;
 public class KnowledgeEmbeddingService {
 
     private static final int DEFAULT_MAX_EMBEDDING_CHARS = 6_000;
-    private static final double DEFAULT_VECTOR_WEIGHT = 8.0;
+    private static final double DEFAULT_VECTOR_WEIGHT = 1.0;
 
     private final AppProperties properties;
     private final EmbeddingGateway embeddingGateway;

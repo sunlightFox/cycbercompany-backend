@@ -4,9 +4,11 @@ import io.github.yourname.agentstudio.config.AppProperties;
 import io.github.yourname.agentstudio.security.ActorContext;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -19,6 +21,9 @@ import org.springframework.transaction.annotation.Transactional;
  */
 @Service
 public class KnowledgeQueryService {
+
+    /** Standard RRF rank constant; prevents the first result from dominating fusion. */
+    private static final int RRF_RANK_CONSTANT = 60;
 
     private final KnowledgeBaseRepository bases;
     private final KnowledgeDocumentRepository documents;
@@ -100,27 +105,34 @@ public class KnowledgeQueryService {
     @Transactional(readOnly = true)
     public EvidenceBundle search(KnowledgeSearchCommand command, ActorContext actor) {
         int limit = command.limit() <= 0 ? 5 : Math.min(command.limit(), 20);
-        List<String> ids = command.knowledgeBaseIds() == null ? List.of() : command.knowledgeBaseIds();
+        List<String> ids = resolveKnowledgeBaseIds(command.knowledgeBaseIds(), actor);
         if (ids.isEmpty()) {
             return new EvidenceBundle(List.of());
         }
 
         // 权限校验：用户传了哪些知识库 id，就逐个确认它属于当前 tenant。
-        ids.forEach(id -> requireBase(id, actor));
 
         List<String> terms = searchTerms(command.query());
-        if (terms.isEmpty()) {
+        // Lexical and vector retrieval are intentionally independent. A semantic match must not
+        // require a literal keyword hit, otherwise embeddings only become a tie-breaker.
+        var queryVector = embeddings.embedForSearch(command.query());
+        if (terms.isEmpty() && queryVector.isEmpty()) {
             return new EvidenceBundle(List.of());
         }
 
-        // query embedding 是可选能力：配置好了就参与排序，失败/未配置则完全退回关键词打分。
-        var queryVector = embeddings.embedForSearch(command.query());
+        List<ScoredChunk> candidates = chunks.findByTenantIdAndKnowledgeBaseIdIn(actor.tenantId(), ids).stream()
+                .map(chunk -> score(chunk, terms, queryVector.orElse(null)))
+                .filter(scored -> scored.lexicalScore() > 0 || scored.vectorScore() > 0)
+                .toList();
+        Map<KnowledgeChunkEntity, Integer> lexicalRanks = ranks(candidates, ScoredChunk::lexicalScore);
+        Map<KnowledgeChunkEntity, Integer> vectorRanks = ranks(candidates, ScoredChunk::vectorScore);
         double vectorWeight = embeddings.vectorWeight();
 
-        var evidence = chunks.findByTenantIdAndKnowledgeBaseIdIn(actor.tenantId(), ids).stream()
-                .map(chunk -> score(chunk, terms, queryVector.orElse(null), vectorWeight))
-                .filter(scored -> scored.score() > 0)
-                .sorted(Comparator.comparingDouble(ScoredChunk::score).reversed())
+        var evidence = candidates.stream()
+                .map(candidate -> fuse(candidate, lexicalRanks, vectorRanks, vectorWeight))
+                .sorted(Comparator.comparingDouble(ScoredChunk::score).reversed()
+                        .thenComparing(scored -> scored.chunk().documentId())
+                        .thenComparingInt(scored -> scored.chunk().chunkIndex()))
                 .limit(limit)
                 .map(scored -> new EvidenceBundle.Evidence(
                         scored.chunk().id(),
@@ -132,6 +144,23 @@ public class KnowledgeQueryService {
                         scored.score()))
                 .toList();
         return new EvidenceBundle(evidence);
+    }
+
+    /** Resolves the tenant-scoped knowledge domain captured by a RunSpec. */
+    @Transactional(readOnly = true)
+    public List<String> resolveKnowledgeBaseIds(List<String> requestedIds, ActorContext actor) {
+        List<String> requested = requestedIds == null ? List.of() : requestedIds.stream()
+                .filter(id -> id != null && !id.isBlank())
+                .map(String::trim)
+                .distinct()
+                .toList();
+        List<String> ids = requested.isEmpty()
+                ? bases.findByTenantIdOrderByCreatedAtDesc(actor.tenantId()).stream()
+                        .map(KnowledgeBaseEntity::id)
+                        .toList()
+                : requested;
+        ids.forEach(id -> requireBase(id, actor));
+        return ids;
     }
 
     private KnowledgeBaseEntity requireBase(String knowledgeBaseId, ActorContext actor) {
@@ -178,31 +207,61 @@ public class KnowledgeQueryService {
         return value.codePoints().anyMatch(codePoint -> Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.HAN);
     }
 
-    private static ScoredChunk score(KnowledgeChunkEntity chunk, List<String> terms, double[] queryVector, double vectorWeight) {
+    private static ScoredChunk score(KnowledgeChunkEntity chunk, List<String> terms, double[] queryVector) {
         String content = chunk.content() == null ? "" : chunk.content();
         String lower = content.toLowerCase(Locale.ROOT);
-        double score = 0;
+        double lexicalScore = 0;
         for (String term : terms) {
             int occurrences = countOccurrences(lower, term.toLowerCase(Locale.ROOT));
             if (occurrences > 0) {
                 // 长词更有信息量，所以略微加权；重复出现也提高分数，但避免无限放大。
-                score += Math.min(3, occurrences) * (1.0 + Math.min(term.length(), 12) / 12.0);
+                lexicalScore += Math.min(3, occurrences) * (1.0 + Math.min(term.length(), 12) / 12.0);
             }
         }
+        double vectorScore = 0;
         if (queryVector != null && chunk.embeddingVector() != null && !chunk.embeddingVector().isBlank()) {
             try {
                 double cosine = KnowledgeEmbeddingService.cosineSimilarity(
                         queryVector,
                         KnowledgeEmbeddingService.deserialize(chunk.embeddingVector()));
                 if (cosine > 0) {
-                    // cosine 通常在 0~1 之间，乘一个权重后和关键词分数进入同一排序池，形成混合检索。
-                    score += cosine * vectorWeight;
+                    vectorScore = cosine;
                 }
             } catch (NumberFormatException ignored) {
                 // 历史数据或手工修改可能产生脏向量；单个 chunk 解析失败不应该影响整次检索。
             }
         }
-        return new ScoredChunk(chunk, score);
+        return new ScoredChunk(chunk, lexicalScore, vectorScore, 0);
+    }
+
+    private static Map<KnowledgeChunkEntity, Integer> ranks(
+            List<ScoredChunk> candidates,
+            java.util.function.ToDoubleFunction<ScoredChunk> scoreExtractor) {
+        Map<KnowledgeChunkEntity, Integer> ranks = new IdentityHashMap<>();
+        List<ScoredChunk> sorted = candidates.stream()
+                .filter(candidate -> scoreExtractor.applyAsDouble(candidate) > 0)
+                .sorted(Comparator.comparingDouble(scoreExtractor).reversed()
+                        .thenComparing(candidate -> candidate.chunk().documentId())
+                        .thenComparingInt(candidate -> candidate.chunk().chunkIndex()))
+                .toList();
+        for (int index = 0; index < sorted.size(); index++) {
+            ranks.put(sorted.get(index).chunk(), index + 1);
+        }
+        return ranks;
+    }
+
+    private static ScoredChunk fuse(
+            ScoredChunk candidate,
+            Map<KnowledgeChunkEntity, Integer> lexicalRanks,
+            Map<KnowledgeChunkEntity, Integer> vectorRanks,
+            double vectorWeight) {
+        double score = reciprocalRank(lexicalRanks.get(candidate.chunk()))
+                + Math.max(0, vectorWeight) * reciprocalRank(vectorRanks.get(candidate.chunk()));
+        return new ScoredChunk(candidate.chunk(), candidate.lexicalScore(), candidate.vectorScore(), score);
+    }
+
+    private static double reciprocalRank(Integer rank) {
+        return rank == null ? 0 : 1.0 / (RRF_RANK_CONSTANT + rank);
     }
 
     private static int countOccurrences(String content, String term) {
@@ -238,6 +297,10 @@ public class KnowledgeQueryService {
         return (start > 0 ? "..." : "") + content.substring(start, end) + (end < content.length() ? "..." : "");
     }
 
-    private record ScoredChunk(KnowledgeChunkEntity chunk, double score) {
+    private record ScoredChunk(
+            KnowledgeChunkEntity chunk,
+            double lexicalScore,
+            double vectorScore,
+            double score) {
     }
 }

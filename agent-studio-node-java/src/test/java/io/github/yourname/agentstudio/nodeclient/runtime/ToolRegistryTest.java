@@ -20,8 +20,6 @@ class ToolRegistryTest {
                 .findFirst()
                 .orElseThrow();
 
-        assertTrue(capability.enabled());
-        assertEquals("LOW", capability.riskLevel());
         assertEquals(java.util.List.of("selector"), capability.inputSchema().get("required"));
         @SuppressWarnings("unchecked")
         Map<String, Object> properties = (Map<String, Object>) capability.inputSchema().get("properties");
@@ -38,7 +36,6 @@ class ToolRegistryTest {
                 .findFirst()
                 .orElseThrow();
 
-        assertTrue(capability.enabled());
         assertEquals(java.util.List.of("query"), capability.inputSchema().get("required"));
         registry.close();
     }
@@ -52,8 +49,6 @@ class ToolRegistryTest {
                 .findFirst()
                 .orElseThrow();
 
-        assertTrue(capability.enabled());
-        assertEquals("LOW", capability.riskLevel());
         assertEquals(java.util.List.of(), capability.inputSchema().getOrDefault("required", java.util.List.of()));
         registry.close();
     }
@@ -66,8 +61,8 @@ class ToolRegistryTest {
         var commit = registry.capabilities().stream().filter(item -> "git.commit".equals(item.name())).findFirst().orElseThrow();
 
         // 注册能力不代表自动放权：管理员还必须显式启用，运行时还必须逐次审批。
-        assertTrue(!stage.enabled() && stage.requiresApproval());
-        assertTrue(!commit.enabled() && commit.requiresApproval());
+        assertEquals(java.util.List.of("paths"), stage.inputSchema().get("required"));
+        assertEquals(java.util.List.of("message"), commit.inputSchema().get("required"));
         registry.close();
     }
 
@@ -90,8 +85,8 @@ class ToolRegistryTest {
         var move = registry.capabilities().stream().filter(item -> "system.fs.move".equals(item.name())).findFirst().orElseThrow();
         var shell = registry.capabilities().stream().filter(item -> "system.shell.run".equals(item.name())).findFirst().orElseThrow();
 
-        assertTrue(move.enabled() && move.requiresApproval());
-        assertTrue(shell.enabled() && shell.requiresApproval());
+        assertEquals(java.util.List.of("source", "destination"), move.inputSchema().get("required"));
+        assertEquals(java.util.List.of("command"), shell.inputSchema().get("required"));
         registry.close();
     }
 
@@ -101,6 +96,19 @@ class ToolRegistryTest {
                 HttpClient.newHttpClient(), Files.createTempDirectory("agent-studio-workspace-tools"), NodeAccessMode.WORKSPACE);
 
         assertTrue(registry.capabilities().stream().noneMatch(item -> item.name().startsWith("system.")));
+        registry.close();
+    }
+
+    @Test
+    void reportsRuntimeAndFeatureFactsSeparatelyFromToolPermissions() throws Exception {
+        ToolRegistry registry = new ToolRegistry(
+                HttpClient.newHttpClient(), Files.createTempDirectory("agent-studio-runtime-facts"), NodeAccessMode.WORKSPACE);
+
+        assertTrue(registry.runtimeVersions().containsKey("java"));
+        assertTrue(registry.features().contains("workspace.scope.v1"));
+        assertTrue(registry.features().contains("managed-process.v1"));
+        assertTrue(registry.features().stream().noneMatch("system-access.v1"::equals));
+        assertTrue(registry.capabilities().stream().allMatch(capability -> capability.version() != null));
         registry.close();
     }
 

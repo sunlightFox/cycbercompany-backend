@@ -14,6 +14,8 @@ public record SkillView(
         String sourceRepository,
         String sourceUrl,
         String ref,
+        String resolvedCommit,
+        String digest,
         String path,
         int fileCount,
         long sizeBytes) {

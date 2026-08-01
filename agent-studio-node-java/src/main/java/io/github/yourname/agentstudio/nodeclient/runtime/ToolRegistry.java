@@ -3,6 +3,7 @@ package io.github.yourname.agentstudio.nodeclient.runtime;
 import io.github.yourname.agentstudio.nodeclient.NodeAccessMode;
 import io.github.yourname.agentstudio.nodeclient.protocol.NodeCapability;
 import io.github.yourname.agentstudio.nodeclient.tools.BrowserTool;
+import io.github.yourname.agentstudio.nodeclient.tools.DesktopTool;
 import io.github.yourname.agentstudio.nodeclient.tools.FileTool;
 import io.github.yourname.agentstudio.nodeclient.tools.GitTool;
 import io.github.yourname.agentstudio.nodeclient.tools.ManagedProcessTool;
@@ -29,6 +30,7 @@ public class ToolRegistry {
     private final GitTool gitTool;
     private final ManagedProcessTool managedProcessTool;
     private final ProjectTool projectTool;
+    private final DesktopTool desktopTool;
     private final boolean systemAccess;
 
     public ToolRegistry(HttpClient httpClient, Path workspaceRoot) {
@@ -43,6 +45,8 @@ public class ToolRegistry {
         this.gitTool = workspaceRoot == null ? null : new GitTool(workspaceRoot);
         this.managedProcessTool = workspaceRoot == null ? null : new ManagedProcessTool(workspaceRoot);
         this.projectTool = workspaceRoot == null ? null : new ProjectTool(workspaceRoot);
+        // 是否允许系统级命令由节点注册时的显式模式决定；是否真正执行仍由服务端审批决定。
+        this.desktopTool = systemAccess ? new DesktopTool() : null;
     }
 
     public List<NodeCapability> capabilities() {
@@ -181,7 +185,7 @@ public class ToolRegistry {
                         objectSchema(Map.of(
                                 "url", Map.of("type", "string"),
                                 "headless", Map.of("type", "boolean"),
-                                "channel", Map.of("type", "string")))),
+                                "channel", Map.of("type", "string")), "url")),
                 new NodeCapability(
                         "browser.snapshot",
                         "Return current Playwright page URL, text preview and visible interactive elements with selectors.",
@@ -205,8 +209,7 @@ public class ToolRegistry {
                         true,
                         false,
                         objectSchema(Map.of(
-                                "fullPage", Map.of("type", "boolean"),
-                                "path", Map.of("type", "string")))),
+                                "fullPage", Map.of("type", "boolean")))),
                 new NodeCapability(
                         "browser.click",
                         "Click an element on the current Playwright page by selector.",
@@ -223,11 +226,46 @@ public class ToolRegistry {
                         false,
                         objectSchema(Map.of(
                                 "selector", Map.of("type", "string"),
-                                "text", Map.of("type", "string"))))));
+                                "text", Map.of("type", "string")))),
+                new NodeCapability(
+                        "browser.trace.start",
+                        "Start recording a Playwright trace for the current browser session.",
+                        "LOW",
+                        true,
+                        false,
+                        objectSchema(Map.of())),
+                new NodeCapability(
+                        "browser.trace.stop",
+                        "Stop recording and export a local Playwright trace ZIP for the current browser session.",
+                        "LOW",
+                        true,
+                        false,
+                        objectSchema(Map.of()))));
         if (systemAccess) {
             capabilities.addAll(systemCapabilities());
         }
         return capabilities;
+    }
+
+    /** Skill 兼容预检只使用可验证的运行时事实，不在这里推断权限。 */
+    public Map<String, String> runtimeVersions() {
+        Map<String, String> runtimes = new java.util.LinkedHashMap<>();
+        runtimes.put("java", System.getProperty("java.version", "unknown"));
+        runtimes.put("os", System.getProperty("os.name", "unknown"));
+        return Map.copyOf(runtimes);
+    }
+
+    /** 协议 feature 表示实现特性，不表示该能力已获管理员授权。 */
+    public List<String> features() {
+        List<String> result = new ArrayList<>();
+        result.add("tool.invoke.v1");
+        result.add("workspace.scope.v1");
+        result.add("managed-process.v1");
+        result.add("browser-session.v1");
+        if (systemAccess) {
+            result.add("system-access.v1");
+        }
+        return List.copyOf(result);
     }
 
     private List<NodeCapability> systemCapabilities() {
@@ -249,7 +287,9 @@ public class ToolRegistry {
                 new NodeCapability("system.fs.delete", "Delete a file or directory anywhere on this computer or server. Requires human approval.", "HIGH", true, true,
                         objectSchema(Map.of("path", Map.of("type", "string"), "recursive", Map.of("type", "boolean")), "path")),
                 new NodeCapability("system.shell.run", "Run a shell command from any directory on this computer or server. Requires human approval.", "HIGH", true, true,
-                        objectSchema(Map.of("command", Map.of("type", "string"), "cwd", Map.of("type", "string"), "timeoutSeconds", Map.of("type", "integer")), "command")));
+                        objectSchema(Map.of("command", Map.of("type", "string"), "cwd", Map.of("type", "string"), "timeoutSeconds", Map.of("type", "integer")), "command")),
+                new NodeCapability("system.desktop.set_wallpaper", "Set the current Windows user's desktop wallpaper to an approved image path.", "HIGH", true, true,
+                        objectSchema(Map.of("path", Map.of("type", "string")), "path")));
     }
 
     private Map<String, Object> objectSchema(Map<String, Object> properties, String... required) {
@@ -297,6 +337,9 @@ public class ToolRegistry {
         }
         if ("system.shell.run".equals(toolName)) {
             return shellTool == null ? unavailable(toolName) : shellTool.run(arguments);
+        }
+        if ("system.desktop.set_wallpaper".equals(toolName)) {
+            return desktopTool == null ? unavailable(toolName) : desktopTool.setWallpaper(arguments);
         }
         if ("fs.list".equals(toolName)) {
             return fileTool == null
@@ -388,6 +431,12 @@ public class ToolRegistry {
         }
         if ("browser.type".equals(toolName)) {
             return browserTool.type(executionSessionId, arguments);
+        }
+        if ("browser.trace.start".equals(toolName)) {
+            return browserTool.startTrace(executionSessionId, arguments);
+        }
+        if ("browser.trace.stop".equals(toolName)) {
+            return browserTool.stopTrace(executionSessionId, arguments);
         }
         return ToolExecutionResult.failure("Unsupported node tool: " + toolName);
     }

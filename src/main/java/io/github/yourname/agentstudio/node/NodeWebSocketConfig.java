@@ -1,9 +1,12 @@
 package io.github.yourname.agentstudio.node;
 
 import org.springframework.context.annotation.Configuration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.web.socket.config.annotation.EnableWebSocket;
 import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
 import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
+import org.springframework.context.annotation.Bean;
+import org.springframework.web.socket.server.standard.ServletServerContainerFactoryBean;
 
 @Configuration
 @EnableWebSocket
@@ -18,8 +21,16 @@ class NodeWebSocketConfig implements WebSocketConfigurer {
 
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-        // "*" 仅适合本地学习环境，部署前应改为受信任的来源列表。
-        registry.addHandler(handler, "/api/v1/node-channel")
-                .setAllowedOrigins("*");
+        // 节点客户端不是浏览器，不需要跨站 Origin。保持默认同源策略，避免网页建立节点通道。
+        registry.addHandler(handler, "/api/v1/node-channel");
+    }
+
+    @Bean
+    @ConditionalOnProperty(prefix = "app.nodes.websocket", name = "buffer-configured", havingValue = "true", matchIfMissing = true)
+    ServletServerContainerFactoryBean nodeWebSocketContainer() {
+        ServletServerContainerFactoryBean container = new ServletServerContainerFactoryBean();
+        container.setMaxTextMessageBufferSize(NodeProtocolLimits.MAX_CONTAINER_BUFFER_BYTES);
+        container.setMaxBinaryMessageBufferSize(NodeProtocolLimits.MAX_CONTAINER_BUFFER_BYTES);
+        return container;
     }
 }

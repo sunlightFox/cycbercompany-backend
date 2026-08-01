@@ -14,7 +14,7 @@ import java.util.regex.Pattern;
  * <p>原始 stdout/stderr 仍然保留在节点调用记录中供排障；本类只从已返回给后端的结果提取
  * 测试名称和源码位置，并不会读取额外文件或执行额外命令。
  */
-final class CodingFailureSummary {
+public final class CodingFailureSummary {
 
     private static final int MAX_ITEMS = 8;
     private static final Pattern SOURCE_LOCATION = Pattern.compile(
@@ -27,7 +27,11 @@ final class CodingFailureSummary {
     }
 
     /** 只有失败的 shell.run 结果才需要诊断；其他工具维持原始语义。 */
-    static Map<String, Object> from(String toolName, boolean succeeded, Map<String, Object> result, String errorMessage) {
+    public static Map<String, Object> from(
+            String toolName,
+            boolean succeeded,
+            Map<String, Object> result,
+            String errorMessage) {
         if (succeeded || !"shell.run".equals(toolName)) {
             return Map.of();
         }

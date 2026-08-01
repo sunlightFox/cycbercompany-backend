@@ -1,0 +1,386 @@
+package io.github.yourname.agentstudio.orchestration;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.when;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.yourname.agentstudio.agent.AgentCatalog;
+import io.github.yourname.agentstudio.agent.AgentDefinitionView;
+import io.github.yourname.agentstudio.config.AppProperties;
+import io.github.yourname.agentstudio.conversation.ConversationAttachmentService;
+import io.github.yourname.agentstudio.conversation.ConversationService;
+import io.github.yourname.agentstudio.knowledge.KnowledgeQueryService;
+import io.github.yourname.agentstudio.model.ModelCatalog;
+import io.github.yourname.agentstudio.model.ModelGateway;
+import io.github.yourname.agentstudio.model.ModelCapability;
+import io.github.yourname.agentstudio.model.ModelProfileView;
+import io.github.yourname.agentstudio.model.ProviderType;
+import io.github.yourname.agentstudio.node.NodeService;
+import io.github.yourname.agentstudio.security.ActorContext;
+import io.github.yourname.agentstudio.skill.SkillCatalog;
+import io.github.yourname.agentstudio.skill.SkillRunBinding;
+import io.github.yourname.agentstudio.skill.SkillAnalyzer;
+import io.github.yourname.agentstudio.skill.SkillCompatibilityService;
+import io.github.yourname.agentstudio.skill.CompatibilityReport;
+import io.github.yourname.agentstudio.tool.ToolRouter;
+import io.github.yourname.agentstudio.tool.ResolvedToolBinding;
+import io.github.yourname.agentstudio.tool.RiskLevel;
+import java.util.Map;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+
+class RunCommandServiceSkillSnapshotTest {
+
+    private static final ActorContext ACTOR =
+            new ActorContext("tenant-1", "user-1", Set.of("USER"), Set.of("agent:run"));
+
+    private AgentRunRepository runs;
+    private ConversationService conversations;
+    private KnowledgeQueryService knowledge;
+    private AgentCatalog agents;
+    private SkillCatalog skills;
+    private SkillAnalyzer skillAnalyzer;
+    private SkillCompatibilityService skillCompatibility;
+    private ModelGateway modelGateway;
+    private ModelCatalog models;
+    private ToolRouter toolRouter;
+    private CodingAgentLoop codingAgentLoop;
+    private NodeService nodes;
+    private RunExecutionRegistry executions;
+    private ConversationRunQueue queue;
+    private RunEventPublisher events;
+    private RunCommandService service;
+    private Runnable queuedWorker;
+
+    @BeforeEach
+    void setUp() {
+        runs = mock(AgentRunRepository.class);
+        conversations = mock(ConversationService.class);
+        knowledge = mock(KnowledgeQueryService.class);
+        agents = mock(AgentCatalog.class);
+        skills = mock(SkillCatalog.class);
+        skillAnalyzer = mock(SkillAnalyzer.class);
+        skillCompatibility = mock(SkillCompatibilityService.class);
+        modelGateway = mock(ModelGateway.class);
+        models = mock(ModelCatalog.class);
+        toolRouter = mock(ToolRouter.class);
+        codingAgentLoop = mock(CodingAgentLoop.class);
+        nodes = mock(NodeService.class);
+        executions = mock(RunExecutionRegistry.class);
+        queue = mock(ConversationRunQueue.class);
+        events = mock(RunEventPublisher.class);
+
+        when(agents.get("agent-1")).thenReturn(new AgentDefinitionView(
+                "agent-1", "Agent", "", "Agent system instruction", "model-1", "local_time", true));
+        when(models.get("model-1")).thenReturn(new ModelProfileView(
+                "model-1", ProviderType.OPENAI_COMPATIBLE, "https://example.test/v1", "test-model",
+                "TEST_KEY", true, "***", Set.of(ModelCapability.TEXT, ModelCapability.TOOLS), true, false));
+        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of());
+        when(knowledge.resolveKnowledgeBaseIds(any(), any())).thenReturn(List.of());
+        when(skillAnalyzer.analyze(any())).thenReturn(List.of());
+        when(skillCompatibility.check(any(), any(), any())).thenReturn(
+                new CompatibilityReport(true, List.of(), List.of(), List.of(), List.of()));
+
+        when(runs.save(any(AgentRunEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(queue.reserve(any(), anyString(), any(Runnable.class))).thenAnswer(invocation -> {
+            queuedWorker = invocation.getArgument(2);
+            return 1;
+        });
+        // 测试中同步运行 worker，避免线程调度让“Skill 是否进入模型请求”的断言产生竞态。
+        doAnswer(invocation -> {
+            invocation.<Runnable>getArgument(1).run();
+            return null;
+        }).when(executions).submit(anyString(), any(Runnable.class));
+
+        service = new RunCommandService(
+                mock(AppProperties.class),
+                runs,
+                mock(CodingRunContinuationRepository.class),
+                conversations,
+                mock(ConversationAttachmentService.class),
+                knowledge,
+                agents,
+                skills,
+                skillAnalyzer,
+                skillCompatibility,
+                models,
+                modelGateway,
+                codingAgentLoop,
+                toolRouter,
+                nodes,
+                executions,
+                queue,
+                events,
+                new ObjectMapper().findAndRegisterModules());
+    }
+
+    @Test
+    void createPersistsImmutableSkillBindingsAndTheirSnapshotDigest() {
+        SkillRunBinding binding = new SkillRunBinding(
+                "review-skill",
+                "Review Skill",
+                "Review code carefully",
+                "sha256:" + "a".repeat(64),
+                "example/skills",
+                "https://github.com/example/skills",
+                "main",
+                "b".repeat(40),
+                "review");
+        when(skills.resolveForRun(List.of("review-skill"))).thenReturn(List.of(binding));
+        when(skills.compileInstructions(List.of(binding))).thenReturn("compiled instruction");
+
+        CreateRunResponse response = service.create(command(List.of("review-skill")), ACTOR);
+
+        ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(runs).save(runCaptor.capture());
+        AgentRunEntity persisted = runCaptor.getValue();
+        assertThat(response.status()).isEqualTo(RunStatus.QUEUED);
+        assertThat(persisted.skillBindingsJson())
+                .contains("review-skill")
+                .contains(binding.digest())
+                .contains(binding.resolvedCommit());
+        assertThat(persisted.skillSnapshotDigest())
+                .startsWith("sha256:")
+                .hasSize(71);
+        assertThat(RunView.from(persisted).skillSnapshotDigest()).isEqualTo(persisted.skillSnapshotDigest());
+        assertThat(persisted.runSpecDigest()).startsWith("sha256:").hasSize(71);
+        assertThat(persisted.runSpecJson()).contains("review-skill").contains("toolBindings");
+        verify(skills).compileInstructions(List.of(binding));
+        verify(events).publish(
+                persisted.id(),
+                RunEventType.SKILLS_RESOLVED,
+                "count=1, snapshot=" + persisted.skillSnapshotDigest(),
+                ACTOR);
+    }
+
+    @Test
+    void createCapturesResolvedTenantKnowledgeBasesInTheImmutableRunSpec() {
+        when(knowledge.resolveKnowledgeBaseIds(List.of(), ACTOR)).thenReturn(List.of("kb-recent", "kb-resume"));
+        when(skills.resolveForRun(List.of())).thenReturn(List.of());
+        when(skills.compileInstructions(List.of())).thenReturn("");
+
+        service.create(command(List.of()), ACTOR);
+
+        ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(runs).save(runCaptor.capture());
+        assertThat(runCaptor.getValue().runSpecJson())
+                .contains("kb-recent")
+                .contains("kb-resume");
+        verify(knowledge).resolveKnowledgeBaseIds(List.of(), ACTOR);
+    }
+
+    @Test
+    void invalidSkillSelectionFailsBeforeRunPersistenceOrModelInvocation() {
+        when(skills.resolveForRun(List.of("missing")))
+                .thenThrow(new IllegalArgumentException("Skill not found: missing"));
+
+        assertThatThrownBy(() -> service.create(command(List.of("missing")), ACTOR))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Skill not found");
+
+        verify(runs, never()).save(any());
+        verify(modelGateway, never()).complete(any());
+        verify(conversations, never()).append(anyString(), any(), anyString(), anyString(), any());
+    }
+
+    @Test
+    void incompatibleSkillFailsBeforeRunPersistenceOrModelInvocation() {
+        SkillRunBinding binding = new SkillRunBinding(
+                "python-skill", "Python Skill", "Run a Python helper", "sha256:" + "e".repeat(64),
+                "example/skills", "https://github.com/example/skills", "main", "f".repeat(40), "python");
+        CompatibilityReport report = new CompatibilityReport(
+                false,
+                List.of(new CompatibilityReport.Issue(
+                        "ERROR", "MISSING_RUNTIME", "python-skill",
+                        "Skill requires runtime 'python' >=3.11, but the selected node did not report it.")),
+                List.of(),
+                List.of(new io.github.yourname.agentstudio.skill.SkillAnalysis.RuntimeRequirement(
+                        "python", ">=3.11", "requirements.runtimes")),
+                List.of());
+        when(skills.resolveForRun(List.of("python-skill"))).thenReturn(List.of(binding));
+        when(skillCompatibility.check(any(), any(), any())).thenReturn(report);
+
+        assertThatThrownBy(() -> service.create(command(List.of("python-skill")), ACTOR))
+                .isInstanceOf(io.github.yourname.agentstudio.skill.SkillCompatibilityException.class)
+                .hasMessageContaining("compatibility check failed")
+                .hasMessageContaining("python");
+
+        verify(runs, never()).save(any());
+        verify(skills, never()).compileInstructions(any());
+        verify(modelGateway, never()).complete(any());
+        verify(conversations, never()).append(anyString(), any(), anyString(), anyString(), any());
+    }
+
+    @Test
+    void queuedWorkerUsesPersistedAgentPromptAndToolBindingsAfterCatalogChanges() {
+        ResolvedToolBinding originalBinding = new ResolvedToolBinding(
+                "node:node-1:fs.read",
+                "tool_fs_read_original",
+                "fs.read",
+                "node",
+                "fs.read",
+                "Read a workspace file",
+                RiskLevel.LOW,
+                false,
+                Map.of("type", "object"),
+                Map.of("nodeId", "node-1"));
+        ResolvedToolBinding laterBinding = new ResolvedToolBinding(
+                "node:node-1:shell.run",
+                "tool_shell_run_later",
+                "shell.run",
+                "node",
+                "shell.run",
+                "A tool added after the Run was queued",
+                RiskLevel.HIGH,
+                true,
+                Map.of("type", "object"),
+                Map.of("nodeId", "node-1"));
+        when(agents.get("agent-1")).thenReturn(new AgentDefinitionView(
+                "agent-1", "Agent", "", "Original immutable prompt", "model-1", "node:*", true));
+        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of(originalBinding));
+        when(skills.resolveForRun(List.of())).thenReturn(List.of());
+        when(skills.compileInstructions(List.of())).thenReturn("");
+        when(conversations.history("conversation-1", ACTOR)).thenReturn(List.of());
+        when(codingAgentLoop.execute(anyString(), anyString(), any(), any(), any(), any()))
+                .thenReturn("done");
+
+        service.create(commandForNode(), ACTOR);
+        ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(runs).save(runCaptor.capture());
+        AgentRunEntity persisted = runCaptor.getValue();
+        when(runs.findById(persisted.id())).thenReturn(Optional.of(persisted));
+        when(runs.findByIdAndTenantId(persisted.id(), ACTOR.tenantId())).thenReturn(Optional.of(persisted));
+
+        // 模拟管理员在 Run 排队后修改 Agent 和工具目录。worker 不应重新读取这些活动配置。
+        when(agents.get("agent-1")).thenReturn(new AgentDefinitionView(
+                "agent-1", "Agent", "", "Changed prompt must not be used", "model-1", "shell.run", true));
+        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of(laterBinding));
+
+        queuedWorker.run();
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ResolvedToolBinding>> bindingCaptor = ArgumentCaptor.forClass(List.class);
+        verify(codingAgentLoop).execute(
+                anyString(), anyString(), bindingCaptor.capture(), any(), any(), any());
+        assertThat(bindingCaptor.getValue()).containsExactly(originalBinding);
+        assertThat(persisted.runSpecJson())
+                .contains("Original immutable prompt")
+                .contains("node:node-1:fs.read")
+                .doesNotContain("Changed prompt must not be used")
+                .doesNotContain("node:node-1:shell.run");
+        verify(agents, times(1)).get("agent-1");
+        verify(toolRouter, times(1)).resolve(any(), any(), anyString());
+    }
+
+    @Test
+    void automaticWebRetrievalCannotBypassImmutableToolSet() {
+        when(agents.get("agent-1")).thenReturn(new AgentDefinitionView(
+                "agent-1", "Agent", "", "Answer only with authorized tools", "model-1", "local_time", true));
+        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of());
+        when(skills.resolveForRun(List.of())).thenReturn(List.of());
+        when(skills.compileInstructions(List.of())).thenReturn("");
+        when(conversations.history("conversation-1", ACTOR)).thenReturn(List.of());
+        when(modelGateway.complete(any())).thenReturn(new ModelGateway.ModelAnswer("no web evidence", 5, 1, "model"));
+
+        service.create(commandWithText("搜索一下最新 Java 新闻"), ACTOR);
+        ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(runs).save(runCaptor.capture());
+        AgentRunEntity persisted = runCaptor.getValue();
+        when(runs.findById(persisted.id())).thenReturn(Optional.of(persisted));
+        when(runs.findByIdAndTenantId(persisted.id(), ACTOR.tenantId())).thenReturn(Optional.of(persisted));
+
+        queuedWorker.run();
+
+        verify(toolRouter, never()).invoke(any());
+        verify(modelGateway).complete(any());
+        assertThat(persisted.status()).isEqualTo(RunStatus.SUCCEEDED);
+    }
+
+    @Test
+    void workerLoadsPersistedBindingsAndSendsCompiledSkillTextToTheModel() {
+        SkillRunBinding binding = new SkillRunBinding(
+                "testing-skill", "Testing Skill", "Always test", "sha256:" + "c".repeat(64),
+                "example/skills", "https://github.com/example/skills", "main", "d".repeat(40), "testing");
+        String compiledInstruction = "完整 Skill 指令：修改完成后必须执行测试。";
+        when(skills.resolveForRun(List.of("testing-skill"))).thenReturn(List.of(binding));
+        when(skills.compileInstructions(List.of(binding))).thenReturn(compiledInstruction);
+        when(agents.get("agent-1")).thenReturn(new AgentDefinitionView(
+                "agent-1", "Agent", "", "Agent system instruction", "model-1", "", true));
+        when(conversations.history("conversation-1", ACTOR)).thenReturn(List.of());
+        when(modelGateway.complete(any())).thenReturn(new ModelGateway.ModelAnswer("done", 10, 2, "model"));
+
+        service.create(command(List.of("testing-skill")), ACTOR);
+        ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(runs).save(runCaptor.capture());
+        AgentRunEntity persisted = runCaptor.getValue();
+        when(runs.findById(persisted.id())).thenReturn(Optional.of(persisted));
+        when(runs.findByIdAndTenantId(persisted.id(), ACTOR.tenantId())).thenReturn(Optional.of(persisted));
+
+        queuedWorker.run();
+
+        ArgumentCaptor<ModelGateway.ModelCompletionRequest> requestCaptor =
+                ArgumentCaptor.forClass(ModelGateway.ModelCompletionRequest.class);
+        verify(modelGateway).complete(requestCaptor.capture());
+        String systemPrompt = requestCaptor.getValue().messages().getFirst().content();
+        assertThat(systemPrompt)
+                .contains("Agent system instruction")
+                .contains(compiledInstruction)
+                .contains("Enabled Skill instructions");
+        assertThat(persisted.status()).isEqualTo(RunStatus.SUCCEEDED);
+        verify(skills, times(2)).compileInstructions(List.of(binding));
+    }
+
+    private static CreateRunCommand command(List<String> skillIds) {
+        return new CreateRunCommand(
+                "conversation-1",
+                "Review the project",
+                "model-1",
+                "agent-1",
+                List.of(),
+                skillIds,
+                List.of(),
+                List.of(),
+                null,
+                null);
+    }
+
+    private static CreateRunCommand commandForNode() {
+        return new CreateRunCommand(
+                "conversation-1",
+                "Inspect one file",
+                "model-1",
+                "agent-1",
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of("fs.read"),
+                "node-1",
+                ".");
+    }
+
+    private static CreateRunCommand commandWithText(String text) {
+        return new CreateRunCommand(
+                "conversation-1",
+                text,
+                "model-1",
+                "agent-1",
+                List.of(),
+                List.of(),
+                List.of(),
+                null,
+                null,
+                null);
+    }
+}

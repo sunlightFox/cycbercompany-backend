@@ -1,10 +1,15 @@
 package io.github.yourname.agentstudio.orchestration;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.yourname.agentstudio.model.ModelGateway;
 import io.github.yourname.agentstudio.model.ModelRateLimitException;
 import io.github.yourname.agentstudio.security.ActorContext;
-import io.github.yourname.agentstudio.tool.CodingToolAdapter;
 import io.github.yourname.agentstudio.tool.CodingWorkspaceScope;
+import io.github.yourname.agentstudio.tool.ResolvedToolBinding;
+import io.github.yourname.agentstudio.tool.ToolCleanupResult;
+import io.github.yourname.agentstudio.tool.ToolInvocationRequest;
+import io.github.yourname.agentstudio.tool.ToolProviderResult;
+import io.github.yourname.agentstudio.tool.ToolRouter;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -29,87 +34,100 @@ class CodingAgentLoop {
     private static final Duration MAX_RATE_LIMIT_DELAY = Duration.ofSeconds(45);
 
     private final ModelGateway modelGateway;
-    private final CodingToolAdapter tools;
+    private final ToolRouter tools;
     private final RunEventPublisher events;
     private final RunExecutionRegistry executions;
     private final RetrySleeper retrySleeper;
+    private final ObjectMapper objectMapper;
 
     @Autowired
     CodingAgentLoop(
             ModelGateway modelGateway,
-            CodingToolAdapter tools,
+            ToolRouter tools,
             RunEventPublisher events,
-            RunExecutionRegistry executions) {
-        this(modelGateway, tools, events, executions, Thread::sleep);
+            RunExecutionRegistry executions,
+            ObjectMapper objectMapper) {
+        this(modelGateway, tools, events, executions, Thread::sleep, objectMapper);
     }
 
     CodingAgentLoop(
             ModelGateway modelGateway,
-            CodingToolAdapter tools,
+            ToolRouter tools,
             RunEventPublisher events,
             RetrySleeper retrySleeper) {
-        this(modelGateway, tools, events, new RunExecutionRegistry(), retrySleeper);
+        this(modelGateway, tools, events, new RunExecutionRegistry(), retrySleeper, new ObjectMapper());
     }
 
-    CodingAgentLoop(ModelGateway modelGateway, CodingToolAdapter tools, RunEventPublisher events) {
-        this(modelGateway, tools, events, new RunExecutionRegistry(), Thread::sleep);
+    CodingAgentLoop(ModelGateway modelGateway, ToolRouter tools, RunEventPublisher events) {
+        this(modelGateway, tools, events, new RunExecutionRegistry(), Thread::sleep, new ObjectMapper());
     }
 
     CodingAgentLoop(
             ModelGateway modelGateway,
-            CodingToolAdapter tools,
+            ToolRouter tools,
             RunEventPublisher events,
             RunExecutionRegistry executions,
             RetrySleeper retrySleeper) {
+        this(modelGateway, tools, events, executions, retrySleeper, new ObjectMapper());
+    }
+
+    CodingAgentLoop(
+            ModelGateway modelGateway,
+            ToolRouter tools,
+            RunEventPublisher events,
+            RunExecutionRegistry executions,
+            RetrySleeper retrySleeper,
+            ObjectMapper objectMapper) {
         this.modelGateway = modelGateway;
         this.tools = tools;
         this.events = events;
         this.executions = executions;
         this.retrySleeper = retrySleeper;
+        this.objectMapper = objectMapper;
     }
 
     String execute(
             String runId,
             String modelProfileId,
-            String nodeId,
+            List<ResolvedToolBinding> bindings,
             List<ModelGateway.ModelMessage> messages,
             ActorContext actor) {
-        return execute(runId, modelProfileId, nodeId, messages, actor, CodingWorkspaceScope.from(null));
+        return execute(runId, modelProfileId, bindings, messages, actor, CodingWorkspaceScope.from(null));
     }
 
     String execute(
             String runId,
             String modelProfileId,
-            String nodeId,
+            List<ResolvedToolBinding> bindings,
             List<ModelGateway.ModelMessage> messages,
             ActorContext actor,
             CodingWorkspaceScope workspaceScope) {
-        return execute(runId, modelProfileId, nodeId, messages, actor, workspaceScope, true);
+        return execute(runId, modelProfileId, bindings, messages, actor, workspaceScope, true);
     }
 
     String resume(
             String runId,
             String modelProfileId,
-            String nodeId,
+            List<ResolvedToolBinding> bindings,
             List<ModelGateway.ModelMessage> messages,
             ActorContext actor) {
-        return resume(runId, modelProfileId, nodeId, messages, actor, CodingWorkspaceScope.from(null));
+        return resume(runId, modelProfileId, bindings, messages, actor, CodingWorkspaceScope.from(null));
     }
 
     String resume(
             String runId,
             String modelProfileId,
-            String nodeId,
+            List<ResolvedToolBinding> bindings,
             List<ModelGateway.ModelMessage> messages,
             ActorContext actor,
             CodingWorkspaceScope workspaceScope) {
-        return execute(runId, modelProfileId, nodeId, messages, actor, workspaceScope, false);
+        return execute(runId, modelProfileId, bindings, messages, actor, workspaceScope, false);
     }
 
     private String execute(
             String runId,
             String modelProfileId,
-            String nodeId,
+            List<ResolvedToolBinding> bindings,
             List<ModelGateway.ModelMessage> messages,
             ActorContext actor,
             CodingWorkspaceScope workspaceScope,
@@ -117,16 +135,21 @@ class CodingAgentLoop {
         boolean waitingForApproval = false;
         try {
             ensureNotCancelled(runId);
-            List<CodingToolAdapter.AvailableTool> available = tools.availableTools(nodeId, actor);
+            List<ResolvedToolBinding> available = bindings == null ? List.of() : List.copyOf(bindings);
             if (available.isEmpty()) {
-                throw new IllegalArgumentException("The selected node has no enabled tools approved for autonomous runs.");
+                throw new IllegalArgumentException("This run has no effective tools after applying Agent and Run policies.");
             }
-            Map<String, CodingToolAdapter.AvailableTool> byModelName = new HashMap<>();
-            for (CodingToolAdapter.AvailableTool tool : available) {
-                byModelName.put(tool.modelToolName(), tool);
+            Map<String, ResolvedToolBinding> byModelName = new HashMap<>();
+            for (ResolvedToolBinding tool : available) {
+                byModelName.put(tool.modelName(), tool);
             }
             List<ModelGateway.ModelTool> modelTools = available.stream()
-                    .map(CodingToolAdapter.AvailableTool::modelTool)
+                    .map(tool -> new ModelGateway.ModelTool(
+                            tool.modelName(),
+                            tool.description() + (tool.requiresApproval()
+                                    ? " This call requires human approval before execution."
+                                    : ""),
+                            tool.inputSchema()))
                     .toList();
             // A resumed run already has a completed (or explicitly rejected) tool call in its
             // persisted context, so a final text response is valid on its first resumed turn.
@@ -169,16 +192,23 @@ class CodingAgentLoop {
                                         + ". Focus on the requested files and verification.",
                                 actor);
                     }
-                    CodingToolAdapter.AvailableTool tool = byModelName.get(call.name());
+                    ResolvedToolBinding tool = byModelName.get(call.name());
                     if (tool == null) {
                         String result = "{\"status\":\"FAILED\",\"error\":\"Tool is not available in this run.\"}";
                         events.publish(runId, RunEventType.TOOL_CALL_FAILED, "Unknown tool requested: " + call.name(), actor);
                         messages.add(ModelGateway.ModelMessage.toolResult(call.id(), result));
                         continue;
                     }
-                    events.publish(runId, RunEventType.TOOL_CALL_REQUESTED, "tool=" + tool.nodeToolName(), actor);
-                    events.publish(runId, RunEventType.TOOL_CALL_STARTED, "tool=" + tool.nodeToolName(), actor);
-                    CodingToolAdapter.ToolExecution outcome = tools.execute(runId, tool, call, actor, workspaceScope);
+                    events.publish(runId, RunEventType.TOOL_CALL_REQUESTED, "tool=" + tool.logicalName(), actor);
+                    events.publish(runId, RunEventType.TOOL_CALL_STARTED, "tool=" + tool.logicalName(), actor);
+                    ToolProviderResult outcome = tools.invoke(new ToolInvocationRequest(
+                            runId,
+                            call.id(),
+                            tool,
+                            call.arguments(),
+                            timeoutSeconds(call.arguments()),
+                            workspaceScope,
+                            actor));
                     if (outcome.requiresApproval()) {
                         for (int deferred = callIndex + 1; deferred < calls.size(); deferred++) {
                             messages.add(ModelGateway.ModelMessage.toolResult(
@@ -188,7 +218,7 @@ class CodingAgentLoop {
                         events.publish(
                                 runId,
                                 RunEventType.TOOL_APPROVAL_REQUIRED,
-                                "tool=" + tool.nodeToolName() + ", approvalId=" + outcome.approvalId(),
+                                "tool=" + tool.logicalName() + ", approvalId=" + outcome.approvalId(),
                                 actor);
                         waitingForApproval = true;
                         throw new CodingApprovalRequiredException(outcome.approvalId(), call.id(), messages);
@@ -196,10 +226,11 @@ class CodingAgentLoop {
                     events.publish(
                             runId,
                             outcome.succeeded() ? RunEventType.TOOL_CALL_COMPLETED : RunEventType.TOOL_CALL_FAILED,
-                            "tool=" + tool.nodeToolName(),
+                            "tool=" + tool.logicalName(),
                             actor);
-                    messages.add(ModelGateway.ModelMessage.toolResult(call.id(), outcome.content()));
-                    if (!outcome.succeeded() && isNodeUnavailable(outcome.content())) {
+                    String outcomeContent = serializeToolResult(tool, outcome);
+                    messages.add(ModelGateway.ModelMessage.toolResult(call.id(), outcomeContent));
+                    if (!outcome.succeeded() && isNodeUnavailable(outcomeContent)) {
                         throw new IllegalStateException("The node disconnected during the coding run; no further tool calls will be attempted.");
                     }
                 }
@@ -216,7 +247,7 @@ class CodingAgentLoop {
 
     void cleanupManagedProcesses(String runId, ActorContext actor) {
         try {
-            for (CodingToolAdapter.CleanupResult result : tools.cleanupRun(runId, actor)) {
+            for (ToolCleanupResult result : tools.cleanup(runId, actor)) {
                 String detail = "tool=" + result.toolName() + " cleanup";
                 events.publish(runId, RunEventType.TOOL_CALL_STARTED, detail, actor);
                 events.publish(
@@ -228,6 +259,40 @@ class CodingAgentLoop {
         } catch (Exception ignored) {
             // Cleanup failures must not hide the model's final answer or original execution failure.
         }
+    }
+
+    /**
+     * Provider 保持结构化返回，只有在送回模型前才统一序列化。
+     * 这样 Node、MCP 和后端工具共享同一种结果合同，也只需在一个位置控制上下文大小。
+     */
+    private String serializeToolResult(ResolvedToolBinding binding, ToolProviderResult outcome) {
+        Map<String, Object> payload = new java.util.LinkedHashMap<>();
+        payload.put("status", outcome.status());
+        payload.put("tool", binding.logicalName());
+        payload.put("provider", binding.providerId());
+        payload.put("result", outcome.result());
+        payload.put("error", outcome.errorMessage());
+        try {
+            String json = objectMapper.writeValueAsString(payload);
+            return json.length() <= 12_000 ? json : json.substring(0, 12_000) + "... [tool result truncated]";
+        } catch (Exception ex) {
+            return "{\"status\":\"FAILED\",\"error\":\"Unable to serialize tool result\"}";
+        }
+    }
+
+    private static Integer timeoutSeconds(Map<String, Object> arguments) {
+        Object value = arguments == null ? null : arguments.get("timeoutSeconds");
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value instanceof String text) {
+            try {
+                return Integer.parseInt(text);
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 
     private ModelGateway.ModelAnswer completeWithRateLimitRetry(

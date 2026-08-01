@@ -1,6 +1,7 @@
 package io.github.yourname.agentstudio.web;
 
 import io.github.yourname.agentstudio.agent.AgentCatalog;
+import io.github.yourname.agentstudio.conversation.ConversationAttachmentService;
 import io.github.yourname.agentstudio.conversation.ConversationService;
 import io.github.yourname.agentstudio.conversation.CreateConversationCommand;
 import io.github.yourname.agentstudio.knowledge.CreateKnowledgeBaseCommand;
@@ -31,6 +32,7 @@ import io.github.yourname.agentstudio.mcp.UpdateMcpConnectionCommand;
 import io.github.yourname.agentstudio.mcp.UpdateMcpToolCommand;
 import io.github.yourname.agentstudio.mcp.UpsertMcpToolCommand;
 import io.github.yourname.agentstudio.orchestration.CreateRunCommand;
+import io.github.yourname.agentstudio.orchestration.ConversationQueueQueryService;
 import io.github.yourname.agentstudio.orchestration.RunCommandService;
 import io.github.yourname.agentstudio.orchestration.RunEventPublisher;
 import io.github.yourname.agentstudio.orchestration.RunQueryService;
@@ -42,11 +44,14 @@ import io.github.yourname.agentstudio.skill.SkillCatalog;
 import io.github.yourname.agentstudio.skill.SkillRepositoryService;
 import io.github.yourname.agentstudio.skill.UpdateSkillCommand;
 import io.github.yourname.agentstudio.tool.ToolCatalog;
+import io.github.yourname.agentstudio.tool.ToolRouter;
+import io.github.yourname.agentstudio.tool.DecideToolApprovalCommand;
 import io.github.yourname.agentstudio.tool.WebSearchCommand;
 import io.github.yourname.agentstudio.tool.WebSearchService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.io.IOException;
+import java.util.List;
 import java.util.stream.Stream;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -71,9 +76,11 @@ class AgentStudioController {
 
     private final CurrentActorProvider actors;
     private final ConversationService conversations;
+    private final ConversationAttachmentService attachments;
     private final ModelCatalog models;
     private final AgentCatalog agents;
     private final ToolCatalog tools;
+    private final ToolRouter toolRouter;
     private final WebSearchService webSearch;
     private final SkillCatalog skills;
     private final SkillRepositoryService skillRepositories;
@@ -84,14 +91,17 @@ class AgentStudioController {
     private final KnowledgeQueryService knowledgeQueries;
     private final RunCommandService runCommands;
     private final RunQueryService runQueries;
+    private final ConversationQueueQueryService conversationQueues;
     private final RunEventPublisher runEvents;
 
     AgentStudioController(
             CurrentActorProvider actors,
             ConversationService conversations,
+            ConversationAttachmentService attachments,
             ModelCatalog models,
             AgentCatalog agents,
             ToolCatalog tools,
+            ToolRouter toolRouter,
             WebSearchService webSearch,
             SkillCatalog skills,
             SkillRepositoryService skillRepositories,
@@ -102,12 +112,15 @@ class AgentStudioController {
             KnowledgeQueryService knowledgeQueries,
             RunCommandService runCommands,
             RunQueryService runQueries,
+            ConversationQueueQueryService conversationQueues,
             RunEventPublisher runEvents) {
         this.actors = actors;
         this.conversations = conversations;
+        this.attachments = attachments;
         this.models = models;
         this.agents = agents;
         this.tools = tools;
+        this.toolRouter = toolRouter;
         this.webSearch = webSearch;
         this.skills = skills;
         this.skillRepositories = skillRepositories;
@@ -118,6 +131,7 @@ class AgentStudioController {
         this.knowledgeQueries = knowledgeQueries;
         this.runCommands = runCommands;
         this.runQueries = runQueries;
+        this.conversationQueues = conversationQueues;
         this.runEvents = runEvents;
     }
 
@@ -130,6 +144,15 @@ class AgentStudioController {
     @GetMapping("/conversations/{id}")
     Object getConversation(@PathVariable String id, HttpServletRequest request) {
         return conversations.get(id, actors.current(request));
+    }
+
+    @PostMapping(path = "/conversations/{id}/attachments", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @ResponseStatus(HttpStatus.CREATED)
+    Object uploadConversationAttachments(
+            @PathVariable String id,
+            @RequestPart("files") List<MultipartFile> files,
+            HttpServletRequest request) {
+        return attachments.upload(id, files, actors.current(request));
     }
 
     @GetMapping("/models")
@@ -330,8 +353,14 @@ class AgentStudioController {
     Object callMcpTool(
             @PathVariable String id,
             @PathVariable String toolName,
-            @RequestBody(required = false) CallMcpToolCommand command) {
-        return mcpConnections.callTool(id, toolName, command);
+            @RequestBody(required = false) CallMcpToolCommand command,
+            HttpServletRequest request) {
+        return mcpConnections.callTool(id, toolName, command, null, actors.current(request));
+    }
+
+    @GetMapping("/mcp-tool-invocations")
+    Object listMcpToolInvocations(HttpServletRequest request) {
+        return mcpConnections.listInvocations(actors.current(request));
     }
 
     @DeleteMapping("/mcp-connections/{id}/tools/{toolName}")
@@ -350,8 +379,8 @@ class AgentStudioController {
 
     @PostMapping("/nodes/register")
     @ResponseStatus(HttpStatus.CREATED)
-    Object registerNode(@Valid @RequestBody RegisterNodeCommand command, HttpServletRequest request) {
-        return nodes.register(command, actors.current(request));
+    Object registerNode(@Valid @RequestBody RegisterNodeCommand command) {
+        return nodes.register(command);
     }
 
     @GetMapping("/nodes")
@@ -376,6 +405,11 @@ class AgentStudioController {
     ResponseEntity<Void> deleteNode(@PathVariable String id, HttpServletRequest request) {
         nodes.delete(id, actors.current(request));
         return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/nodes/{id}/credentials/rotate")
+    Object rotateNodeCredentials(@PathVariable String id, HttpServletRequest request) {
+        return nodes.rotateSecret(id, actors.current(request));
     }
 
     @GetMapping("/nodes/{id}/tools")
@@ -423,6 +457,22 @@ class AgentStudioController {
             HttpServletRequest request) {
         var actor = actors.current(request);
         var decision = nodes.decideToolApproval(approvalId, command, actor);
+        runCommands.resumeAfterToolApproval(decision, actor);
+        return decision;
+    }
+
+    @GetMapping("/tool-approvals")
+    Object listToolApprovals(HttpServletRequest request) {
+        return toolRouter.listApprovals(actors.current(request));
+    }
+
+    @PostMapping("/tool-approvals/{approvalId}/decision")
+    Object decideToolApproval(
+            @PathVariable String approvalId,
+            @RequestBody(required = false) DecideToolApprovalCommand command,
+            HttpServletRequest request) {
+        var actor = actors.current(request);
+        var decision = toolRouter.decideApproval(approvalId, command, actor);
         runCommands.resumeAfterToolApproval(decision, actor);
         return decision;
     }
@@ -487,6 +537,15 @@ class AgentStudioController {
         return knowledgeCommands.ingestFile(id, file, actors.current(request));
     }
 
+    @PostMapping(path = "/knowledge-bases/{id}/documents/batch-upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    Object uploadKnowledgeDocuments(
+            @PathVariable String id,
+            @RequestPart("files") List<MultipartFile> files,
+            HttpServletRequest request) {
+        return knowledgeCommands.ingestFiles(id, files, actors.current(request));
+    }
+
     @GetMapping("/knowledge-bases/{id}/documents")
     Object listKnowledgeDocuments(@PathVariable String id, HttpServletRequest request) {
         return knowledgeQueries.listDocuments(id, actors.current(request));
@@ -531,6 +590,11 @@ class AgentStudioController {
     @ResponseStatus(HttpStatus.ACCEPTED)
     Object createRun(@Valid @RequestBody CreateRunCommand command, HttpServletRequest request) {
         return runCommands.create(command, actors.current(request));
+    }
+
+    @GetMapping("/conversations/{id}/queue")
+    Object getConversationQueue(@PathVariable String id, HttpServletRequest request) {
+        return conversationQueues.get(id, actors.current(request));
     }
 
     @PostMapping("/runs/{id}/cancel")

@@ -23,7 +23,8 @@ import org.springframework.transaction.annotation.Transactional;
 class DataSeeder implements ApplicationRunner {
 
     private static final String DEFAULT_ASSISTANT_ID = "default-assistant";
-    private static final String DEFAULT_ASSISTANT_TOOLS = "local_time,knowledge_search,web_search";
+    private static final String LEGACY_DEFAULT_ASSISTANT_TOOLS = "local_time,knowledge_search,web_search";
+    private static final String DEFAULT_ASSISTANT_TOOLS = LEGACY_DEFAULT_ASSISTANT_TOOLS + ",node:*";
     private static final String DEFAULT_ASSISTANT_PROMPT = """
             You are Spring Agent Studio's default assistant.
 
@@ -101,7 +102,7 @@ class DataSeeder implements ApplicationRunner {
                     true,
                     Instant.now()));
         } else if (isLegacyDefaultAssistant(defaultAssistant.get())) {
-            // 兼容早期种子数据：仅升级缺少 web_search 的旧默认 Agent，不影响用户自建 Agent。
+            // 只升级平台自己曾写入的精确旧默认值。用户自定义过 allow-list 后绝不覆盖。
             AgentDefinitionEntity assistant = defaultAssistant.get();
             assistant.updateRuntimeDefaults(DEFAULT_ASSISTANT_PROMPT, DEFAULT_ASSISTANT_TOOLS);
             agents.save(assistant);
@@ -110,9 +111,7 @@ class DataSeeder implements ApplicationRunner {
 
     private static boolean isLegacyDefaultAssistant(AgentDefinitionEntity assistant) {
         return assistant.toolAllowList() == null
-                || !assistant.toolAllowList().contains("web_search")
-                || assistant.systemPrompt() == null
-                || !assistant.systemPrompt().contains("web_search");
+                || LEGACY_DEFAULT_ASSISTANT_TOOLS.equals(assistant.toolAllowList().trim());
     }
 
     private static AppProperties.DefaultModelProfile fallbackProfile() {

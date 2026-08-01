@@ -15,6 +15,9 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.text.PDFTextStripper;
 import org.jsoup.Jsoup;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -93,15 +96,38 @@ public class KnowledgeCommandService {
             throw new IllegalArgumentException("Uploaded file is empty.");
         }
         try {
-            String sourceName = file.getOriginalFilename() == null || file.getOriginalFilename().isBlank()
-                    ? "uploaded-file"
-                    : file.getOriginalFilename();
+            String sourceName = sourceName(file);
             String contentType = file.getContentType() == null ? "application/octet-stream" : file.getContentType();
             String content = extractText(sourceName, contentType, file.getBytes());
             return ingestText(knowledgeBaseId, sourceName, content, contentType, actor);
         } catch (Exception ex) {
             throw new IllegalStateException("Failed to ingest uploaded file: " + ex.getMessage(), ex);
         }
+    }
+
+    @Transactional
+    public BatchIngestionResult ingestFiles(String knowledgeBaseId, List<MultipartFile> files, ActorContext actor) {
+        requireBase(knowledgeBaseId, actor);
+        if (files == null || files.isEmpty()) {
+            throw new IllegalArgumentException("At least one file is required.");
+        }
+        if (files.size() > 20) {
+            throw new IllegalArgumentException("A maximum of 20 files can be uploaded at once.");
+        }
+
+        List<BatchIngestionResult.FileIngestionResult> results = new ArrayList<>();
+        for (MultipartFile file : files) {
+            String sourceName = sourceName(file);
+            try {
+                IngestionResult result = ingestFile(knowledgeBaseId, file, actor);
+                results.add(new BatchIngestionResult.FileIngestionResult(
+                        result.sourceName(), result.documentId(), result.chunkCount(), result.duplicate(), true, null));
+            } catch (Exception ex) {
+                results.add(new BatchIngestionResult.FileIngestionResult(
+                        sourceName, null, 0, false, false, userFacingError(ex)));
+            }
+        }
+        return new BatchIngestionResult(results);
     }
 
     @Transactional
@@ -263,7 +289,7 @@ public class KnowledgeCommandService {
             return extractOfficeOpenXml(bytes, "ppt/");
         }
         if (lowerName.endsWith(".pdf")) {
-            throw new IllegalArgumentException("PDF parsing is not implemented yet. Please upload extracted text/Markdown first, or add PDFBox in the next milestone.");
+            return extractPdf(bytes);
         }
         throw new IllegalArgumentException("Unsupported file type: " + sourceName);
     }
@@ -278,7 +304,31 @@ public class KnowledgeCommandService {
                 || lowerName.endsWith(".tsv")
                 || lowerName.endsWith(".yml")
                 || lowerName.endsWith(".yaml")
-                || lowerName.endsWith(".xml");
+                || lowerName.endsWith(".xml")
+                || lowerName.endsWith(".log");
+    }
+
+    private static String extractPdf(byte[] bytes) {
+        try (PDDocument document = Loader.loadPDF(bytes)) {
+            return new PDFTextStripper().getText(document);
+        } catch (IOException ex) {
+            throw new IllegalArgumentException("Failed to extract text from PDF: " + ex.getMessage(), ex);
+        }
+    }
+
+    private static String sourceName(MultipartFile file) {
+        if (file == null || file.getOriginalFilename() == null || file.getOriginalFilename().isBlank()) {
+            return "uploaded-file";
+        }
+        return file.getOriginalFilename();
+    }
+
+    private static String userFacingError(Exception ex) {
+        Throwable cause = ex;
+        while (cause.getCause() != null && (cause instanceof IllegalStateException || cause.getMessage() == null)) {
+            cause = cause.getCause();
+        }
+        return cause.getMessage() == null ? "Failed to ingest file." : cause.getMessage();
     }
 
     private static String extractOfficeOpenXml(byte[] bytes, String requiredPrefix) {
@@ -323,18 +373,39 @@ public class KnowledgeCommandService {
                 .trim();
     }
 
-    private static List<String> splitIntoChunks(String content) {
+    static List<String> splitIntoChunks(String content) {
         List<String> result = new ArrayList<>();
         String normalized = normalizeText(content);
-        int step = Math.max(1, CHUNK_SIZE - CHUNK_OVERLAP);
-        for (int start = 0; start < normalized.length(); start += step) {
-            int end = Math.min(start + CHUNK_SIZE, normalized.length());
-            result.add(normalized.substring(start, end));
+        for (int start = 0; start < normalized.length();) {
+            int end = preferredChunkEnd(normalized, start);
+            result.add(normalized.substring(start, end).trim());
             if (end == normalized.length()) {
                 break;
             }
+            start = Math.max(start + 1, end - CHUNK_OVERLAP);
         }
         return result;
+    }
+
+    private static int preferredChunkEnd(String content, int start) {
+        int target = Math.min(start + CHUNK_SIZE, content.length());
+        if (target == content.length()) {
+            return target;
+        }
+        // Prefer a nearby paragraph, line, or sentence boundary. The lower bound keeps a
+        // short trailing sentence from turning a 1,200-character chunk into a tiny fragment.
+        int lowerBound = Math.max(start + CHUNK_SIZE / 2, target - 400);
+        for (int index = target; index > lowerBound; index--) {
+            char current = content.charAt(index - 1);
+            if (current == '\n') {
+                return index - 1;
+            }
+            if (current == '.' || current == '!' || current == '?' || current == '\u3002'
+                    || current == '\uff01' || current == '\uff1f') {
+                return index;
+            }
+        }
+        return target;
     }
 
     private static String normalizeText(String content) {

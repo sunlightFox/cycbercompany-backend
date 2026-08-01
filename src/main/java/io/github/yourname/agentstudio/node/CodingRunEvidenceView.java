@@ -17,6 +17,13 @@ public record CodingRunEvidenceView(
         List<String> changedFiles,
         /** 成功执行过的验证工具类别，例如 shell.run、browser.open。 */
         List<String> verificationTools,
+        /**
+         * 服务端从成功 shell.run 的审计参数中归类出的验证类别，例如 test、build、lint、typecheck 或 http。
+         * 不返回原始命令，避免把令牌、目录或其他敏感参数泄露到交付摘要接口。
+         */
+        List<String> commandVerifications,
+        /** 成功导出的浏览器 Trace 文件名，不包含节点机器上的绝对路径。 */
+        List<String> browserTraceArtifacts,
         /** 是否至少执行过一次成功的浏览器验证工具。 */
         boolean browserVerified,
         /** 失败的工具类别，帮助快速判断验证链路是否中断。 */

@@ -11,24 +11,34 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.yourname.agentstudio.agent.AgentCatalog;
 import io.github.yourname.agentstudio.config.AppProperties;
+import io.github.yourname.agentstudio.conversation.ConversationAttachmentService;
 import io.github.yourname.agentstudio.conversation.ConversationService;
 import io.github.yourname.agentstudio.conversation.MessageRole;
 import io.github.yourname.agentstudio.knowledge.KnowledgeQueryService;
-import io.github.yourname.agentstudio.mcp.McpConnectionService;
 import io.github.yourname.agentstudio.model.ModelGateway;
 import io.github.yourname.agentstudio.model.ModelCatalog;
 import io.github.yourname.agentstudio.node.NodeToolApprovalDecisionView;
 import io.github.yourname.agentstudio.node.NodeToolApprovalStatus;
 import io.github.yourname.agentstudio.node.NodeToolApprovalView;
 import io.github.yourname.agentstudio.node.NodeToolCallResult;
+import io.github.yourname.agentstudio.node.CodingRunEvidenceView;
 import io.github.yourname.agentstudio.node.NodeService;
 import io.github.yourname.agentstudio.security.ActorContext;
-import io.github.yourname.agentstudio.tool.WebSearchService;
+import io.github.yourname.agentstudio.skill.SkillCatalog;
+import io.github.yourname.agentstudio.skill.SkillAnalyzer;
+import io.github.yourname.agentstudio.skill.SkillCompatibilityService;
+import io.github.yourname.agentstudio.skill.CompatibilityReport;
+import io.github.yourname.agentstudio.tool.ResolvedToolBinding;
+import io.github.yourname.agentstudio.tool.RiskLevel;
+import io.github.yourname.agentstudio.tool.ToolRouter;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.HexFormat;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -43,11 +53,13 @@ class RunCommandServiceApprovalResumeTest {
         ConversationService conversations = mock(ConversationService.class);
         CodingAgentLoop codingLoop = mock(CodingAgentLoop.class);
         RunEventPublisher events = mock(RunEventPublisher.class);
+        NodeService nodes = mock(NodeService.class);
         ObjectMapper mapper = new ObjectMapper();
-        RunCommandService service = service(runs, continuations, conversations, codingLoop, events, mapper);
+        RunCommandService service = service(runs, continuations, conversations, codingLoop, nodes, events, mapper);
 
         AgentRunEntity run = new AgentRunEntity(
                 "run-1", ACTOR.tenantId(), ACTOR.userId(), "conversation-1", "model-1", "agent-1", Instant.now());
+        bindRunSpec(run, mapper);
         run.start();
         run.waitForApproval();
         List<ModelGateway.ModelMessage> persistedMessages = List.of(
@@ -65,8 +77,9 @@ class RunCommandServiceApprovalResumeTest {
                 Instant.now());
         when(continuations.findByRunIdAndTenantId(run.id(), ACTOR.tenantId())).thenReturn(Optional.of(continuation));
         when(runs.findByIdAndTenantId(run.id(), ACTOR.tenantId())).thenReturn(Optional.of(run));
-        when(codingLoop.resume(eq(run.id()), eq("model-1"), eq("node-1"), any(), eq(ACTOR), any()))
+        when(codingLoop.resume(eq(run.id()), eq("model-1"), any(), any(), eq(ACTOR), any()))
                 .thenReturn("Server started and verified.");
+        when(nodes.codingEvidence(run.id(), ACTOR)).thenReturn(verifiedEvidence());
 
         NodeToolApprovalView approval = new NodeToolApprovalView(
                 "approval-1",
@@ -96,7 +109,7 @@ class RunCommandServiceApprovalResumeTest {
         verify(events).publish(run.id(), RunEventType.RUN_RESUMED, "approvalId=approval-1", ACTOR);
         ArgumentCaptor<List<ModelGateway.ModelMessage>> restored = ArgumentCaptor.forClass(List.class);
         verify(codingLoop, timeout(2_000)).resume(
-                eq(run.id()), eq("model-1"), eq("node-1"), restored.capture(), eq(ACTOR), any());
+                eq(run.id()), eq("model-1"), any(), restored.capture(), eq(ACTOR), any());
         assertThat(restored.getValue()).anyMatch(message ->
                 "tool".equals(message.role())
                         && "call-1".equals(message.toolCallId())
@@ -107,13 +120,51 @@ class RunCommandServiceApprovalResumeTest {
     }
 
     @Test
+    void resumedCodingCannotReportSuccessWhenTheServerFindsMissingVerification() throws Exception {
+        AgentRunRepository runs = mock(AgentRunRepository.class);
+        CodingRunContinuationRepository continuations = mock(CodingRunContinuationRepository.class);
+        ConversationService conversations = mock(ConversationService.class);
+        CodingAgentLoop codingLoop = mock(CodingAgentLoop.class);
+        RunEventPublisher events = mock(RunEventPublisher.class);
+        NodeService nodes = mock(NodeService.class);
+        ObjectMapper mapper = new ObjectMapper();
+        RunCommandService service = service(runs, continuations, conversations, codingLoop, nodes, events, mapper);
+
+        AgentRunEntity run = new AgentRunEntity(
+                "run-unverified", ACTOR.tenantId(), ACTOR.userId(), "conversation-1", "model-1", "agent-1", Instant.now());
+        bindRunSpec(run, mapper);
+        run.start();
+        run.waitForApproval();
+        CodingRunContinuationEntity continuation = new CodingRunContinuationEntity(
+                run.id(), ACTOR.tenantId(), "node-1", "task-board", "approval-1", "call-1",
+                mapper.writeValueAsString(List.of(new ModelGateway.ModelMessage("user", "Implement the endpoint"))), Instant.now());
+        when(continuations.findByRunIdAndTenantId(run.id(), ACTOR.tenantId())).thenReturn(Optional.of(continuation));
+        when(runs.findByIdAndTenantId(run.id(), ACTOR.tenantId())).thenReturn(Optional.of(run));
+        when(codingLoop.resume(eq(run.id()), eq("model-1"), any(), any(), eq(ACTOR), any()))
+                .thenReturn("Implementation complete.");
+        when(nodes.codingEvidence(run.id(), ACTOR)).thenReturn(new CodingRunEvidenceView(
+                run.id(), 1, List.of("src/App.java"), List.of(), List.of(), List.of(), false, List.of()));
+
+        service.resumeAfterToolApproval(approvedDecision(run), ACTOR);
+
+        verify(conversations, timeout(2_000)).append(
+                eq("conversation-1"), eq(MessageRole.ASSISTANT),
+                org.mockito.ArgumentMatchers.contains("尚未被标记为完成"), eq(run.id()), eq(ACTOR));
+        assertThat(run.status()).isEqualTo(RunStatus.NEEDS_VERIFICATION);
+        assertThat(run.errorMessage()).contains("没有成功的构建、测试或命令验证证据");
+        verify(events, timeout(2_000)).publish(
+                eq(run.id()), eq(RunEventType.RUN_NEEDS_VERIFICATION), org.mockito.ArgumentMatchers.contains("交付门禁未通过"), eq(ACTOR));
+    }
+
+    @Test
     void cancellationMarksRunTerminalAndCleansUpItsProcesses() {
         AgentRunRepository runs = mock(AgentRunRepository.class);
         CodingRunContinuationRepository continuations = mock(CodingRunContinuationRepository.class);
         ConversationService conversations = mock(ConversationService.class);
         CodingAgentLoop codingLoop = mock(CodingAgentLoop.class);
         RunEventPublisher events = mock(RunEventPublisher.class);
-        RunCommandService service = service(runs, continuations, conversations, codingLoop, events, new ObjectMapper());
+        RunCommandService service = service(
+                runs, continuations, conversations, codingLoop, mock(NodeService.class), events, new ObjectMapper());
         AgentRunEntity run = new AgentRunEntity(
                 "run-cancel", ACTOR.tenantId(), ACTOR.userId(), "conversation-1", "model-1", "agent-1", Instant.now());
         run.start();
@@ -133,6 +184,7 @@ class RunCommandServiceApprovalResumeTest {
             CodingRunContinuationRepository continuations,
             ConversationService conversations,
             CodingAgentLoop codingLoop,
+            NodeService nodes,
             RunEventPublisher events,
             ObjectMapper mapper) {
         return new RunCommandService(
@@ -140,16 +192,73 @@ class RunCommandServiceApprovalResumeTest {
                 runs,
                 continuations,
                 conversations,
-                mock(AgentCatalog.class),
+                mock(ConversationAttachmentService.class),
                 mock(KnowledgeQueryService.class),
-                mock(WebSearchService.class),
-                mock(McpConnectionService.class),
+                mock(AgentCatalog.class),
+                mock(SkillCatalog.class),
+                mock(SkillAnalyzer.class),
+                mock(SkillCompatibilityService.class),
                 mock(ModelCatalog.class),
                 mock(ModelGateway.class),
                 codingLoop,
-                mock(NodeService.class),
+                mock(ToolRouter.class),
+                nodes,
                 new RunExecutionRegistry(),
+                new ConversationRunQueue(),
                 events,
                 mapper);
+    }
+
+    private static CodingRunEvidenceView verifiedEvidence() {
+        return new CodingRunEvidenceView(
+                "ignored", 1, List.of(), List.of("shell.run"), List.of("test"), List.of(), false, List.of());
+    }
+
+    private static NodeToolApprovalDecisionView approvedDecision(AgentRunEntity run) {
+        NodeToolApprovalView approval = new NodeToolApprovalView(
+                "approval-1", "node-1", "fs.write", run.id(), "call-1", "{\"path\":\"src/App.java\"}",
+                30, NodeToolApprovalStatus.APPROVED, "alice", "alice", Instant.now(), Instant.now(), Instant.now(),
+                "SUCCEEDED", "{\"written\":true}", null);
+        return new NodeToolApprovalDecisionView(
+                approval, new NodeToolCallResult("nodeinv-1", "node-1", "fs.write", "SUCCEEDED", Map.of(), null));
+    }
+
+    private static void bindRunSpec(AgentRunEntity run, ObjectMapper mapper) throws Exception {
+        ResolvedToolBinding binding = new ResolvedToolBinding(
+                "node:node-1:fs.write", "tool_fs_write", "fs.write", "node", "fs.write",
+                "Write", RiskLevel.HIGH, true, Map.of("type", "object"), Map.of("nodeId", "node-1"));
+        RunSpec spec = new RunSpec(
+                RunSpec.CURRENT_VERSION,
+                run.conversationId(),
+                "Implement",
+                run.modelProfileId(),
+                "sha256:model",
+                run.agentId(),
+                "Agent prompt",
+                "sha256:prompt",
+                "node:*",
+                List.of(),
+                "sha256:skills",
+                "sha256:instructions",
+                List.of(),
+                new CompatibilityReport(true, List.of(), List.of(), List.of(), List.of()),
+                List.of(),
+                List.of(),
+                List.of("fs.write"),
+                List.of(binding),
+                "node-1",
+                "task-board",
+                List.of(),
+                "",
+                "sha256:capabilities",
+                "sha256:policy",
+                "on-request",
+                ACTOR.tenantId(),
+                ACTOR.userId(),
+                ACTOR.roles(),
+                ACTOR.scopes());
+        String json = mapper.writeValueAsString(spec);
+        byte[] digest = MessageDigest.getInstance("SHA-256").digest(json.getBytes(StandardCharsets.UTF_8));
+        run.bindRunSpec(json, "sha256:" + HexFormat.of().formatHex(digest));
     }
 }

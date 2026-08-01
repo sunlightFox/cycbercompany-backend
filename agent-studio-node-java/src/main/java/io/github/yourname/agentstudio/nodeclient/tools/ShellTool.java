@@ -94,6 +94,8 @@ public final class ShellTool {
             result.put("timedOut", !finished);
             result.put("stdout", stdout.text());
             result.put("stderr", stderr.text());
+            result.put("stdoutTruncated", stdout.truncated());
+            result.put("stderrTruncated", stderr.truncated());
             result.put("outputTruncated", stdout.truncated() || stderr.truncated());
 
             if (!finished) {

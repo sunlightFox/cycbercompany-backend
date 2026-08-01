@@ -2,12 +2,16 @@ package io.github.yourname.agentstudio.mcp;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.yourname.agentstudio.config.AppProperties;
+import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.tool.RegisteredTool;
 import io.github.yourname.agentstudio.tool.RiskLevel;
 import jakarta.annotation.PostConstruct;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -16,7 +20,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.HexFormat;
+import java.util.UUID;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Persistent management service for MCP connections and their tools.
@@ -34,11 +41,17 @@ public class McpConnectionService {
     private final AppProperties properties;
     private final ObjectMapper objectMapper;
     private final McpStdioClient stdioClient;
+    private final McpToolInvocationRepository invocations;
 
-    public McpConnectionService(AppProperties properties, ObjectMapper objectMapper, McpStdioClient stdioClient) {
+    public McpConnectionService(
+            AppProperties properties,
+            ObjectMapper objectMapper,
+            McpStdioClient stdioClient,
+            McpToolInvocationRepository invocations) {
         this.properties = properties;
         this.objectMapper = objectMapper;
         this.stdioClient = stdioClient;
+        this.invocations = invocations;
     }
 
     @PostConstruct
@@ -239,18 +252,78 @@ public class McpConnectionService {
         return toView(updated);
     }
 
-    public McpToolCallResult callTool(String connectionId, String toolName, CallMcpToolCommand command) {
-        StoredMcpConnection connection = load(connectionId);
-        ensureExecutable(connection);
-        StoredMcpTool tool = connection.tools().stream()
-                .filter(candidate -> candidate.name().equals(toolName))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("MCP tool not found: " + toolName));
-        if (!tool.enabled()) {
-            throw new IllegalArgumentException("MCP tool is disabled: " + toolName);
-        }
+    @Transactional(noRollbackFor = Exception.class)
+    public McpToolCallResult callTool(
+            String connectionId,
+            String toolName,
+            CallMcpToolCommand command,
+            String runId,
+            ActorContext actor) {
+        return callTool(connectionId, toolName, command, runId, actor, false);
+    }
+
+    /** 仅供 ToolRouter 在精确审批已经持久化并批准后调用。 */
+    public McpToolCallResult callToolAfterApproval(
+            String connectionId,
+            String toolName,
+            CallMcpToolCommand command,
+            String runId,
+            ActorContext actor) {
+        return callTool(connectionId, toolName, command, runId, actor, true);
+    }
+
+    private McpToolCallResult callTool(
+            String connectionId,
+            String toolName,
+            CallMcpToolCommand command,
+            String runId,
+            ActorContext actor,
+            boolean approvalGranted) {
         Map<String, Object> arguments = command == null || command.arguments() == null ? Map.of() : command.arguments();
-        return stdioClient.callTool(toRuntimeConnection(connection), tool.name(), arguments);
+        Instant now = Instant.now();
+        McpToolInvocationEntity invocation = invocations.save(new McpToolInvocationEntity(
+                "mcpinv_" + UUID.randomUUID(),
+                actor.tenantId(),
+                actor.userId(),
+                runId,
+                connectionId,
+                toolName,
+                String.join(",", arguments.keySet().stream().sorted().toList()),
+                sha256(arguments),
+                now));
+        invocation.start(now);
+        invocations.save(invocation);
+        try {
+            StoredMcpConnection connection = load(connectionId);
+            ensureExecutable(connection);
+            StoredMcpTool tool = connection.tools().stream()
+                    .filter(candidate -> candidate.name().equals(toolName))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("MCP tool not found: " + toolName));
+            if (!tool.enabled()) {
+                throw new IllegalArgumentException("MCP tool is disabled: " + toolName);
+            }
+            if (tool.requiresApproval() && !approvalGranted) {
+                invocation.deny("APPROVAL_REQUIRED", Instant.now());
+                invocations.save(invocation);
+                throw new IllegalStateException(
+                        "MCP tool requires approval and cannot execute until the unified approval flow is available: " + toolName);
+            }
+            McpToolCallResult result = stdioClient.callTool(toRuntimeConnection(connection), tool.name(), arguments);
+            if (result.error()) {
+                invocation.fail("MCP_RESULT_ERROR", Instant.now());
+            } else {
+                invocation.succeed(result.content() == null ? 0 : result.content().size(), Instant.now());
+            }
+            invocations.save(invocation);
+            return result;
+        } catch (Exception ex) {
+            if (invocation.status() != McpToolInvocationStatus.DENIED) {
+                invocation.fail(ex.getClass().getSimpleName(), Instant.now());
+                invocations.save(invocation);
+            }
+            throw ex;
+        }
     }
 
     /**
@@ -273,7 +346,11 @@ public class McpConnectionService {
                 .toList();
     }
 
-    public List<McpToolCallResult> callLikelySearchTools(List<String> selectedConnectionIds, String query) {
+    public List<McpToolCallResult> callLikelySearchTools(
+            List<String> selectedConnectionIds,
+            String query,
+            String runId,
+            ActorContext actor) {
         if (query == null || query.isBlank()) {
             return List.of();
         }
@@ -290,13 +367,25 @@ public class McpConnectionService {
                     continue;
                 }
                 try {
-                    results.add(callTool(connection.id(), tool.name(), new CallMcpToolCommand(Map.of("query", query))));
+                    results.add(callTool(
+                            connection.id(),
+                            tool.name(),
+                            new CallMcpToolCommand(Map.of("query", query)),
+                            runId,
+                            actor));
                 } catch (Exception ignored) {
                     // A failed optional MCP source should not break the whole chat run.
                 }
             }
         }
         return results;
+    }
+
+    @Transactional(readOnly = true)
+    public List<McpToolInvocationView> listInvocations(ActorContext actor) {
+        return invocations.findByTenantIdOrderByCreatedAtDesc(actor.tenantId()).stream()
+                .map(McpToolInvocationView::from)
+                .toList();
     }
 
     private StoredMcpConnection load(String id) {
@@ -500,6 +589,16 @@ public class McpConnectionService {
 
     private static String blankToEmpty(String value) {
         return value == null ? "" : value.trim();
+    }
+
+    private String sha256(Map<String, Object> arguments) {
+        try {
+            String json = objectMapper.writeValueAsString(arguments == null ? Map.of() : arguments);
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(json.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException | IOException ex) {
+            throw new IllegalStateException("Cannot calculate MCP argument digest.", ex);
+        }
     }
 
     private record StoredMcpConnection(

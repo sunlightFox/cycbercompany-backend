@@ -1,21 +1,24 @@
 package io.github.yourname.agentstudio.nodeclient.tools;
 
 import com.microsoft.playwright.Browser;
+import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.BrowserType;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.TimeoutError;
+import com.microsoft.playwright.Tracing;
 import com.microsoft.playwright.options.LoadState;
 import com.microsoft.playwright.options.WaitForSelectorState;
 import io.github.yourname.agentstudio.nodeclient.runtime.ToolExecutionResult;
 import java.net.http.HttpClient;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Instant;
 import java.util.ArrayList;
-import java.util.List;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 
 /**
  * Playwright 浏览器控制工具。
@@ -79,9 +82,18 @@ public class BrowserTool implements AutoCloseable {
     // 本工具运行在节点本机，且复用一个浏览器/页面会话，适合连续执行 open -> click -> type。
 
     private final Map<String, BrowserSession> sessions = new LinkedHashMap<>();
+    private final Path artifactRoot;
 
     public BrowserTool(HttpClient httpClient) {
+        this(httpClient, defaultArtifactRoot());
+    }
+
+    BrowserTool(HttpClient httpClient, Path artifactRoot) {
         // 保留构造参数是为了 ToolRegistry 统一注入；Playwright 本身不复用 HttpClient。
+        if (artifactRoot == null) {
+            throw new IllegalArgumentException("Browser artifact root is required.");
+        }
+        this.artifactRoot = artifactRoot.toAbsolutePath().normalize();
     }
 
     public synchronized ToolExecutionResult open(Map<String, Object> arguments) {
@@ -95,10 +107,16 @@ public class BrowserTool implements AutoCloseable {
             return ToolExecutionResult.failure("Missing required argument: url");
         }
         try {
-            Page current = ensurePage(session(executionSessionId), arguments);
-            current.navigate(url, new Page.NavigateOptions()
+            BrowserSession browserSession = session(executionSessionId);
+            Set<String> allowedPrivateHosts = BrowserNetworkPolicy.allowedPrivateHosts(arguments);
+            String safeUrl = BrowserNetworkPolicy.requireAllowed(url, allowedPrivateHosts);
+            browserSession.allowedPrivateHosts = allowedPrivateHosts;
+            Page current = ensurePage(browserSession, arguments);
+            current.navigate(safeUrl, new Page.NavigateOptions()
                     .setTimeout(number(arguments, "timeoutMs", 30_000)));
             current.waitForLoadState(LoadState.DOMCONTENTLOADED);
+            // 重定向后的最终地址必须再次通过检查；不能只相信初始 URL。
+            BrowserNetworkPolicy.requireAllowed(current.url(), browserSession.allowedPrivateHosts);
             return ToolExecutionResult.success(pageState(current));
         } catch (Exception ex) {
             return ToolExecutionResult.failure(playwrightError("browser.open", ex));
@@ -147,8 +165,7 @@ public class BrowserTool implements AutoCloseable {
         try {
             Page current = requirePage(session(executionSessionId));
             boolean fullPage = bool(arguments, "fullPage", true);
-            Path outputPath = screenshotPath(arguments);
-            // 调用方可指定输出位置；生产版还应限制到节点允许写入的目录。
+            Path outputPath = createArtifactPath(executionSessionId, "screenshots", ".png");
             Files.createDirectories(outputPath.getParent());
             byte[] bytes = current.screenshot(new Page.ScreenshotOptions()
                     .setFullPage(fullPage)
@@ -156,10 +173,53 @@ public class BrowserTool implements AutoCloseable {
             Map<String, Object> result = new LinkedHashMap<>(pageState(current));
             result.put("mimeType", "image/png");
             result.put("byteLength", bytes.length);
-            result.put("path", outputPath.toAbsolutePath().normalize().toString());
+            result.put("artifactPath", relativeArtifactPath(outputPath));
             return ToolExecutionResult.success(result);
         } catch (Exception ex) {
             return ToolExecutionResult.failure(playwrightError("browser.screenshot", ex));
+        }
+    }
+
+    /**
+     * 开始记录当前会话的 Playwright Trace。
+     *
+     * <p>服务端决定何时调用此命令以及 Trace 是否构成交付证据；客户端只记录当前
+     * 已存在的浏览器会话，不读取账号资料或将 Trace 上传到第三方服务。
+     */
+    public synchronized ToolExecutionResult startTrace(String executionSessionId, Map<String, Object> arguments) {
+        try {
+            BrowserSession session = session(executionSessionId);
+            requirePage(session);
+            if (session.traceRecording) {
+                return ToolExecutionResult.success(Map.of("recording", true, "alreadyRecording", true));
+            }
+            session.context.tracing().start(new Tracing.StartOptions().setScreenshots(true).setSnapshots(true).setSources(false));
+            session.traceRecording = true;
+            return ToolExecutionResult.success(Map.of("recording", true, "alreadyRecording", false));
+        } catch (Exception ex) {
+            return ToolExecutionResult.failure(playwrightError("browser.trace.start", ex));
+        }
+    }
+
+    /** Stops tracing and writes a local ZIP artifact for later authorized inspection. */
+    public synchronized ToolExecutionResult stopTrace(String executionSessionId, Map<String, Object> arguments) {
+        try {
+            BrowserSession session = session(executionSessionId);
+            requirePage(session);
+            if (!session.traceRecording) {
+                return ToolExecutionResult.failure("No active browser trace. Call browser.trace.start first.");
+            }
+            Path output = createArtifactPath(executionSessionId, "traces", ".zip");
+            Files.createDirectories(output.getParent());
+            session.context.tracing().stop(new Tracing.StopOptions().setPath(output));
+            session.traceRecording = false;
+            return ToolExecutionResult.success(Map.of(
+                    "recording", false,
+                    "artifactType", "playwright-trace",
+                    "artifactPath", relativeArtifactPath(output),
+                    "sizeBytes", Files.size(output)));
+        } catch (Exception ex) {
+            return ToolExecutionResult.failure(playwrightError("browser.trace.stop", ex));
         }
     }
 
@@ -240,6 +300,23 @@ public class BrowserTool implements AutoCloseable {
             }
             session.page = null;
         }
+        if (session.traceRecording && session.context != null) {
+            try {
+                // 未显式导出的 Trace 不作为交付物保留，避免取消任务时产生无主文件。
+                session.context.tracing().stop();
+            } catch (Exception ignored) {
+                // 浏览器上下文关闭时可能已经停止追踪。
+            }
+            session.traceRecording = false;
+        }
+        if (session.context != null) {
+            try {
+                session.context.close();
+            } catch (Exception ignored) {
+                // 上下文可能已随着浏览器关闭，继续释放其余资源。
+            }
+            session.context = null;
+        }
         if (session.browser != null) {
             try {
                 session.browser.close();
@@ -273,7 +350,17 @@ public class BrowserTool implements AutoCloseable {
             session.browser = session.playwright.chromium().launch(options);
         }
         if (session.page == null || session.page.isClosed()) {
-            session.page = session.browser.newPage();
+            session.context = session.browser.newContext();
+            session.context.route("**/*", route -> {
+                try {
+                    BrowserNetworkPolicy.requireAllowed(route.request().url(), session.allowedPrivateHosts);
+                    route.resume();
+                } catch (IllegalArgumentException blocked) {
+                    // 对主导航的中止会由 navigate 返回失败；对子资源则保持页面与本机网络隔离。
+                    route.abort();
+                }
+            });
+            session.page = session.context.newPage();
         }
         return session.page;
     }
@@ -352,14 +439,30 @@ public class BrowserTool implements AutoCloseable {
         return value == null ? null : value.toString();
     }
 
-    private static Path screenshotPath(Map<String, Object> arguments) {
-        String configured = value(arguments, "path");
-        if (configured != null && !configured.isBlank()) {
-            return Path.of(configured).toAbsolutePath().normalize();
+    /** 生成的路径只由节点决定，调用参数无法影响目录或文件名。 */
+    Path createArtifactPath(String executionSessionId, String category, String extension) {
+        String safeSession = sessionKey(executionSessionId).replaceAll("[^A-Za-z0-9._-]", "_");
+        if (safeSession.length() > 80) {
+            safeSession = safeSession.substring(0, 80);
         }
-        // 默认写入临时目录，避免把演示截图混入项目工作区。
-        String safeName = "browser-" + Instant.now().toString().replace(":", "-").replace(".", "-") + ".png";
-        return Path.of(System.getProperty("java.io.tmpdir"), "agent-studio-node", "screenshots", safeName)
+        Path output = artifactRoot
+                .resolve("browser")
+                .resolve(safeSession)
+                .resolve(category)
+                .resolve(UUID.randomUUID() + extension)
+                .normalize();
+        if (!output.startsWith(artifactRoot)) {
+            throw new IllegalStateException("Generated browser artifact path escaped the artifact root.");
+        }
+        return output;
+    }
+
+    private String relativeArtifactPath(Path path) {
+        return artifactRoot.relativize(path.toAbsolutePath().normalize()).toString().replace('\\', '/');
+    }
+
+    private static Path defaultArtifactRoot() {
+        return Path.of(System.getProperty("java.io.tmpdir"), "agent-studio-node", "artifacts")
                 .toAbsolutePath()
                 .normalize();
     }
@@ -404,6 +507,9 @@ public class BrowserTool implements AutoCloseable {
     private static final class BrowserSession {
         private Playwright playwright;
         private Browser browser;
+        private BrowserContext context;
         private Page page;
+        private boolean traceRecording;
+        private Set<String> allowedPrivateHosts = Set.of();
     }
 }

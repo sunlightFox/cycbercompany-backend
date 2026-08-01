@@ -17,8 +17,10 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -33,6 +35,8 @@ public class NodeService {
 
     private static final int DEFAULT_TOKEN_TTL_SECONDS = 10 * 60;
     private static final int MAX_TOKEN_TTL_SECONDS = 24 * 60 * 60;
+    private static final int TOOL_APPROVAL_TTL_SECONDS = 5 * 60;
+    private static final String TOOL_APPROVER_ROLE = "NODE_TOOL_APPROVER";
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final NodeConnectionRepository nodes;
@@ -42,7 +46,9 @@ public class NodeService {
     private final NodeToolApprovalRepository approvals;
     private final NodeSessionRegistry sessions;
     private final ObjectMapper objectMapper;
+    private final NodeToolRequestPolicy requestPolicy;
 
+    @Autowired
     public NodeService(
             NodeConnectionRepository nodes,
             NodeRegistrationTokenRepository tokens,
@@ -50,7 +56,8 @@ public class NodeService {
             NodeToolInvocationRepository invocations,
             NodeToolApprovalRepository approvals,
             NodeSessionRegistry sessions,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            NodeToolRequestPolicy requestPolicy) {
         this.nodes = nodes;
         this.tokens = tokens;
         this.tools = tools;
@@ -58,6 +65,27 @@ public class NodeService {
         this.approvals = approvals;
         this.sessions = sessions;
         this.objectMapper = objectMapper;
+        this.requestPolicy = requestPolicy;
+    }
+
+    /** 保留给不启动 Spring 容器的单元测试，使用与生产默认值相同的拒绝私网策略。 */
+    NodeService(
+            NodeConnectionRepository nodes,
+            NodeRegistrationTokenRepository tokens,
+            NodeToolRepository tools,
+            NodeToolInvocationRepository invocations,
+            NodeToolApprovalRepository approvals,
+            NodeSessionRegistry sessions,
+            ObjectMapper objectMapper) {
+        this(
+                nodes,
+                tokens,
+                tools,
+                invocations,
+                approvals,
+                sessions,
+                objectMapper,
+                new NodeToolRequestPolicy(BrowserPolicyProperties.secureDefaults()));
     }
 
     @Transactional
@@ -81,9 +109,9 @@ public class NodeService {
     }
 
     @Transactional
-    public RegisterNodeResult register(RegisterNodeCommand command, ActorContext actor) {
+    public RegisterNodeResult register(RegisterNodeCommand command) {
         Instant now = Instant.now();
-        NodeRegistrationTokenEntity token = tokens.findByTenantIdAndTokenHash(actor.tenantId(), sha256(command.registrationToken()))
+        NodeRegistrationTokenEntity token = tokens.findByTokenHash(sha256(command.registrationToken()))
                 .orElseThrow(() -> new IllegalArgumentException("Invalid node registration token."));
         if (token.used()) {
             throw new IllegalArgumentException("Node registration token has already been used.");
@@ -96,7 +124,7 @@ public class NodeService {
         String nodeSecret = "ns_" + randomToken(48);
         var entity = nodes.save(new NodeConnectionEntity(
                 "node_" + UUID.randomUUID(),
-                actor.tenantId(),
+                token.tenantId(),
                 command.name() == null || command.name().isBlank() ? defaultNodeName(command) : command.name().trim(),
                 command.hostname(),
                 command.osName(),
@@ -107,7 +135,7 @@ public class NodeService {
         return new RegisterNodeResult(
                 entity.id(),
                 nodeSecret,
-                "/api/v1/node-channel?nodeId=" + entity.id() + "&nodeSecret=" + nodeSecret,
+                "/api/v1/node-channel",
                 NodeConnectionView.from(entity));
     }
 
@@ -143,6 +171,22 @@ public class NodeService {
         nodes.delete(node);
     }
 
+    /**
+     * 轮换长期节点密钥，并立即断开用旧密钥建立的连接。
+     *
+     * <p>返回值中的明文只出现一次；调用方需要把它更新到节点本机配置。后端仍只保存摘要。
+     */
+    @Transactional
+    public RotateNodeSecretResult rotateSecret(String id, ActorContext actor) {
+        NodeConnectionEntity node = requireNode(id, actor);
+        String nodeSecret = "ns_" + randomToken(48);
+        Instant now = Instant.now();
+        node.rotateSecret(sha256(nodeSecret), now);
+        nodes.saveAndFlush(node);
+        sessions.disconnect(node.id(), "node credential rotated");
+        return new RotateNodeSecretResult(node.id(), nodeSecret, "/api/v1/node-channel", now);
+    }
+
     @Transactional(readOnly = true)
     public List<NodeToolView> listTools(String nodeId, ActorContext actor) {
         requireNode(nodeId, actor);
@@ -166,9 +210,15 @@ public class NodeService {
         return NodeToolView.from(tools.save(tool));
     }
 
-    @Transactional
+    @Transactional(noRollbackFor = Exception.class)
     public NodeToolCallResult callTool(String nodeId, String toolName, CallNodeToolCommand command, ActorContext actor) {
-        return executeTool(nodeId, toolName, command, actor, false, null);
+        return executeAuditedTool(
+                null,
+                "api_" + UUID.randomUUID(),
+                nodeId,
+                toolName,
+                prepareCommand(toolName, command),
+                actor);
     }
 
     @Transactional(noRollbackFor = Exception.class)
@@ -179,6 +229,22 @@ public class NodeService {
             String toolName,
             CallNodeToolCommand command,
             ActorContext actor) {
+        return executeAuditedTool(
+                runId,
+                toolCallId,
+                nodeId,
+                toolName,
+                prepareCommand(toolName, command),
+                actor);
+    }
+
+    private NodeToolCallResult executeAuditedTool(
+            String runId,
+            String toolCallId,
+            String nodeId,
+            String toolName,
+            CallNodeToolCommand preparedCommand,
+            ActorContext actor) {
         Instant now = Instant.now();
         NodeToolInvocationEntity invocation = invocations.save(new NodeToolInvocationEntity(
                 "nodeinv_" + UUID.randomUUID(),
@@ -187,16 +253,18 @@ public class NodeService {
                 toolCallId,
                 nodeId,
                 toolName,
-                toJson(command == null ? null : command.arguments()),
+                toJson(preparedCommand.arguments()),
                 now));
         invocation.start(now);
         invocations.save(invocation);
         try {
-            NodeToolCallResult result = executeTool(nodeId, toolName, command, actor, false, runId);
+            NodeToolCallResult result = executeTool(nodeId, toolName, preparedCommand, actor, false, runId);
             if ("SUCCEEDED".equalsIgnoreCase(result.status())) {
                 invocation.succeed(toJson(result.result()), Instant.now());
             } else if ("APPROVAL_REQUIRED".equalsIgnoreCase(result.status())) {
-                linkApprovalToRun(result, runId, toolCallId, actor);
+                if (runId != null && !runId.isBlank()) {
+                    linkApprovalToRun(result, runId, toolCallId, actor);
+                }
                 invocation.fail(NodeToolInvocationStatus.APPROVAL_REQUIRED, result.errorMessage(), Instant.now());
             } else {
                 invocation.fail(NodeToolInvocationStatus.FAILED, result.errorMessage(), Instant.now());
@@ -240,13 +308,39 @@ public class NodeService {
                 .filter(name -> "shell.run".equals(name) || name.startsWith("browser."))
                 .distinct()
                 .toList();
+        // 命令原文留在受权限保护的审计表中。交付门禁只需要知道它是不是可解释的测试、构建、静态检查
+        // 或 HTTP 联调，因此这里输出有限的类别，既能拒绝 `echo done`，也不会把命令参数暴露给页面。
+        List<String> commandVerifications = history.stream()
+                .filter(invocation -> "shell.run".equals(invocation.toolName()))
+                .filter(invocation -> invocation.status() == NodeToolInvocationStatus.SUCCEEDED)
+                .map(this::commandVerificationCategory)
+                .flatMap(java.util.Optional::stream)
+                .distinct()
+                .toList();
         List<String> failedTools = history.stream()
                 .filter(invocation -> invocation.status() == NodeToolInvocationStatus.FAILED)
                 .map(NodeToolInvocationEntity::toolName)
                 .distinct()
                 .toList();
+        // Trace 的绝对路径仅保留在受控审计调用记录中。交付摘要只显示经过格式校验的文件名，
+        // 既能证明可回放证据存在，也不会暴露节点用户目录或临时目录结构。
+        List<String> browserTraceArtifacts = history.stream()
+                .filter(invocation -> "browser.trace.stop".equals(invocation.toolName()))
+                .filter(invocation -> invocation.status() == NodeToolInvocationStatus.SUCCEEDED)
+                .map(this::traceArtifactName)
+                .flatMap(java.util.Optional::stream)
+                .distinct()
+                .toList();
         boolean browserVerified = verificationTools.stream().anyMatch(name -> name.startsWith("browser."));
-        return new CodingRunEvidenceView(runId, history.size(), changedFiles, verificationTools, browserVerified, failedTools);
+        return new CodingRunEvidenceView(
+                runId,
+                history.size(),
+                changedFiles,
+                verificationTools,
+                commandVerifications,
+                browserTraceArtifacts,
+                browserVerified,
+                failedTools);
     }
 
     /**
@@ -267,7 +361,7 @@ public class NodeService {
         checks.add(qualityCheck(
                 "command-verification",
                 45,
-                evidence.verificationTools().contains("shell.run"),
+                !evidence.commandVerifications().isEmpty(),
                 "至少成功执行一次构建、测试或其他命令验证。"));
         checks.add(qualityCheck(
                 "clean-tool-run",
@@ -292,6 +386,34 @@ public class NodeService {
                 .map(CodingRunQualityView.CodingQualityCheckView::explanation)
                 .toList();
         return new CodingRunQualityView(runId, score, qualityGrade(score), checks, recommendations);
+    }
+
+    /**
+     * 只将明确具有验证意图的命令计入交付证据。这个分类不是执行授权，也不是命令解析器；
+     * 它只是服务端审计层的保守标签，宁可不把未知命令计分，也不把任意成功退出的命令误当测试。
+     */
+    private java.util.Optional<String> commandVerificationCategory(NodeToolInvocationEntity invocation) {
+        Object rawCommand = readJsonMap(invocation.argumentsJson()).get("command");
+        if (!(rawCommand instanceof String command) || command.isBlank()) {
+            return java.util.Optional.empty();
+        }
+        String normalized = command.toLowerCase(Locale.ROOT).replace('\\', '/');
+        if (normalized.matches("(?s).*\\b(gradlew|mvn|npm|pnpm|yarn|bun|pytest|cargo|go|dotnet|vitest|jest).*\\b(test|tests|verify|check)\\b.*")) {
+            return java.util.Optional.of("test");
+        }
+        if (normalized.matches("(?s).*\\b(gradlew|mvn|npm|pnpm|yarn|bun|cargo|go|dotnet).*\\b(build|package|compile|assemble)\\b.*")) {
+            return java.util.Optional.of("build");
+        }
+        if (normalized.matches("(?s).*\\b(eslint|ruff|flake8|checkstyle|spotbugs|lint)\\b.*")) {
+            return java.util.Optional.of("lint");
+        }
+        if (normalized.matches("(?s).*\\b(tsc|mypy|pyright|typecheck)\\b.*")) {
+            return java.util.Optional.of("typecheck");
+        }
+        if (normalized.matches("(?s).*\\b(curl|invoke-webrequest|invoke-restmethod|httpie)\\b.*")) {
+            return java.util.Optional.of("http");
+        }
+        return java.util.Optional.empty();
     }
 
     private static CodingRunQualityView.CodingQualityCheckView qualityCheck(
@@ -338,6 +460,21 @@ public class NodeService {
             // 单条坏记录不应导致整个编码任务的交付信息无法查看。
             return java.util.Optional.empty();
         }
+    }
+
+    /** 从审计结果中提取可安全展示的 Trace 文件名。 */
+    private java.util.Optional<String> traceArtifactName(NodeToolInvocationEntity invocation) {
+        Map<String, Object> result = readJsonMap(invocation.resultJson());
+        Object rawPath = result.containsKey("artifactPath") ? result.get("artifactPath") : result.get("path");
+        if (!(rawPath instanceof String path) || path.isBlank()) {
+            return java.util.Optional.empty();
+        }
+        String normalized = path.trim().replace('\\', '/');
+        String filename = normalized.substring(normalized.lastIndexOf('/') + 1);
+        if (!filename.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,254}\\.zip")) {
+            return java.util.Optional.empty();
+        }
+        return java.util.Optional.of(filename);
     }
 
     /**
@@ -402,6 +539,7 @@ public class NodeService {
             String toolName,
             CallNodeToolCommand command,
             ActorContext actor) {
+        CallNodeToolCommand preparedCommand = prepareCommand(toolName, command);
         requireNode(nodeId, actor);
         NodeToolEntity tool = tools.findByTenantIdAndNodeIdAndName(actor.tenantId(), nodeId, toolName)
                 .orElseThrow(() -> new IllegalArgumentException("Node tool not found: " + toolName));
@@ -411,16 +549,22 @@ public class NodeService {
         if (!tool.requiresApproval()) {
             throw new IllegalArgumentException("Node tool does not require approval: " + toolName);
         }
-        int timeoutSeconds = timeoutSeconds(command);
+        // 审批记录必须保存经过服务端校验的参数，避免批准后才发现语义请求不合法。
+        int timeoutSeconds = timeoutSeconds(preparedCommand);
+        Instant now = Instant.now();
+        String argumentsJson = toJson(preparedCommand.arguments());
         NodeToolApprovalEntity approval = approvals.save(new NodeToolApprovalEntity(
                 "nodeapproval_" + UUID.randomUUID(),
                 actor.tenantId(),
                 nodeId,
                 toolName,
-                toJson(command == null || command.arguments() == null ? Map.of() : command.arguments()),
+                argumentsJson,
+                sha256(argumentsJson),
+                TOOL_APPROVER_ROLE,
                 timeoutSeconds,
                 actor.userId(),
-                Instant.now()));
+                now,
+                now.plusSeconds(TOOL_APPROVAL_TTL_SECONDS)));
         return NodeToolApprovalView.from(approval);
     }
 
@@ -443,7 +587,19 @@ public class NodeService {
         NodeToolApprovalEntity approval = approvals.findByIdAndTenantId(approvalId, actor.tenantId())
                 .orElseThrow(() -> new IllegalArgumentException("Node tool approval not found: " + approvalId));
         boolean approved = command != null && command.approved();
-        approval.decide(approved ? NodeToolApprovalStatus.APPROVED : NodeToolApprovalStatus.REJECTED, actor.userId(), Instant.now());
+        Instant now = Instant.now();
+        requireApprovalRole(actor, approval.requiredRole());
+        if (approval.expired(now)) {
+            approval.expire(actor.userId(), now);
+            approvals.saveAndFlush(approval);
+            return new NodeToolApprovalDecisionView(NodeToolApprovalView.from(approval), null);
+        }
+        if (!MessageDigest.isEqual(
+                sha256(approval.argumentsJson()).getBytes(StandardCharsets.UTF_8),
+                blankToEmpty(approval.argumentsSha256()).getBytes(StandardCharsets.UTF_8))) {
+            throw new IllegalStateException("Node tool approval arguments no longer match the approved digest.");
+        }
+        approval.decide(approved ? NodeToolApprovalStatus.APPROVED : NodeToolApprovalStatus.REJECTED, actor.userId(), now);
         // Flush the irreversible decision before dispatching so concurrent submissions cannot execute twice.
         approvals.saveAndFlush(approval);
         if (!approved) {
@@ -485,12 +641,15 @@ public class NodeService {
             ActorContext actor,
             boolean bypassApproval,
             String executionSessionId) {
+        command = prepareCommand(toolName, command);
         NodeConnectionEntity node = requireNode(nodeId, actor);
         NodeToolEntity tool = tools.findByTenantIdAndNodeIdAndName(actor.tenantId(), nodeId, toolName)
                 .orElseThrow(() -> new IllegalArgumentException("Node tool not found: " + toolName));
         if (!tool.enabled()) {
             throw new IllegalArgumentException("Node tool is disabled: " + toolName);
         }
+        // 所有入口（直接调用、编码运行、审批恢复）都在服务端经过同一套规则。
+        // 客户端永远不会自行决定某个桌面或系统操作是否可以执行。
         if (tool.requiresApproval() && !bypassApproval) {
             NodeToolApprovalView approval = requestToolApproval(nodeId, toolName, command, actor);
             return new NodeToolCallResult(
@@ -518,6 +677,28 @@ public class NodeService {
                 command == null ? null : command.arguments(),
                 Duration.ofSeconds(timeoutSeconds),
                 executionSessionId);
+    }
+
+    private CallNodeToolCommand prepareCommand(String toolName, CallNodeToolCommand command) {
+        Map<String, Object> arguments = requestPolicy.prepare(
+                toolName,
+                command == null ? null : command.arguments());
+        return new CallNodeToolCommand(arguments, command == null ? null : command.timeoutSeconds());
+    }
+
+    private static void requireApprovalRole(ActorContext actor, String requiredRole) {
+        String role = blankToEmpty(requiredRole);
+        if (role.isBlank()) {
+            role = TOOL_APPROVER_ROLE;
+        }
+        if (!actor.roles().contains(role) && !actor.roles().contains("LOCAL_USER")) {
+            throw new org.springframework.security.access.AccessDeniedException(
+                    "Actor does not have the required node approval role: " + role);
+        }
+    }
+
+    private static String blankToEmpty(String value) {
+        return value == null ? "" : value;
     }
 
     private void linkApprovalToRun(NodeToolCallResult result, String runId, String toolCallId, ActorContext actor) {
@@ -639,7 +820,7 @@ public class NodeService {
     }
 
     /**
-     * WebSocket 握手校验：当前第一版使用 nodeId + nodeSecret。
+     * WebSocket 握手校验：nodeId 和 nodeSecret 只能来自握手请求头，不能出现在 URL query。
      *
      * <p>生产版可以升级为 HMAC(timestamp + nonce)，避免密钥出现在 URL 中；第一版先保证协议闭环。
      */
@@ -679,24 +860,32 @@ public class NodeService {
 
     @Transactional
     public List<NodeToolView> saveCapabilities(String nodeId, List<NodeCapabilityPayload> capabilities) {
+        return saveCapabilities(nodeId, null, Map.of(), java.util.Set.of(), capabilities);
+    }
+
+    @Transactional
+    public List<NodeToolView> saveCapabilities(
+            String nodeId,
+            String capabilityRevision,
+            Map<String, String> runtimeVersions,
+            java.util.Set<String> features,
+            List<NodeCapabilityPayload> capabilities) {
         NodeConnectionEntity node = nodes.findById(nodeId)
                 .orElseThrow(() -> new IllegalArgumentException("Node not found: " + nodeId));
         if (capabilities == null) {
             return listToolsForNodeEntity(node);
         }
         Instant now = Instant.now();
+        node.updateCapabilitySnapshot(capabilityRevision, runtimeVersions, features, now);
+        nodes.save(node);
         for (NodeCapabilityPayload capability : capabilities) {
             if (capability.name() == null || capability.name().isBlank()) {
                 continue;
             }
             String name = capability.name().trim();
-            RiskLevel risk = capability.riskLevel() == null ? RiskLevel.MEDIUM : capability.riskLevel();
-            boolean requiresApproval = capability.requiresApproval() != null
-                    ? capability.requiresApproval()
-                    : risk == RiskLevel.HIGH;
-            boolean defaultEnabled = capability.enabled() != null
-                    ? capability.enabled()
-                    : risk != RiskLevel.HIGH;
+            // 风险、审批和默认启用状态只由服务端策略目录产生。不能把节点上报的
+            // 元数据当成权限来源，否则被篡改或过期的客户端可能扩大权限。
+            NodeToolPolicy policy = NodeToolPolicyCatalog.policyFor(name);
             String schemaJson = toJson(capability.inputSchema());
             NodeToolEntity tool = tools.findByTenantIdAndNodeIdAndName(node.tenantId(), node.id(), name)
                     .orElseGet(() -> new NodeToolEntity(
@@ -704,13 +893,14 @@ public class NodeService {
                             node.id(),
                             name,
                             capability.description(),
-                            risk,
-                            defaultEnabled,
-                            requiresApproval,
+                            policy.riskLevel(),
+                            policy.enabledByDefault(),
+                            policy.requiresApproval(),
                             schemaJson,
                             now));
             // Reconnection reports capabilities again. Preserve policy set through the management API.
-            tool.refreshCapability(capability.description(), risk, schemaJson, now);
+            tool.refreshCapability(
+                    capability.description(), policy.riskLevel(), schemaJson, capability.version(), now);
             tools.save(tool);
         }
         return listToolsForNodeEntity(node);
