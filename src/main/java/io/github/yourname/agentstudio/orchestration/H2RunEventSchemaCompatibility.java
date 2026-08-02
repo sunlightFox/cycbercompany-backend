@@ -32,6 +32,8 @@ class H2RunEventSchemaCompatibility implements ApplicationRunner {
             // constraint, which otherwise makes an approval suspension fail.
             dropCheckConstraints("agent_run");
             widenLegacyRunStatusEnum();
+            ensureNodeConnectionFencingToken();
+            ensureNodeToolInvocationSchema();
         } catch (Exception ignored) {
             // A missing table or a database-specific information schema must not
             // prevent application startup; the normal ORM schema creation still applies.
@@ -64,5 +66,58 @@ class H2RunEventSchemaCompatibility implements ApplicationRunner {
             // H2 does not extend that type when Java enum constants are added.
             jdbc.execute("alter table agent_run alter column status varchar(255)");
         }
+    }
+
+    private void ensureNodeConnectionFencingToken() {
+        ensureColumn("node_connection", "fencing_token", "bigint default 0 not null");
+    }
+
+    private void ensureNodeToolInvocationSchema() {
+        // These fields were added after the first local H2 databases were created.
+        // Keep the migration explicit so old audit rows remain readable and new
+        // dispatches can be persisted without requiring users to delete data.
+        ensureColumn("node_tool_invocation", "dispatch_attempt", "int default 0 not null");
+        ensureColumn("node_tool_invocation", "arguments_digest", "varchar(128)");
+        ensureColumn("node_tool_invocation", "idempotency_key", "varchar(255)");
+        ensureColumn("node_tool_invocation", "policy_revision", "varchar(255)");
+        ensureColumn("node_tool_invocation", "result_digest", "varchar(128)");
+        ensureColumn("node_tool_invocation", "deadline_at", "timestamp");
+        ensureColumn("node_tool_invocation", "accepted_at", "timestamp");
+        ensureColumn("node_tool_invocation", "started_at", "timestamp");
+        ensureColumn("node_tool_invocation", "finished_at", "timestamp");
+
+        List<String> dataTypes = jdbc.queryForList(
+                """
+                select data_type from information_schema.columns
+                where upper(table_name) = 'NODE_TOOL_INVOCATION' and upper(column_name) = 'STATUS'
+                """,
+                String.class);
+        if (dataTypes.stream().anyMatch("ENUM"::equalsIgnoreCase)) {
+            jdbc.execute("alter table node_tool_invocation alter column status varchar(255)");
+        }
+    }
+
+    private void ensureColumn(String tableName, String columnName, String definition) {
+        if (!tableExists(tableName)) {
+            return;
+        }
+        List<String> columns = jdbc.queryForList(
+                """
+                select column_name from information_schema.columns
+                where upper(table_name) = ? and upper(column_name) = ?
+                """,
+                String.class,
+                tableName.toUpperCase(java.util.Locale.ROOT),
+                columnName.toUpperCase(java.util.Locale.ROOT));
+        if (columns.isEmpty()) {
+            jdbc.execute("alter table " + tableName + " add column " + columnName + " " + definition);
+        }
+    }
+
+    private boolean tableExists(String tableName) {
+        return !jdbc.queryForList(
+                "select table_name from information_schema.tables where upper(table_name) = ?",
+                String.class,
+                tableName.toUpperCase(java.util.Locale.ROOT)).isEmpty();
     }
 }

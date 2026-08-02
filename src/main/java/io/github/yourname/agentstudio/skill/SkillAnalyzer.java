@@ -64,6 +64,15 @@ public class SkillAnalyzer {
         if (!scripts.isEmpty()) {
             features = new ArrayList<>(features);
             features.add("skill.script.runtime.v1");
+            // Only runtimes supported by the node-side Docker runner are eligible for execution.
+            for (String script : scripts) {
+                String feature = scriptFeature(script);
+                if (feature == null) {
+                    warnings.add("Unsupported script runtime: " + script);
+                } else {
+                    features.add(feature);
+                }
+            }
         }
         String network = text(nested(frontmatter, "requirements", "network"));
         int level = scripts.isEmpty() ? (resources.isEmpty() ? 1 : 2) : 3;
@@ -127,10 +136,9 @@ public class SkillAnalyzer {
         for (String script : scripts) {
             String lower = script.toLowerCase(Locale.ROOT);
             if (lower.endsWith(".py")) addRuntime(result, "python", null, "script extension");
-            if (lower.endsWith(".js") || lower.endsWith(".mjs") || lower.endsWith(".ts")) {
+            if (lower.endsWith(".js") || lower.endsWith(".mjs")) {
                 addRuntime(result, "node", null, "script extension");
             }
-            if (lower.endsWith(".ps1")) addRuntime(result, "powershell", null, "script extension");
             if (lower.endsWith(".sh")) addRuntime(result, "shell", null, "script extension");
         }
         return List.copyOf(result.values());
@@ -152,6 +160,14 @@ public class SkillAnalyzer {
             String constraint,
             String source) {
         result.putIfAbsent(name, new SkillAnalysis.RuntimeRequirement(name, constraint, source));
+    }
+
+    private static String scriptFeature(String script) {
+        String lower = script.toLowerCase(Locale.ROOT);
+        if (lower.endsWith(".py")) return "skill.script.python.v1";
+        if (lower.endsWith(".js") || lower.endsWith(".mjs")) return "skill.script.node.v1";
+        if (lower.endsWith(".sh")) return "skill.script.shell.v1";
+        return null;
     }
 
     private static Object nested(Map<String, Object> root, String objectName, String fieldName) {

@@ -2,11 +2,16 @@ package io.github.yourname.agentstudio.node;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.HashMap;
+import java.util.List;
+import java.time.Instant;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
@@ -55,5 +60,54 @@ class NodeChannelWebSocketHandlerTest {
         handler.handleTextMessage(session, new TextMessage(payload));
 
         verify(session).close(CloseStatus.TOO_BIG_TO_PROCESS);
+    }
+
+    @Test
+    void requestsJournalStatusAfterAcceptingAReconnectedNodeWithoutReplayingInvocation() throws Exception {
+        NodeService nodes = mock(NodeService.class);
+        NodeSessionRegistry sessions = mock(NodeSessionRegistry.class);
+        WebSocketSession session = mock(WebSocketSession.class);
+        HashMap<String, Object> attributes = new HashMap<>();
+        when(session.getAttributes()).thenReturn(attributes);
+        when(nodes.authenticateNode("node-123", "secret")).thenReturn(new NodeConnectionEntity(
+                "node-123", "tenant-a", "local", "host", "Windows", "amd64", "test", "hash", Instant.now()));
+        when(nodes.reconciliationRequests("node-123", 100)).thenReturn(List.of(
+                new NodeService.NodeInvocationReconciliation("inv-1", "fs.write", "sha256:args", 2)));
+
+        NodeChannelWebSocketHandler handler = new NodeChannelWebSocketHandler(nodes, sessions, new ObjectMapper());
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(NodeChannelWebSocketHandler.NODE_ID_HEADER, "node-123");
+        headers.setBearerAuth("secret");
+        when(session.getHandshakeHeaders()).thenReturn(headers);
+
+        handler.afterConnectionEstablished(session);
+
+        verify(sessions).sendControl("node-123", "node.accepted", null, java.util.Map.of(
+                "nodeId", "node-123", "heartbeatIntervalSeconds", 20, "fencingToken", 0L));
+        verify(sessions).sendControl("node-123", "tool.status", "inv-1", java.util.Map.of(
+                "invocationId", "inv-1", "toolName", "fs.write", "argumentsDigest", "sha256:args", "attempt", 2));
+        verify(sessions, times(0)).sendControl("node-123", "tool.invoke", "inv-1", java.util.Map.of());
+    }
+
+    @Test
+    void persistsAReconciledTerminalStatusWhenNoInMemoryCallIsWaiting() throws Exception {
+        NodeService nodes = mock(NodeService.class);
+        NodeSessionRegistry sessions = mock(NodeSessionRegistry.class);
+        WebSocketSession session = mock(WebSocketSession.class);
+        HashMap<String, Object> attributes = new HashMap<>();
+        attributes.put("nodeId", "node-123");
+        when(session.getAttributes()).thenReturn(attributes);
+        when(sessions.acceptInbound(eq("node-123"), eq(session), any())).thenReturn(true);
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+        NodeProtocolEnvelope envelope = new NodeProtocolEnvelope(
+                "1.1", "tool.status.result", "msg-1", "session-1", 1, "inv-1", Instant.now(), null, null, 1,
+                mapper.valueToTree(java.util.Map.of(
+                        "invocationId", "inv-1", "toolName", "fs.write", "argumentsDigest", "sha256:args",
+                        "attempt", 2, "status", "SUCCEEDED", "result", java.util.Map.of("written", true))));
+        NodeChannelWebSocketHandler handler = new NodeChannelWebSocketHandler(nodes, sessions, mapper);
+
+        handler.handleTextMessage(session, new TextMessage(mapper.writeValueAsString(envelope)));
+
+        verify(nodes).reconcileInvocationResult(any(NodeToolCallResult.class), eq("fs.write"), eq("sha256:args"), eq(2));
     }
 }

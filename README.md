@@ -13,6 +13,23 @@ sandbox/container/VM before running untrusted repositories or third-party Skill
 scripts. Remote deployment also requires authenticated HTTPS/WSS configuration;
 unsafe remote-listening settings are rejected at startup.
 
+## Trusted Sandbox Routing
+
+In `NODES_ONLY` mode, an administrator can mark a registered node as `SANDBOX`
+and attach up to 16 lowercase scheduling labels (for example `linux`, `java-21`,
+or `playwright`) through `PATCH /api/v1/nodes/{id}`. A run may then provide
+`nodeId: "auto"`, or omit `nodeId` and provide `nodeLabels`, to select an online
+sandbox whose labels and explicitly requested node tools match. The resolved node
+ID is saved in the immutable Run snapshot. Equivalent matching sandboxes are
+selected in-process by round robin for new Runs; a restart may reset the cursor
+but never changes the node already pinned to an existing Run.
+
+`MANAGED_LOCAL` and ordinary `REGISTERED` nodes are deliberately excluded from
+this automatic pool. System/desktop actions keep the stricter behavior: if more
+than one personal computer is available, the caller must select one explicitly.
+Nodes cannot declare themselves trusted through heartbeats or capability reports;
+only the management API can assign `SANDBOX` and its labels.
+
 ## What Is Implemented
 
 - Spring Boot 4.1 backend with Gradle Wrapper.
@@ -32,6 +49,31 @@ unsafe remote-listening settings are rejected at startup.
 - 统一 `ToolRouter`：后端、MCP 与节点工具使用稳定 binding，Agent 和 Run 权限只取交集。
 - 不可变 `RunSpec`：Run 入队前固定 Agent 提示词、Skill、工具、节点、Actor 和策略摘要。
 - Skill 兼容预检：缺失工具、运行时或节点 feature 时，在保存 Run 和调用模型前明确失败。
+- Skill Bundle 按 Release SHA-256 确定性生成，节点下载后同时校验 ZIP 摘要与解压目录树摘要。
+- `skill.resource.read` 只读取分析阶段列入白名单的 references/templates/assets；脚本入口固定在不可变 binding 中。
+- 第三方 Skill 脚本默认不执行；仅在显式启用 Docker Runtime 且本机镜像已存在时，才在禁网、只读、限额容器中执行。
+- 浏览器截图和 Playwright Trace 通过节点认证的 Artifact HTTP API 上传，WebSocket 只返回摘要锁定的下载引用。
+- Node browser actions include snapshot refs, multi-tab switching, bounded download/upload, hover, keyboard press, native select selection, and explicit alert/confirm/prompt handling.
+- After a browser action that can change page state, the delivery gate requires a replayable Trace and a successful `browser.verify` performed after the final interaction; opening a page, taking a snapshot, or exporting a Trace alone is not treated as functional verification.
+- `browser.verify` can additionally assert an observed response status and API path (`responseStatus` with optional `urlContains`, or `responseUrlContains`). Response assertions are scoped to requests observed after the latest page action, so an old successful request cannot verify a later interaction. The node keeps only bounded response metadata and strips URL query parameters; it never exposes response bodies, headers, cookies, or credentials.
+- `browser.wait_response` waits for a matching status and/or query-free URL after the latest page action, making asynchronous frontend-to-backend checks deterministic. It returns only bounded response metadata; `browser.verify` remains the final auditable delivery assertion.
+- If the task explicitly asks for a full-stack / frontend-backend integration test (including `前后端` or `联调`), the delivery gate also requires a passed post-interaction `responseStatus` or `responseUrlContains` check. A visible success message alone cannot finish that task.
+- Windows system mode exposes approval-protected desktop window snapshots, UI Automation control metadata/actions, keyboard input, and bounded text clipboard operations.
+- Window activation and keyboard input require both `processId` and the latest `snapshotRevision` from `system.desktop.session.snapshot`; guessed or stale process targets are rejected locally before Windows receives input.
+- Desktop UI Automation snapshots issue node-local `ref` values plus a monotonic `snapshotRevision`. Click and type require both values, invalidate them after any attempted action, and reject a live UI Automation lookup unless it has exactly one match; this prevents a stale or ambiguous text selector from silently targeting another control.
+- `system.desktop.screenshot` captures the current primary display only after approval. It creates a PNG Artifact in the node-controlled artifact root; the existing artifact uploader sends an immutable reference and removes the node-local file before the tool result crosses WebSocket.
+- Desktop UI Automation also exposes an approval-protected read-only verification action for confirming a target control still exists and is enabled after interaction.
+- The delivery gate requires `system.desktop.ui.verify` or an approved `system.desktop.ui.read_value` after the final approved UI Automation click or type. Evidence recorded before a later click/type cannot prove the resulting Windows UI state.
+- For approved desktop form checks, `system.desktop.ui.read_value` confirms one bounded non-password `ValuePattern` value after typing. It rejects password controls locally and remains approval-protected because ordinary field values may still be sensitive.
+- Coding navigation includes bounded `project.symbols` declaration indexing and `project.references` candidate-usage lookup for common source languages; both are read-only lexical aids and require `fs.read` review before edits.
+- `fs.write` and `fs.apply_patch` stage complete replacement content beside the target file before moving it into place; a replacement failure therefore preserves the original source instead of truncating it.
+- Build feedback includes read-only `project.diagnose` parsing for common compiler/test formats, plus `process.logs` for bounded stdout/stderr tails from a managed development process.
+- `process.wait_http` provides bounded readiness evidence for a node-managed local development server. It performs only a redirect-disabled GET to literal `localhost`, `127.0.0.1`, or `::1`, discards the response body, and rejects credentials, query parameters, fragments, and remote addresses.
+- Coding delivery includes read-only `git.review`: a bounded staged/unstaged/untracked file summary that requires each changed path to be inspected with `git.diff` or `fs.read`; `git.diff` supports `staged=true` for the staged diff and it never substitutes for running tests.
+- The server-side delivery gate accepts code changes only when the final write is followed by `git.review`, review evidence for every changed path, and a successful build/test/lint/typecheck/HTTP verification. Earlier reads or reviews cannot prove the final state.
+- Persistent orchestration checkpoints are queryable through `GET /api/v1/runs/{id}/workflow` without exposing raw tool arguments or page contents.
+- Node reconnect recovery reconciles only persisted journal status by invocation ID, tool name, argument digest, and dispatch attempt. It never replays an uncertain side-effecting tool call.
+- `POST /api/v1/runs/{id}/reconcile` lets an operator request the same safe Journal status check for one Run while a node is online; it sends only `tool.status` and reports unavailable nodes without changing command state.
 - Local security adapter that creates a trusted `ActorContext` from request headers.
 - Tests using an isolated in-memory H2 database.
 
@@ -71,6 +113,20 @@ Health check:
 ```powershell
 Invoke-RestMethod http://localhost:8080/actuator/health
 ```
+
+### Personal local mode
+
+Personal local is the default execution mode. Start it through the host-side launcher so
+the local companion is registered automatically and can act on the signed-in user's desktop:
+
+```powershell
+.\scripts\start-personal-local.ps1 -Workspace D:\work\my-project
+```
+
+The companion remains a separate process and connects to the backend through the normal node
+protocol. Do not add it to Docker Compose: a container would operate on the container filesystem,
+not the user's desktop. Switching the execution mode in the UI exposes registered-node selection
+and management; the default personal-local UI does not expose node terminology.
 
 ## Frontend Repository
 
@@ -112,6 +168,8 @@ POST /api/v1/web-search
 
 POST /api/v1/runs
 GET  /api/v1/runs/{id}
+POST /api/v1/runs/{id}/reconcile
+GET  /api/v1/runs/{id}/workflow
 GET  /api/v1/runs/{id}/events
 GET  /api/v1/conversations/{id}/queue
 ```
@@ -129,6 +187,18 @@ for tool approval keeps its queue slot, so later messages never see a partially 
 Cancelling a pending run removes only that item; cancelling an approval-paused run releases the
 next queued message.
 
+`GET /api/v1/runs/{id}/workflow` returns the persisted orchestration checkpoint: current phase,
+workspace scope, bounded plan summary, recent tool name, success/failure counters, and the last
+bounded error. Tool arguments, secrets, raw page contents, and long command output are intentionally
+excluded from this control-plane view. Its `executionTask` field also reports the safe worker summary
+(`READY`/`RUNNING`/`WAITING_APPROVAL`/terminal status, attempt count, and lease expiry) without
+returning the private lease token or raw worker errors. `UNKNOWN` is exposed as `recoveryRequired=true`;
+it means a side-effecting worker outcome needs reconciliation and must not be replayed automatically.
+When its node is available, `POST /api/v1/runs/{id}/reconcile` requests a fresh `tool.status` from
+the node Journal. The response contains only invocation ID, node ID, tool name, persisted status,
+and whether the request was sent; it never includes raw arguments or results, and it never retries
+the original tool call.
+
 ## Skill 版本与 Run 快照
 
 `data/skills` 保存当前活动安装，方便用户查看、升级、启用或禁用 Skill；
@@ -139,8 +209,33 @@ worker 执行时只根据 Run 中保存的绑定读取不可变 Release。因此
 升级、修改或卸载，旧 Run 仍使用原来的 `SKILL.md`，不会在后台静默改变行为。Release
 读取前会再次计算摘要，被篡改的内容会直接拒绝。
 
-当前 P0 只支持指令型 Skill：`SKILL.md` 会进入模型上下文，但 `scripts/` 中的文件绝不会
-自动执行。脚本执行要等后续 Skill Runtime 完成 Bundle 校验、运行时预检、网络策略和审批。
+`SKILL.md` 会进入模型上下文；文本资源通过 `skill.resource.read` 按需读取。脚本不会因为安装
+Skill 而自动执行，也不会静默下载依赖。只有同时满足以下条件时才会暴露 `skill.script.run`：
+
+1. 设置 `AGENT_STUDIO_SKILL_RUNTIME=docker`；
+2. 节点本机已有对应运行时镜像；
+3. Skill 兼容预检通过；
+4. 用户批准绑定了具体 Release、脚本入口、参数摘要和节点的调用。
+
+Docker Runtime 固定禁用网络、使用只读根文件系统和只读 Bundle，并限制 CPU、内存、PID、
+执行时间与输出大小。第一版支持 Python、JavaScript/MJS 和 Shell；不会隐式 `docker pull`。
+可通过 `AGENT_STUDIO_SKILL_PYTHON_IMAGE`、`AGENT_STUDIO_SKILL_NODE_IMAGE` 和
+`AGENT_STUDIO_SKILL_SHELL_IMAGE` 覆盖默认镜像。
+
+节点将 Bundle 缓存和每个 Run 的可写 workspace 放在 `%USERPROFILE%/.agent-studio-node/data`，
+不放入用户项目目录。缓存命中时仍会重新计算摘要；缓存或 Release 被篡改后执行直接失败。
+
+## Skill Bundle 与 Artifact API
+
+```text
+GET  /api/v1/node/skill-bundles/{skillId}/{releaseHex}
+POST /api/v1/node/artifacts
+GET  /api/v1/artifacts/{artifactId}
+```
+
+前两个节点接口使用 `X-Agent-Studio-Node-Id` 和 `Authorization: Bearer <nodeSecret>`；
+用户下载 Artifact 时按当前认证 Actor 的 tenant 校验。截图、Trace 等文件上传成功后，节点删除
+本地临时文件，WebSocket 结果移除 `artifactPath`，只保留 `artifactId/digest/size/downloadUrl`。
 
 ## ToolRouter、RunSpec 与兼容预检
 

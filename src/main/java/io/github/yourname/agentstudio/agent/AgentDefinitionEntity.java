@@ -62,4 +62,10 @@ public class AgentDefinitionEntity {
         this.systemPrompt = systemPrompt;
         this.toolAllowList = toolAllowList;
     }
+
+    public void updateBasicInfo(String name, String description, String systemPrompt) {
+        this.name = name;
+        this.description = description;
+        this.systemPrompt = systemPrompt;
+    }
 }

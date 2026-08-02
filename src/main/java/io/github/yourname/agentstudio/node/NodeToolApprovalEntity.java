@@ -21,6 +21,8 @@ public class NodeToolApprovalEntity {
     private String toolName;
     private String runId;
     private String toolCallId;
+    /** 绑定最初创建的审计调用，审批恢复时不得重新生成第二个 invocationId。 */
+    private String invocationId;
     @Lob
     private String argumentsJson;
     private String argumentsSha256;
@@ -130,12 +132,20 @@ public class NodeToolApprovalEntity {
         this.toolCallId = toolCallId;
     }
 
+    public void linkInvocation(String invocationId) {
+        if (status != NodeToolApprovalStatus.PENDING) {
+            throw new NodeToolApprovalConflictException("Cannot link a decided approval to an invocation: " + id);
+        }
+        this.invocationId = invocationId;
+    }
+
     public String id() { return id; }
     public String tenantId() { return tenantId; }
     public String nodeId() { return nodeId; }
     public String toolName() { return toolName; }
     public String runId() { return runId; }
     public String toolCallId() { return toolCallId; }
+    public String invocationId() { return invocationId; }
     public String argumentsJson() { return argumentsJson; }
     public String argumentsSha256() { return argumentsSha256; }
     public String requiredRole() { return requiredRole; }

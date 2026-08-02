@@ -43,7 +43,7 @@ class KnowledgeQueryServiceTest {
                 .thenReturn(List.of(profile));
         when(embeddings.embedForSearch(any())).thenReturn(java.util.Optional.empty());
 
-        EvidenceBundle result = new KnowledgeQueryService(bases, documents, chunks, embeddings, null)
+        EvidenceBundle result = new KnowledgeQueryService(bases, documents, chunks, embeddings, null, mock(KnowledgeDocumentRepository.class))
                 .search(new KnowledgeSearchCommand(List.of(), "武一凡年龄", 5), ACTOR);
 
         assertThat(result.evidence()).singleElement().satisfies(evidence -> {
@@ -65,7 +65,7 @@ class KnowledgeQueryServiceTest {
                 mock(KnowledgeDocumentRepository.class),
                 mock(KnowledgeChunkRepository.class),
                 mock(KnowledgeEmbeddingService.class),
-                null).resolveKnowledgeBaseIds(List.of(" resume ", "resume"), ACTOR);
+                null, mock(KnowledgeDocumentRepository.class)).resolveKnowledgeBaseIds(List.of(" resume ", "resume"), ACTOR);
 
         assertThat(ids).containsExactly("resume");
         verify(bases).findByIdAndTenantId("resume", ACTOR.tenantId());
@@ -80,7 +80,8 @@ class KnowledgeQueryServiceTest {
                 mock(KnowledgeDocumentRepository.class),
                 mock(KnowledgeChunkRepository.class),
                 mock(KnowledgeEmbeddingService.class),
-                null);
+                null,
+                mock(KnowledgeDocumentRepository.class));
 
         assertThatThrownBy(() -> service.resolveKnowledgeBaseIds(List.of("other-tenant-base"), ACTOR))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -102,7 +103,8 @@ class KnowledgeQueryServiceTest {
         when(embeddings.vectorWeight()).thenReturn(1.0);
 
         EvidenceBundle result = new KnowledgeQueryService(
-                bases, mock(KnowledgeDocumentRepository.class), chunks, embeddings, null)
+                bases, mock(KnowledgeDocumentRepository.class), chunks, embeddings, null,
+                mock(KnowledgeDocumentRepository.class))
                 .search(new KnowledgeSearchCommand(List.of(base.id()), "needle", 5), ACTOR);
 
         assertThat(result.evidence()).extracting(EvidenceBundle.Evidence::documentId)
@@ -124,7 +126,8 @@ class KnowledgeQueryServiceTest {
         when(embeddings.vectorWeight()).thenReturn(1.0);
 
         EvidenceBundle result = new KnowledgeQueryService(
-                bases, mock(KnowledgeDocumentRepository.class), chunks, embeddings, null)
+                bases, mock(KnowledgeDocumentRepository.class), chunks, embeddings, null,
+                mock(KnowledgeDocumentRepository.class))
                 .search(new KnowledgeSearchCommand(List.of(base.id()), "needle", 5), ACTOR);
 
         assertThat(result.evidence().getFirst().documentId()).isEqualTo("doc-hybrid");

@@ -6,15 +6,20 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.FileVisitOption;
 import java.nio.file.Files;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /** File operations constrained to a node's configured workspace. */
 public final class FileTool {
@@ -30,18 +35,25 @@ public final class FileTool {
 
     private final Path workspaceRoot;
     private final boolean systemAccess;
+    private final PatchFileMover patchFileMover;
 
     public FileTool(Path workspaceRoot) {
         this(workspaceRoot, false);
     }
 
     public FileTool(Path workspaceRoot, boolean systemAccess) {
+        this(workspaceRoot, systemAccess, FileTool::moveReplacement);
+    }
+
+    /** 此构造器仅供同包测试替换文件移动行为，验证 I/O 失败时的恢复流程。 */
+    FileTool(Path workspaceRoot, boolean systemAccess, PatchFileMover patchFileMover) {
         try {
             if (workspaceRoot == null || !Files.isDirectory(workspaceRoot)) {
                 throw new IllegalArgumentException("Workspace must be an existing directory: " + workspaceRoot);
             }
             this.workspaceRoot = workspaceRoot.toRealPath();
             this.systemAccess = systemAccess;
+            this.patchFileMover = Objects.requireNonNull(patchFileMover, "patchFileMover");
         } catch (IOException ex) {
             throw new IllegalArgumentException("Cannot resolve workspace: " + workspaceRoot, ex);
         }
@@ -89,6 +101,9 @@ public final class FileTool {
             return ToolExecutionResult.success(Map.of(
                     "path", workspaceRelative(file),
                     "content", content,
+                    // 摘要是模型下一次修改时的并发前置条件：读完文件后若被用户或另一个
+                    // Agent 改过，写入/补丁会明确失败，而不是悄悄覆盖新内容。
+                    "digest", sha256(Files.readAllBytes(file)),
                     "sizeBytes", size,
                     "truncated", truncated));
         } catch (Exception ex) {
@@ -180,12 +195,20 @@ public final class FileTool {
         try {
             Path file = resolveForWrite(value(arguments, "path"));
             boolean existed = Files.exists(file);
-            Files.createDirectories(file.getParent());
-            Files.writeString(file, content, StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            String expectedDigest = value(arguments, "expectedDigest");
+            if (expectedDigest != null && !expectedDigest.isBlank()) {
+                if (!existed) {
+                    return ToolExecutionResult.failure("fs.write expected an existing file with digest " + expectedDigest);
+                }
+                requireDigest(file, expectedDigest);
+            }
+            // 先把完整内容写入目标文件同目录的临时文件，再一次替换目标文件。
+            // 与“直接 TRUNCATE_EXISTING”相比，写盘失败时原文件仍然存在，不会留下半截源码。
+            writeTextStaged(file, content, ".agent-studio-write-");
             return ToolExecutionResult.success(Map.of(
                     "path", workspaceRelative(file),
                     "created", !existed,
+                    "digest", sha256(Files.readAllBytes(file)),
                     "sizeBytes", Files.size(file)));
         } catch (Exception ex) {
             return ToolExecutionResult.failure("fs.write failed: " + message(ex));
@@ -207,6 +230,10 @@ public final class FileTool {
             if (!Files.isRegularFile(file)) {
                 return ToolExecutionResult.failure("fs.apply_patch requires a regular file: " + file);
             }
+            String expectedDigest = value(arguments, "expectedDigest");
+            if (expectedDigest != null && !expectedDigest.isBlank()) {
+                requireDigest(file, expectedDigest);
+            }
             String original = Files.readString(file, StandardCharsets.UTF_8);
             int first = original.indexOf(expected);
             if (first < 0) {
@@ -216,15 +243,192 @@ public final class FileTool {
                 return ToolExecutionResult.failure("Patch target is ambiguous in " + file);
             }
             String patched = original.substring(0, first) + replacement + original.substring(first + expected.length());
-            Files.writeString(file, patched, StandardCharsets.UTF_8,
-                    StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            // 单文件补丁与批量补丁使用相同的“先暂存、后替换”原则，不能因为调用入口不同
+            // 就退化成直接清空原文件再写入。
+            writeTextStaged(file, patched, ".agent-studio-patch-");
             return ToolExecutionResult.success(Map.of(
                     "path", workspaceRelative(file),
                     "replacements", 1,
+                    "digest", sha256(Files.readAllBytes(file)),
                     "sizeBytes", Files.size(file)));
         } catch (Exception ex) {
             return ToolExecutionResult.failure("fs.apply_patch failed: " + message(ex));
         }
+    }
+
+    /**
+     * 先验证全部文件，再统一写入多文件补丁。
+     *
+     * <p>每个 change 都是 {path, expected, replacement, expectedDigest?}。任何一个文件
+     * 发生摘要冲突、匹配缺失或匹配歧义时，方法在写入前失败，避免模型把半个重构提交到
+     * 工作区。文件系统级移动仍可能因突发 I/O 失败中断，因此返回结果只在所有写入成功后
+     * 标记成功，调用方必须按返回摘要继续验证。
+     */
+    public ToolExecutionResult applyPatchBatch(Map<String, Object> arguments) {
+        Object rawChanges = arguments == null ? null : arguments.get("changes");
+        if (!(rawChanges instanceof List<?> requested) || requested.isEmpty()) {
+            return ToolExecutionResult.failure("fs.apply_patch_batch requires a non-empty changes array.");
+        }
+        if (requested.size() > 40) {
+            return ToolExecutionResult.failure("fs.apply_patch_batch accepts at most 40 changes.");
+        }
+        try {
+            Map<Path, String> originalContents = new LinkedHashMap<>();
+            Map<Path, String> patchedContents = new LinkedHashMap<>();
+            for (Object rawChange : requested) {
+                if (!(rawChange instanceof Map<?, ?> map)) {
+                    return ToolExecutionResult.failure("Each batch change must be an object.");
+                }
+                String path = stringValue(map.get("path"));
+                String expected = stringValue(map.get("expected"));
+                if (!map.containsKey("replacement") || map.get("replacement") == null) {
+                    return ToolExecutionResult.failure("Each batch change requires replacement (it may be empty).");
+                }
+                String replacement = stringValue(map.get("replacement"));
+                String expectedDigest = stringValue(map.get("expectedDigest"));
+                if (path.isBlank() || expected.isEmpty()) {
+                    return ToolExecutionResult.failure("Each batch change requires non-empty path and expected.");
+                }
+                Path file = resolveExisting(path, false);
+                if (!Files.isRegularFile(file)) {
+                    return ToolExecutionResult.failure("Batch patch paths must be regular files: " + path);
+                }
+                if (!expectedDigest.isBlank()) {
+                    requireDigest(file, expectedDigest);
+                }
+                // 同一个文件允许在本批次中连续修改多处：后一个补丁基于前一个补丁的内存结果，
+                // 但所有内容仍会在真正写盘前完成唯一匹配验证。
+                String current = patchedContents.get(file);
+                if (current == null) {
+                    current = Files.readString(file, StandardCharsets.UTF_8);
+                    originalContents.put(file, current);
+                }
+                int first = current.indexOf(expected);
+                if (first < 0 || current.indexOf(expected, first + expected.length()) >= 0) {
+                    return ToolExecutionResult.failure("Batch patch target must occur exactly once: " + path);
+                }
+                patchedContents.put(file, current.substring(0, first) + replacement + current.substring(first + expected.length()));
+            }
+
+            // 所有逻辑前置条件都已通过，随后才执行写入；使用同目录临时文件降低崩溃时
+            // 留下截断目标文件的风险。
+            Map<Path, Path> stagedFiles = new LinkedHashMap<>();
+            Map<Path, Path> backups = new LinkedHashMap<>();
+            List<Path> replacedFiles = new ArrayList<>();
+            boolean rollbackSucceeded = true;
+            try {
+                // 先准备所有新内容和原文件备份。此阶段任意失败都还没有改动目标文件。
+                for (Map.Entry<Path, String> entry : patchedContents.entrySet()) {
+                    Path file = entry.getKey();
+                    Path staged = Files.createTempFile(file.getParent(), ".agent-studio-patch-", ".tmp");
+                    Files.writeString(staged, entry.getValue(), StandardCharsets.UTF_8,
+                            StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+                    stagedFiles.put(file, staged);
+                    Path backup = Files.createTempFile(file.getParent(), ".agent-studio-patch-recovery-", ".bak");
+                    Files.writeString(backup, originalContents.get(file), StandardCharsets.UTF_8,
+                            StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+                    backups.put(file, backup);
+                }
+                // 同目录移动通常是原子的；跨多个文件不能保证整体原子，因此配合下面的恢复流程。
+                for (Path file : patchedContents.keySet()) {
+                    patchFileMover.move(stagedFiles.get(file), file);
+                    replacedFiles.add(file);
+                }
+            } catch (Exception writeFailure) {
+                boolean rollbackAttempted = !replacedFiles.isEmpty();
+                if (rollbackAttempted) {
+                    // 已经替换的文件逐一从备份恢复。全部失败信息只保留数量，避免泄露节点绝对路径。
+                    for (Path file : replacedFiles) {
+                        try {
+                            patchFileMover.move(backups.get(file), file);
+                        } catch (Exception rollbackFailure) {
+                            rollbackSucceeded = false;
+                        }
+                    }
+                }
+                List<String> recoveryFiles = rollbackSucceeded
+                        ? List.of()
+                        : backups.entrySet().stream()
+                                .filter(entry -> Files.exists(entry.getValue()))
+                                .map(entry -> workspaceRelative(entry.getValue()))
+                                .toList();
+                return ToolExecutionResult.failure(Map.of(
+                                "rollbackAttempted", rollbackAttempted,
+                                "rollbackSucceeded", rollbackSucceeded,
+                                "replacedFileCount", replacedFiles.size(),
+                                "recoveryFiles", recoveryFiles),
+                        "fs.apply_patch_batch failed: " + message(writeFailure)
+                                + "; rollback " + (rollbackAttempted
+                                ? (rollbackSucceeded ? "succeeded" : "did not fully succeed")
+                                : "was not needed"));
+            } finally {
+                // 成功或完全恢复后删除临时文件；恢复失败时保留备份，供人工安全恢复。
+                deleteAll(stagedFiles.values());
+                if (rollbackSucceeded) {
+                    deleteAll(backups.values());
+                }
+            }
+            List<Map<String, Object>> changed = patchedContents.keySet().stream()
+                    .map(file -> Map.<String, Object>of(
+                            "path", workspaceRelative(file),
+                            "digest", sha256(readBytes(file)),
+                            "sizeBytes", safeSize(file)))
+                    .toList();
+            return ToolExecutionResult.success(Map.of(
+                    "changed", changed,
+                    "replacements", requested.size(),
+                    "writeMode", "staged_with_best_effort_rollback"));
+        } catch (Exception ex) {
+            return ToolExecutionResult.failure("fs.apply_patch_batch failed: " + message(ex));
+        }
+    }
+
+    private static void deleteAll(Iterable<Path> files) {
+        for (Path file : files) {
+            try {
+                Files.deleteIfExists(file);
+            } catch (IOException ignored) {
+                // 清理失败不能掩盖已经成功写入的结果；操作系统会在后续清理临时文件。
+            }
+        }
+    }
+
+    /**
+     * 在目标文件所在目录完成一次尽可能原子的文本替换。
+     *
+     * <p>临时文件必须与目标位于同一个目录：这样通常可使用同一文件系统的原子 rename，
+     * 也不会把临时文件意外写进系统临时目录。少数文件系统不支持 ATOMIC_MOVE 时安全降级为
+     * 普通同目录替换；即使降级，内容也已经全部写进临时文件，避免了直接截断目标文件。
+     */
+    private void writeTextStaged(Path file, String content, String temporaryPrefix) throws IOException {
+        Path parent = file.getParent();
+        if (parent == null) {
+            throw new IOException("A workspace file must have a parent directory.");
+        }
+        Files.createDirectories(parent);
+        Path staged = Files.createTempFile(parent, temporaryPrefix, ".tmp");
+        try {
+            Files.writeString(staged, content, StandardCharsets.UTF_8,
+                    StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            patchFileMover.move(staged, file);
+        } finally {
+            // 成功替换后 staged 已被 move；替换失败时删除未使用的暂存文件，避免污染用户项目。
+            Files.deleteIfExists(staged);
+        }
+    }
+
+    /** 默认替换器优先请求文件系统原子移动，无法支持时才退回同目录替换。 */
+    private static void moveReplacement(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException ignored) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    @FunctionalInterface
+    interface PatchFileMover {
+        void move(Path source, Path target) throws IOException;
     }
 
     public ToolExecutionResult createDirectory(Map<String, Object> arguments) {
@@ -353,6 +557,7 @@ public final class FileTool {
         return ToolExecutionResult.success(Map.of(
                 "path", workspaceRelative(file),
                 "content", content.toString(),
+                "digest", sha256(Files.readAllBytes(file)),
                 "startLine", startLine,
                 "endLine", actualEndLine,
                 "truncated", outputTruncated));
@@ -501,6 +706,46 @@ public final class FileTool {
     private static String value(Map<String, Object> arguments, String key) {
         Object value = arguments == null ? null : arguments.get(key);
         return value == null ? null : value.toString();
+    }
+
+    private static String stringValue(Object value) {
+        return value == null ? "" : value.toString();
+    }
+
+    /** 使用固定 SHA-256 表示文件版本，格式和服务端其他不可变快照保持一致。 */
+    private static String sha256(byte[] bytes) {
+        try {
+            return "sha256:" + HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (java.security.NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 is required by the Java runtime.", ex);
+        }
+    }
+
+    private static void requireDigest(Path file, String expectedDigest) throws IOException {
+        String actualDigest = sha256(Files.readAllBytes(file));
+        if (!MessageDigest.isEqual(
+                actualDigest.getBytes(StandardCharsets.US_ASCII),
+                expectedDigest.trim().getBytes(StandardCharsets.US_ASCII))) {
+            throw new IllegalStateException("File changed after it was read; expected digest "
+                    + expectedDigest + " but found " + actualDigest);
+        }
+    }
+
+    private static byte[] readBytes(Path path) {
+        try {
+            return Files.readAllBytes(path);
+        } catch (IOException ex) {
+            throw new IllegalStateException("Cannot read patched file " + path, ex);
+        }
+    }
+
+    private static long safeSize(Path path) {
+        try {
+            return Files.size(path);
+        } catch (IOException ex) {
+            throw new IllegalStateException("Cannot inspect patched file " + path, ex);
+        }
     }
 
     private static String message(Exception ex) {

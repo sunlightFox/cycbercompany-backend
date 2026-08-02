@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.yourname.agentstudio.security.ActorContext;
+import io.github.yourname.agentstudio.execution.ExecutionMode;
+import io.github.yourname.agentstudio.execution.ExecutionSettingsService;
 import io.github.yourname.agentstudio.tool.RegisteredTool;
 import io.github.yourname.agentstudio.tool.RiskLevel;
 import java.nio.charset.StandardCharsets;
@@ -15,11 +17,17 @@ import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -47,6 +55,12 @@ public class NodeService {
     private final NodeSessionRegistry sessions;
     private final ObjectMapper objectMapper;
     private final NodeToolRequestPolicy requestPolicy;
+    private final ExecutionSettingsService executionSettings;
+    /**
+     * 仅用于在同一个匹配沙箱池中分散新 Run；Run 创建后会持久化具体 nodeId，所以此内存
+     * 游标丢失不会影响已经排队或恢复中的任务，也不会改变它们的执行位置。
+     */
+    private final ConcurrentMap<String, AtomicLong> sandboxRoutingCursors = new ConcurrentHashMap<>();
 
     @Autowired
     public NodeService(
@@ -57,7 +71,8 @@ public class NodeService {
             NodeToolApprovalRepository approvals,
             NodeSessionRegistry sessions,
             ObjectMapper objectMapper,
-            NodeToolRequestPolicy requestPolicy) {
+            NodeToolRequestPolicy requestPolicy,
+            ExecutionSettingsService executionSettings) {
         this.nodes = nodes;
         this.tokens = tokens;
         this.tools = tools;
@@ -66,6 +81,7 @@ public class NodeService {
         this.sessions = sessions;
         this.objectMapper = objectMapper;
         this.requestPolicy = requestPolicy;
+        this.executionSettings = executionSettings;
     }
 
     /** 保留给不启动 Spring 容器的单元测试，使用与生产默认值相同的拒绝私网策略。 */
@@ -86,6 +102,19 @@ public class NodeService {
                 sessions,
                 objectMapper,
                 new NodeToolRequestPolicy(BrowserPolicyProperties.secureDefaults()));
+    }
+
+    /** Keeps direct unit-test construction independent from application settings. */
+    NodeService(
+            NodeConnectionRepository nodes,
+            NodeRegistrationTokenRepository tokens,
+            NodeToolRepository tools,
+            NodeToolInvocationRepository invocations,
+            NodeToolApprovalRepository approvals,
+            NodeSessionRegistry sessions,
+            ObjectMapper objectMapper,
+            NodeToolRequestPolicy requestPolicy) {
+        this(nodes, tokens, tools, invocations, approvals, sessions, objectMapper, requestPolicy, null);
     }
 
     @Transactional
@@ -139,6 +168,45 @@ public class NodeService {
                 NodeConnectionView.from(entity));
     }
 
+    /**
+     * Provisions the companion that runs on the same personal computer as the local installation.
+     * It deliberately uses the same node protocol, approval checks, and audit trail as registered
+     * devices while remaining an implementation detail of personal-local mode.
+     */
+    @Transactional
+    public RegisterNodeResult bootstrapLocalExecutor(BootstrapLocalExecutorCommand command, ActorContext actor) {
+        if (!executionMode(actor).usesManagedLocalExecutor()) {
+            throw new IllegalStateException("This installation is configured for registered nodes only.");
+        }
+        Instant now = Instant.now();
+        String secret = "ns_" + randomToken(48);
+        NodeConnectionEntity entity = nodes.findByTenantIdAndKind(actor.tenantId(), NodeKind.MANAGED_LOCAL)
+                .orElseGet(() -> new NodeConnectionEntity(
+                        "local_" + UUID.randomUUID(),
+                        actor.tenantId(),
+                        localExecutorName(command),
+                        command == null ? null : command.hostname(),
+                        command == null ? null : command.osName(),
+                        command == null ? null : command.osArch(),
+                        command == null ? null : command.clientVersion(),
+                        sha256(secret),
+                        NodeKind.MANAGED_LOCAL,
+                        now));
+        if (entity.createdAt().isBefore(now)) {
+            entity.refreshMetadata(
+                    command == null ? null : command.hostname(),
+                    command == null ? null : command.osName(),
+                    command == null ? null : command.osArch(),
+                    command == null ? null : command.clientVersion(),
+                    now);
+            entity.rotateSecret(sha256(secret), now);
+            sessions.disconnect(entity.id(), "local executor reprovisioned");
+        }
+        entity = nodes.save(entity);
+        return new RegisterNodeResult(
+                entity.id(), secret, "/api/v1/node-channel", NodeConnectionView.from(entity));
+    }
+
     @Transactional(readOnly = true)
     public List<NodeConnectionView> list(ActorContext actor) {
         return nodes.findByTenantIdOrderByCreatedAtDesc(actor.tenantId()).stream()
@@ -160,7 +228,12 @@ public class NodeService {
     public NodeConnectionView update(String id, UpdateNodeCommand command, ActorContext actor) {
         NodeConnectionEntity node = requireNode(id, actor);
         boolean enabled = command == null || command.enabled() == null ? node.enabled() : command.enabled();
-        node.update(command == null ? null : command.name(), enabled, Instant.now());
+        Instant now = Instant.now();
+        NodeKind requestedKind = command == null ? null : command.kind();
+        Set<String> requestedLabels = command == null ? null : normalizedLabels(command.labels());
+        validateSchedulingMetadataUpdate(node, requestedKind, requestedLabels);
+        node.update(command == null ? null : command.name(), enabled, now);
+        node.updateSchedulingMetadata(requestedKind, requestedLabels, now);
         return NodeConnectionView.from(nodes.save(node));
     }
 
@@ -199,6 +272,185 @@ public class NodeService {
     public boolean isReadyForToolExecution(String nodeId, ActorContext actor) {
         NodeConnectionEntity node = requireNode(nodeId, actor);
         return node.enabled() && node.status() == NodeStatus.ONLINE && sessions.isConnected(nodeId);
+    }
+
+    /** Enforces the selected execution topology for explicit targets as well as auto-routing. */
+    @Transactional(readOnly = true)
+    public void validateExecutionTarget(String nodeId, ActorContext actor) {
+        if (nodeId == null || nodeId.isBlank()) {
+            return;
+        }
+        NodeConnectionEntity node = requireNode(nodeId, actor);
+        ExecutionMode mode = executionMode(actor);
+        if (mode == ExecutionMode.PERSONAL_LOCAL && node.kind() != NodeKind.MANAGED_LOCAL) {
+            throw new IllegalArgumentException("Personal local mode only permits this computer.");
+        }
+        if (mode == ExecutionMode.NODES_ONLY
+                && node.kind() != NodeKind.REGISTERED
+                && node.kind() != NodeKind.SANDBOX) {
+            throw new IllegalArgumentException(
+                    "This installation is configured for registered nodes only; trusted sandbox nodes are also allowed.");
+        }
+    }
+
+    /**
+     * Resolves the local computer target for an explicitly requested system operation.
+     *
+     * <p>Automatic selection is deliberately limited to one ready node. Choosing between
+     * multiple computers is a user decision and must never be guessed by the server.
+     */
+    @Transactional(readOnly = true)
+    public String resolveComputerControlNodeId(ActorContext actor) {
+        ExecutionMode mode = executionMode(actor);
+        List<NodeConnectionEntity> candidates = nodes.findByTenantIdOrderByCreatedAtDesc(actor.tenantId()).stream()
+                .filter(node -> mode == ExecutionMode.NODES_ONLY
+                        ? node.kind() == NodeKind.REGISTERED
+                        : node.kind() == NodeKind.MANAGED_LOCAL)
+                .filter(node -> node.enabled()
+                        && node.status() == NodeStatus.ONLINE
+                        && sessions.isConnected(node.id()))
+                .filter(node -> tools.findByTenantIdAndNodeIdOrderByNameAsc(actor.tenantId(), node.id()).stream()
+                        .anyMatch(tool -> tool.enabled() && tool.name().startsWith("system.")))
+                .toList();
+        if (candidates.isEmpty()) {
+            throw new IllegalArgumentException(
+                    mode == ExecutionMode.NODES_ONLY
+                            ? "Computer control requires one connected node with enabled system tools."
+                            : "Local computer control is not ready. Start the local executor, then retry.");
+        }
+        if (candidates.size() > 1) {
+            throw new IllegalArgumentException(
+                    "More than one computer-control node is connected. Select the target node explicitly.");
+        }
+        return candidates.getFirst().id();
+    }
+
+    /**
+     * 从管理员明确标记的 SANDBOX 节点中选择一个在线候选。
+     *
+     * <p>这里绝不把 REGISTERED（通常是个人电脑）放进自动候选集。标签要求采用“全部匹配”，
+     * 已指定且在沙箱池内存在的节点工具也必须启用；普通后端/MCP 工具不会被误判为节点能力。
+     * 当前选择按稳定节点 ID 排序，避免数据库返回顺序改变造成难以审计的漂移。
+     */
+    @Transactional(readOnly = true)
+    public String resolveSandboxNodeId(
+            List<String> requestedLabels,
+            List<String> requestedToolNames,
+            ActorContext actor) {
+        if (executionMode(actor) != ExecutionMode.NODES_ONLY) {
+            throw new IllegalArgumentException("Automatic sandbox routing is available only in nodes-only mode.");
+        }
+        Set<String> normalizedRequestedLabels = normalizedLabels(requestedLabels);
+        Set<String> requiredLabels = normalizedRequestedLabels == null ? Set.of() : normalizedRequestedLabels;
+        List<NodeConnectionEntity> pool = nodes.findByTenantIdOrderByCreatedAtDesc(actor.tenantId()).stream()
+                .filter(node -> node.kind() == NodeKind.SANDBOX)
+                .filter(node -> node.enabled() && node.status() == NodeStatus.ONLINE && sessions.isConnected(node.id()))
+                .sorted(java.util.Comparator.comparing(NodeConnectionEntity::id))
+                .toList();
+        Set<String> requiredTools = nodeToolsToRequire(pool, actor.tenantId(), requestedToolNames);
+        List<NodeConnectionEntity> candidates = pool.stream()
+                .filter(node -> node.labels().containsAll(requiredLabels))
+                .filter(node -> enabledToolNames(actor.tenantId(), node.id()).containsAll(requiredTools))
+                .toList();
+        if (candidates.isEmpty()) {
+            String labelDetail = requiredLabels.isEmpty() ? "" : " labels=" + requiredLabels;
+            String toolDetail = requiredTools.isEmpty() ? "" : " tools=" + requiredTools;
+            throw new IllegalArgumentException("No connected trusted sandbox matches the requested routing constraints."
+                    + labelDetail + toolDetail);
+        }
+        String routingKey = sandboxRoutingKey(actor.tenantId(), requiredLabels, requiredTools);
+        long turn = sandboxRoutingCursors
+                .computeIfAbsent(routingKey, ignored -> new AtomicLong())
+                .getAndIncrement();
+        // 候选已经按 ID 排序。轮询只发生在管理员明确纳入的 SANDBOX 池内，绝不把个人
+        // REGISTERED 设备放进来；Run 随后会把选中的具体 ID 固化到不可变快照。
+        int index = (int) Math.floorMod(turn, candidates.size());
+        return candidates.get(index).id();
+    }
+
+    private Set<String> nodeToolsToRequire(
+            List<NodeConnectionEntity> sandboxPool, String tenantId, List<String> requestedToolNames) {
+        if (requestedToolNames == null || requestedToolNames.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> availableSomewhere = new LinkedHashSet<>();
+        for (NodeConnectionEntity node : sandboxPool) {
+            availableSomewhere.addAll(enabledToolNames(tenantId, node.id()));
+        }
+        Set<String> required = new LinkedHashSet<>();
+        for (String rawName : requestedToolNames) {
+            if (rawName == null || rawName.isBlank()) {
+                continue;
+            }
+            String toolName = rawName.trim();
+            if (availableSomewhere.contains(toolName)) {
+                required.add(toolName);
+            }
+        }
+        return Set.copyOf(required);
+    }
+
+    private Set<String> enabledToolNames(String tenantId, String nodeId) {
+        return tools.findByTenantIdAndNodeIdOrderByNameAsc(tenantId, nodeId).stream()
+                .filter(NodeToolEntity::enabled)
+                .map(NodeToolEntity::name)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    private static String sandboxRoutingKey(String tenantId, Set<String> labels, Set<String> tools) {
+        String labelPart = labels.stream().sorted().collect(java.util.stream.Collectors.joining(","));
+        String toolPart = tools.stream().sorted().collect(java.util.stream.Collectors.joining(","));
+        return tenantId + "|labels=" + labelPart + "|tools=" + toolPart;
+    }
+
+    private static Set<String> normalizedLabels(java.util.Collection<String> labels) {
+        if (labels == null) {
+            return null;
+        }
+        if (labels.size() > 16) {
+            throw new IllegalArgumentException("A node may have at most 16 scheduling labels.");
+        }
+        Set<String> normalized = new LinkedHashSet<>();
+        for (String label : labels) {
+            if (label == null || label.isBlank()) {
+                continue;
+            }
+            String value = label.trim().toLowerCase(Locale.ROOT);
+            if (!value.matches("[a-z0-9][a-z0-9_.-]{0,63}")) {
+                throw new IllegalArgumentException(
+                        "Invalid node label '" + label + "'. Use lowercase letters, digits, dot, underscore, or hyphen.");
+            }
+            normalized.add(value);
+        }
+        return Set.copyOf(normalized);
+    }
+
+    /** Prevents a node client from turning a personal local companion into an auto-routable sandbox. */
+    private static void validateSchedulingMetadataUpdate(
+            NodeConnectionEntity node, NodeKind requestedKind, Set<String> requestedLabels) {
+        if (node.kind() == NodeKind.MANAGED_LOCAL) {
+            if (requestedKind != null && requestedKind != NodeKind.MANAGED_LOCAL) {
+                throw new IllegalArgumentException("The managed local computer cannot be converted into a sandbox.");
+            }
+            if (requestedLabels != null) {
+                throw new IllegalArgumentException("The managed local computer does not support sandbox scheduling labels.");
+            }
+            return;
+        }
+        if (requestedKind == NodeKind.MANAGED_LOCAL) {
+            throw new IllegalArgumentException("Only the local bootstrap flow may create a managed local computer.");
+        }
+    }
+
+    private ExecutionMode executionMode(ActorContext actor) {
+        return executionSettings == null ? ExecutionMode.PERSONAL_LOCAL : executionSettings.mode(actor);
+    }
+
+    private static String localExecutorName(BootstrapLocalExecutorCommand command) {
+        if (command != null && command.name() != null && !command.name().isBlank()) {
+            return command.name().trim();
+        }
+        return "This computer";
     }
 
     @Transactional
@@ -255,24 +507,35 @@ public class NodeService {
                 toolName,
                 toJson(preparedCommand.arguments()),
                 now));
-        invocation.start(now);
-        invocations.save(invocation);
         try {
-            NodeToolCallResult result = executeTool(nodeId, toolName, preparedCommand, actor, false, runId);
+            NodeToolCallResult result = executeTool(
+                    nodeId, toolName, preparedCommand, actor, false, runId, invocation);
             if ("SUCCEEDED".equalsIgnoreCase(result.status())) {
-                invocation.succeed(toJson(result.result()), Instant.now());
+                // 通道收到 tool.result 时已先做会话/摘要校验并落库；这里保留同步路径的兜底。
+                if (!invocation.terminal()) {
+                    String resultJson = toJson(result.result());
+                    invocation.succeed(resultJson, sha256(resultJson), Instant.now());
+                }
             } else if ("APPROVAL_REQUIRED".equalsIgnoreCase(result.status())) {
                 if (runId != null && !runId.isBlank()) {
                     linkApprovalToRun(result, runId, toolCallId, actor);
                 }
                 invocation.fail(NodeToolInvocationStatus.APPROVAL_REQUIRED, result.errorMessage(), Instant.now());
+                linkApprovalToInvocation(result, invocation.id(), actor);
+            } else if ("UNKNOWN".equalsIgnoreCase(result.status())) {
+                invocation.unknown(result.errorMessage(), Instant.now());
             } else {
                 invocation.fail(NodeToolInvocationStatus.FAILED, result.errorMessage(), Instant.now());
             }
             invocations.save(invocation);
             return result;
         } catch (Exception ex) {
-            invocation.fail(NodeToolInvocationStatus.FAILED, ex.getMessage(), Instant.now());
+            // 发送前的本地 schema/大小校验尚未产生远程副作用；只有真正传输中断才标 UNKNOWN。
+            if (ex instanceof IllegalArgumentException) {
+                invocation.fail(NodeToolInvocationStatus.FAILED, ex.getMessage(), Instant.now());
+            } else {
+                invocation.unknown(ex.getMessage(), Instant.now());
+            }
             invocations.save(invocation);
             throw ex;
         }
@@ -285,6 +548,113 @@ public class NodeService {
                 .toList();
     }
 
+    /**
+     * 手动要求节点核对某个 Run 中尚未确认的命令状态。
+     *
+     * <p>这是网络中断后的恢复辅助操作，不是“重试”接口。方法唯一允许发送的协议消息是
+     * {@code tool.status}：节点客户端从它自己的持久 Journal 返回已知结果。即使原命令是写文件、
+     * 浏览器点击或桌面操作，也不会在这里重新产生副作用。
+     *
+     * <p>节点离线、被禁用或控制帧发送失败时，仅在响应摘要中标记为不可用；不把原调用错误地改成
+     * 成功、失败或取消。调用方可以等节点恢复后再次发起对账。
+     */
+    @Transactional(readOnly = true)
+    public RunNodeReconciliationView requestRunReconciliation(String runId, ActorContext actor) {
+        List<NodeToolInvocationStatus> pendingStatuses = List.of(
+                NodeToolInvocationStatus.DISPATCHED,
+                NodeToolInvocationStatus.ACCEPTED,
+                NodeToolInvocationStatus.RUNNING,
+                NodeToolInvocationStatus.UNKNOWN);
+        List<NodeToolInvocationEntity> pending = invocations
+                .findByTenantIdAndRunIdAndStatusInOrderByCreatedAtAsc(actor.tenantId(), runId, pendingStatuses);
+
+        int requested = 0;
+        int unavailable = 0;
+        List<RunNodeReconciliationView.Invocation> results = new ArrayList<>();
+        for (NodeToolInvocationEntity invocation : pending) {
+            // 除了 WebSocket 仍打开外，还要确认节点属于当前租户、处于 ONLINE 且没有被管理员禁用。
+            // 这样即便历史数据里存在过期 nodeId，也不会把控制消息误投递给别的节点会话。
+            NodeConnectionEntity node = nodes.findByIdAndTenantId(invocation.nodeId(), actor.tenantId()).orElse(null);
+            if (node == null
+                    || !node.enabled()
+                    || node.status() != NodeStatus.ONLINE
+                    || !sessions.isConnected(invocation.nodeId())) {
+                unavailable++;
+                results.add(reconciliationUnavailable(invocation));
+                continue;
+            }
+            try {
+                // 注意：此处绝不能改为 sessions.invoke(...)；invoke 会发出 tool.invoke，从而可能重放副作用。
+                sessions.sendControl(invocation.nodeId(), "tool.status", invocation.id(), Map.of(
+                        "invocationId", invocation.id(),
+                        "toolName", invocation.toolName(),
+                        "argumentsDigest", invocation.argumentsDigest(),
+                        "attempt", invocation.dispatchAttempt()));
+                requested++;
+                results.add(new RunNodeReconciliationView.Invocation(
+                        invocation.id(),
+                        invocation.nodeId(),
+                        invocation.toolName(),
+                        invocation.status(),
+                        RunNodeReconciliationView.Outcome.STATUS_REQUESTED));
+            } catch (Exception ignored) {
+                // 发送期间节点可能刚断开。保持持久调用记录不变，等下次恢复后再安全地查询状态。
+                unavailable++;
+                results.add(reconciliationUnavailable(invocation));
+            }
+        }
+        return new RunNodeReconciliationView(runId, requested, unavailable, List.copyOf(results));
+    }
+
+    private RunNodeReconciliationView.Invocation reconciliationUnavailable(NodeToolInvocationEntity invocation) {
+        return new RunNodeReconciliationView.Invocation(
+                invocation.id(),
+                invocation.nodeId(),
+                invocation.toolName(),
+                invocation.status(),
+                RunNodeReconciliationView.Outcome.NODE_UNAVAILABLE);
+    }
+
+    /**
+     * 向一个 Run 中仍可能在节点端执行的调用发送协作式取消。
+     *
+     * <p>这里故意不把 invocation 直接改成 CANCELLED：WebSocket 发送成功或节点返回 ACK
+     * 只能证明取消请求被接收，无法证明文件、进程、浏览器或桌面副作用已经回滚。最终状态
+     * 仍须由 tool.result / tool.status 对账消息写入。
+     */
+    @Transactional(noRollbackFor = Exception.class)
+    public int cancelRunInvocations(String runId, ActorContext actor) {
+        if (runId == null || runId.isBlank()) {
+            return 0;
+        }
+        List<NodeToolInvocationStatus> activeStatuses = List.of(
+                NodeToolInvocationStatus.REQUESTED,
+                NodeToolInvocationStatus.DISPATCHED,
+                NodeToolInvocationStatus.ACCEPTED,
+                NodeToolInvocationStatus.RUNNING);
+        // PENDING 审批尚未下发到节点，但若不使其失效，用户取消 Run 后仍可能由另一个
+        // 审批人批准并触发副作用。当前审批状态没有 CANCELLED，因此用 EXPIRED 表示它
+        // 已不再允许决策，同时保留原始审批审计记录。
+        Instant now = Instant.now();
+        for (NodeToolApprovalEntity approval : approvals.findByTenantIdAndRunId(actor.tenantId(), runId)) {
+            if (approval.status() == NodeToolApprovalStatus.PENDING) {
+                approval.expire(actor.userId(), now);
+                approvals.save(approval);
+            }
+        }
+        int sent = 0;
+        for (NodeToolInvocationEntity invocation : invocations
+                .findByTenantIdAndRunIdOrderByCreatedAtAsc(actor.tenantId(), runId)) {
+            if (!activeStatuses.contains(invocation.status())) {
+                continue;
+            }
+            if (sessions.cancel(invocation.nodeId(), invocation.id(), "trace_" + invocation.id())) {
+                sent++;
+            }
+        }
+        return sent;
+    }
+
     @Transactional(readOnly = true)
     public CodingRunEvidenceView codingEvidence(String runId, ActorContext actor) {
         List<NodeToolInvocationEntity> history = invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(actor.tenantId(), runId);
@@ -293,27 +663,45 @@ public class NodeService {
         // 调用记录来自数据库，不能假定旧数据或手工修复过的数据一定合法；
         // 绝对路径、包含 ".." 的路径都不应该通过这个接口泄露出去。
         List<String> changedFiles = history.stream()
-                .filter(invocation -> "fs.write".equals(invocation.toolName()) || "fs.apply_patch".equals(invocation.toolName()))
+                .filter(invocation -> "fs.write".equals(invocation.toolName())
+                        || "fs.apply_patch".equals(invocation.toolName())
+                        || "fs.apply_patch_batch".equals(invocation.toolName()))
                 .filter(invocation -> invocation.status() == NodeToolInvocationStatus.SUCCEEDED)
-                .map(this::evidenceFilePath)
-                .flatMap(java.util.Optional::stream)
+                .flatMap(invocation -> evidenceFilePaths(invocation).stream())
                 .distinct()
                 .toList();
+        PostChangeReviewEvidence reviewEvidence = postChangeReviewEvidence(history, changedFiles);
+
+        List<String> succeededTools = history.stream()
+                .filter(invocation -> invocation.status() == NodeToolInvocationStatus.SUCCEEDED)
+                .map(NodeToolInvocationEntity::toolName)
+                .distinct()
+                .toList();
+
+        int desktopSortableFiles = history.stream()
+                .filter(invocation -> "system.desktop.organize.list".equals(invocation.toolName()))
+                .filter(invocation -> invocation.status() == NodeToolInvocationStatus.SUCCEEDED)
+                .mapToInt(this::desktopSortableFiles)
+                .reduce((ignored, observed) -> observed)
+                .orElse(-1);
 
         // shell.run 和 browser.* 是“已经做过验证”的证据。这里刻意只返回工具名称，
         // 不返回命令参数或标准输出，以免日志中的敏感信息被这个摘要接口暴露。
         List<String> verificationTools = history.stream()
                 .filter(invocation -> invocation.status() == NodeToolInvocationStatus.SUCCEEDED)
                 .map(NodeToolInvocationEntity::toolName)
-                .filter(name -> "shell.run".equals(name) || name.startsWith("browser."))
+                .filter(name -> "shell.run".equals(name) || "process.wait_http".equals(name) || name.startsWith("browser."))
                 .distinct()
                 .toList();
         // 命令原文留在受权限保护的审计表中。交付门禁只需要知道它是不是可解释的测试、构建、静态检查
         // 或 HTTP 联调，因此这里输出有限的类别，既能拒绝 `echo done`，也不会把命令参数暴露给页面。
         List<String> commandVerifications = history.stream()
-                .filter(invocation -> "shell.run".equals(invocation.toolName()))
                 .filter(invocation -> invocation.status() == NodeToolInvocationStatus.SUCCEEDED)
-                .map(this::commandVerificationCategory)
+                .map(invocation -> "process.wait_http".equals(invocation.toolName())
+                        ? java.util.Optional.of("http")
+                        : "shell.run".equals(invocation.toolName())
+                                ? commandVerificationCategory(invocation)
+                                : java.util.Optional.<String>empty())
                 .flatMap(java.util.Optional::stream)
                 .distinct()
                 .toList();
@@ -331,16 +719,227 @@ public class NodeService {
                 .flatMap(java.util.Optional::stream)
                 .distinct()
                 .toList();
-        boolean browserVerified = verificationTools.stream().anyMatch(name -> name.startsWith("browser."));
+        boolean browserVerified = browserVerifiedAfterLastInteraction(history);
+        // “页面上看起来成功”与“前端确实拿到了后端成功响应”是两种不同证据。
+        // 只有任务明确要求前后端联调时，交付门禁才会强制后者；普通静态网页任务仍可只做可见状态断言。
+        boolean browserApiVerified = browserApiVerifiedAfterLastInteraction(history);
+        boolean desktopUiVerified = desktopUiVerifiedAfterLastControlAction(history);
         return new CodingRunEvidenceView(
                 runId,
                 history.size(),
+                succeededTools,
+                desktopSortableFiles,
                 changedFiles,
+                reviewEvidence.gitReviewed(),
+                reviewEvidence.reviewedChangedFiles(),
                 verificationTools,
                 commandVerifications,
                 browserTraceArtifacts,
                 browserVerified,
-                failedTools);
+                desktopUiVerified,
+                failedTools,
+                browserApiVerified);
+    }
+
+    /**
+     * 只采纳最后一次成功写入之后的审阅动作。
+     *
+     * <p>若模型先读取旧文件、随后改写代码，旧读取结果不能证明最终代码已经审过；同理，
+     * 早于最后一次写入的 git.review 也不能作为交付依据。审计记录已按创建时间升序返回，
+     * 因此这里用列表顺序而不是节点客户端提供的布尔字段来计算证据。
+     */
+    private PostChangeReviewEvidence postChangeReviewEvidence(
+            List<NodeToolInvocationEntity> history,
+            List<String> changedFiles) {
+        if (changedFiles.isEmpty()) {
+            return new PostChangeReviewEvidence(false, List.of());
+        }
+        int lastChangeIndex = -1;
+        for (int index = 0; index < history.size(); index++) {
+            NodeToolInvocationEntity invocation = history.get(index);
+            if (invocation.status() == NodeToolInvocationStatus.SUCCEEDED && changesProjectFiles(invocation)) {
+                lastChangeIndex = index;
+            }
+        }
+        if (lastChangeIndex < 0) {
+            return new PostChangeReviewEvidence(false, List.of());
+        }
+
+        boolean gitReviewed = false;
+        LinkedHashSet<String> reviewed = new LinkedHashSet<>();
+        for (int index = lastChangeIndex + 1; index < history.size(); index++) {
+            NodeToolInvocationEntity invocation = history.get(index);
+            if (invocation.status() != NodeToolInvocationStatus.SUCCEEDED) {
+                continue;
+            }
+            if ("git.review".equals(invocation.toolName())) {
+                gitReviewed = true;
+                continue;
+            }
+            if ("fs.read".equals(invocation.toolName())) {
+                evidenceFilePath(invocation)
+                        .filter(changedFiles::contains)
+                        .ifPresent(reviewed::add);
+                continue;
+            }
+            if ("git.diff".equals(invocation.toolName())) {
+                // 未指定 path 的 diff 覆盖整个工作树；指定目录则覆盖其下的变更文件。
+                java.util.Optional<String> scope = evidenceFilePath(invocation);
+                if (scope.isEmpty()) {
+                    reviewed.addAll(changedFiles);
+                } else {
+                    changedFiles.stream()
+                            .filter(path -> path.equals(scope.get()) || path.startsWith(scope.get() + "/"))
+                            .forEach(reviewed::add);
+                }
+            }
+        }
+        return new PostChangeReviewEvidence(gitReviewed, List.copyOf(reviewed));
+    }
+
+    private static boolean changesProjectFiles(NodeToolInvocationEntity invocation) {
+        return "fs.write".equals(invocation.toolName())
+                || "fs.apply_patch".equals(invocation.toolName())
+                || "fs.apply_patch_batch".equals(invocation.toolName());
+    }
+
+    /**
+     * 判断浏览器验证是否对应最终的页面交互。
+     *
+     * <p>打开页面、获取快照、截图或导出 Trace 都不能证明表单提交、跳转或下载达到了预期。
+     * 只有最后一次会改变页面、焦点或浏览器当前标签页的操作之后执行 browser.verify，才记为
+     * 有效验证；这样旧的断言结果不会掩盖后续操作造成的回归。
+     */
+    private static boolean browserVerifiedAfterLastInteraction(List<NodeToolInvocationEntity> history) {
+        int lastInteraction = -1;
+        for (int index = 0; index < history.size(); index++) {
+            NodeToolInvocationEntity invocation = history.get(index);
+            if (invocation.status() == NodeToolInvocationStatus.SUCCEEDED
+                    && changesBrowserPageState(invocation.toolName())) {
+                lastInteraction = index;
+            }
+        }
+        if (lastInteraction < 0) {
+            return false;
+        }
+        for (int index = lastInteraction + 1; index < history.size(); index++) {
+            NodeToolInvocationEntity invocation = history.get(index);
+            if (invocation.status() == NodeToolInvocationStatus.SUCCEEDED
+                    && "browser.verify".equals(invocation.toolName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 判断最后一次页面状态操作后是否有一条真正的 API 响应断言。
+     *
+     * <p>不能仅凭 browser.verify 调用成功就返回 true：它也可能只验证了文字、标题或 URL。
+     * 这里必须在其结构化 checks 中找到已通过的 {@code responseStatus} 或
+     * {@code responseUrlContains}，并且只采纳最后一次页面操作之后的那一次验证。
+     */
+    private boolean browserApiVerifiedAfterLastInteraction(List<NodeToolInvocationEntity> history) {
+        int lastInteraction = -1;
+        for (int index = 0; index < history.size(); index++) {
+            NodeToolInvocationEntity invocation = history.get(index);
+            if (invocation.status() == NodeToolInvocationStatus.SUCCEEDED
+                    && changesBrowserPageState(invocation.toolName())) {
+                lastInteraction = index;
+            }
+        }
+        if (lastInteraction < 0) {
+            return false;
+        }
+        for (int index = lastInteraction + 1; index < history.size(); index++) {
+            NodeToolInvocationEntity invocation = history.get(index);
+            if (invocation.status() == NodeToolInvocationStatus.SUCCEEDED
+                    && "browser.verify".equals(invocation.toolName())
+                    && hasPassedBrowserApiCheck(invocation)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 只读取已净化的布尔字段和检查类别；不把页面文本、URL 查询参数或响应正文带入交付摘要。 */
+    private boolean hasPassedBrowserApiCheck(NodeToolInvocationEntity invocation) {
+        Map<String, Object> result = readJsonMap(invocation.resultJson());
+        if (!Boolean.TRUE.equals(result.get("verified")) || !(result.get("checks") instanceof List<?> checks)) {
+            return false;
+        }
+        for (Object rawCheck : checks) {
+            if (!(rawCheck instanceof Map<?, ?> check)) {
+                continue;
+            }
+            String type = String.valueOf(check.get("type"));
+            if (("responseStatus".equals(type) || "responseUrlContains".equals(type))
+                    && Boolean.TRUE.equals(check.get("passed"))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean changesBrowserPageState(String toolName) {
+        return switch (toolName) {
+            case "browser.open", "browser.switch_tab", "browser.close_tab", "browser.download", "browser.upload",
+                    "browser.click", "browser.type", "browser.hover", "browser.press",
+                    "browser.select_option" -> true;
+            default -> false;
+        };
+    }
+
+    /**
+     * Windows UI Automation 控件可能会在点击或输入后重绘，因此只能采信最终操作之后的 verify
+     * 或受审批的 read_value。后者不仅能找到目标控件，还能确认非密码 ValuePattern 的实际值。
+     * 键盘命令没有控件选择器，不能安全地冒充对某个具体控件的验证，仍由调用方用新快照或
+     * 明确的 UI 验证工具处理。
+     */
+    private static boolean desktopUiVerifiedAfterLastControlAction(List<NodeToolInvocationEntity> history) {
+        int lastControlAction = -1;
+        for (int index = 0; index < history.size(); index++) {
+            NodeToolInvocationEntity invocation = history.get(index);
+            if (invocation.status() == NodeToolInvocationStatus.SUCCEEDED
+                    && changesDesktopControl(invocation.toolName())) {
+                lastControlAction = index;
+            }
+        }
+        if (lastControlAction < 0) {
+            return false;
+        }
+        for (int index = lastControlAction + 1; index < history.size(); index++) {
+            NodeToolInvocationEntity invocation = history.get(index);
+            if (invocation.status() == NodeToolInvocationStatus.SUCCEEDED
+                    && ("system.desktop.ui.verify".equals(invocation.toolName())
+                    || "system.desktop.ui.read_value".equals(invocation.toolName()))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean changesDesktopControl(String toolName) {
+        return "system.desktop.ui.click".equals(toolName) || "system.desktop.ui.type".equals(toolName);
+    }
+
+    private record PostChangeReviewEvidence(boolean gitReviewed, List<String> reviewedChangedFiles) {
+    }
+
+    private int desktopSortableFiles(NodeToolInvocationEntity invocation) {
+        try {
+            Map<String, Object> result = objectMapper.readValue(invocation.resultJson(), new TypeReference<>() { });
+            Object value = result.get("sortableFiles");
+            if (value instanceof Number number) {
+                return Math.max(-1, number.intValue());
+            }
+            if (value instanceof String text) {
+                return Math.max(-1, Integer.parseInt(text));
+            }
+        } catch (Exception ignored) {
+            // Malformed or old audit data cannot prove a no-op desktop task succeeded.
+        }
+        return -1;
     }
 
     /**
@@ -369,14 +968,23 @@ public class NodeService {
                 evidence.failedTools().isEmpty(),
                 "本次记录中没有失败的节点工具调用。"));
 
-        boolean attemptedBrowser = evidence.browserVerified()
+        boolean attemptedBrowser = evidence.verificationTools().stream().anyMatch(NodeService::changesBrowserPageState)
                 || evidence.failedTools().stream().anyMatch(name -> name.startsWith("browser."));
         if (attemptedBrowser) {
             checks.add(qualityCheck(
                     "browser-verification",
                     10,
                     evidence.browserVerified(),
-                    "已尝试浏览器验证时，至少应有一次浏览器工具成功。"));
+                    "执行浏览器页面交互后，应在最后一次交互之后成功执行 browser.verify。"));
+        }
+        boolean attemptedDesktopUi = evidence.succeededTools().stream().anyMatch(NodeService::changesDesktopControl)
+                || evidence.failedTools().stream().anyMatch(NodeService::changesDesktopControl);
+        if (attemptedDesktopUi) {
+            checks.add(qualityCheck(
+                    "desktop-ui-verification",
+                    10,
+                    evidence.desktopUiVerified(),
+                    "执行 Windows UI Automation 点击或输入后，应成功执行 system.desktop.ui.verify。"));
         }
         int maximum = checks.stream().mapToInt(CodingRunQualityView.CodingQualityCheckView::maximumPoints).sum();
         int earned = checks.stream().mapToInt(CodingRunQualityView.CodingQualityCheckView::earnedPoints).sum();
@@ -608,18 +1216,23 @@ public class NodeService {
 
         NodeToolCallResult execution;
         try {
+            NodeToolInvocationEntity invocation = approval.invocationId() == null
+                    ? null
+                    : invocations.findByIdAndNodeId(approval.invocationId(), approval.nodeId()).orElse(null);
             execution = executeTool(
                     approval.nodeId(),
                     approval.toolName(),
                     new CallNodeToolCommand(readArguments(approval.argumentsJson()), approval.timeoutSeconds()),
                     actor,
                     true,
-                    approval.runId());
+                    approval.runId(),
+                    invocation);
             approval.recordExecution(
                     execution.status(),
                     toJson(execution.result()),
                     execution.errorMessage(),
                     Instant.now());
+            recordApprovalExecution(approval, execution);
         } catch (Exception ex) {
             execution = new NodeToolCallResult(
                     null,
@@ -629,9 +1242,74 @@ public class NodeService {
                     null,
                     ex.getMessage());
             approval.recordExecution("FAILED", null, ex.getMessage(), Instant.now());
+            recordApprovalExecution(approval, execution);
         }
         approvals.save(approval);
         return new NodeToolApprovalDecisionView(NodeToolApprovalView.from(approval), execution);
+    }
+
+    /** 支持单文件写入和跨文件 batch patch，同时只输出安全的工作区相对路径。 */
+    private List<String> evidenceFilePaths(NodeToolInvocationEntity invocation) {
+        Map<String, Object> arguments = readJsonMap(invocation.argumentsJson());
+        if ("fs.apply_patch_batch".equals(invocation.toolName())) {
+            Object rawChanges = arguments.get("changes");
+            if (rawChanges instanceof List<?> changes) {
+                List<String> paths = new ArrayList<>();
+                for (Object rawChange : changes) {
+                    if (rawChange instanceof Map<?, ?> change) {
+                        Object rawPath = change.get("path");
+                        if (rawPath != null) {
+                            evidenceFilePath(rawPath.toString()).ifPresent(paths::add);
+                        }
+                    }
+                }
+                return paths;
+            }
+            return List.of();
+        }
+        return evidenceFilePath(arguments.get("path") == null ? null : arguments.get("path").toString())
+                .stream().toList();
+    }
+
+    private java.util.Optional<String> evidenceFilePath(String path) {
+        if (path == null || path.isBlank()) {
+            return java.util.Optional.empty();
+        }
+        try {
+            String normalized = Path.of(path.trim()).normalize().toString().replace('\\', '/');
+            if (Path.of(path.trim()).isAbsolute()
+                    || normalized.isBlank()
+                    || ".".equals(normalized)
+                    || "..".equals(normalized)
+                    || normalized.startsWith("../")) {
+                return java.util.Optional.empty();
+            }
+            return java.util.Optional.of(normalized);
+        } catch (InvalidPathException ex) {
+            return java.util.Optional.empty();
+        }
+    }
+
+    private void recordApprovalExecution(NodeToolApprovalEntity approval, NodeToolCallResult execution) {
+        if (approval.runId() == null || approval.runId().isBlank()
+                || approval.toolCallId() == null || approval.toolCallId().isBlank()) {
+            return;
+        }
+        java.util.Optional<NodeToolInvocationEntity> linked = approval.invocationId() == null
+                ? invocations.findFirstByTenantIdAndRunIdAndToolCallIdOrderByCreatedAtDesc(
+                        approval.tenantId(), approval.runId(), approval.toolCallId())
+                : invocations.findByIdAndNodeId(approval.invocationId(), approval.nodeId());
+        linked.ifPresent(invocation -> {
+            if ("SUCCEEDED".equalsIgnoreCase(execution.status())) {
+                String resultJson = toJson(execution.result());
+                invocation.succeed(resultJson, sha256(resultJson), Instant.now());
+            } else if ("UNKNOWN".equalsIgnoreCase(execution.status())) {
+                invocation.unknown(execution.errorMessage(), Instant.now());
+            } else {
+                invocation.fail(NodeToolInvocationStatus.FAILED, execution.errorMessage(), Instant.now());
+            }
+            invocations.save(invocation);
+        });
     }
 
     private NodeToolCallResult executeTool(
@@ -641,6 +1319,17 @@ public class NodeService {
             ActorContext actor,
             boolean bypassApproval,
             String executionSessionId) {
+        return executeTool(nodeId, toolName, command, actor, bypassApproval, executionSessionId, null);
+    }
+
+    private NodeToolCallResult executeTool(
+            String nodeId,
+            String toolName,
+            CallNodeToolCommand command,
+            ActorContext actor,
+            boolean bypassApproval,
+            String executionSessionId,
+            NodeToolInvocationEntity invocation) {
         command = prepareCommand(toolName, command);
         NodeConnectionEntity node = requireNode(nodeId, actor);
         NodeToolEntity tool = tools.findByTenantIdAndNodeIdAndName(actor.tenantId(), nodeId, toolName)
@@ -664,6 +1353,37 @@ public class NodeService {
             throw new IllegalArgumentException("Node is not online or enabled: " + nodeId);
         }
         int timeoutSeconds = timeoutSeconds(command);
+        if (invocation != null) {
+            Instant now = Instant.now();
+            Instant deadline = now.plusSeconds(timeoutSeconds);
+            String argumentsJson = toJson(command == null ? Map.of() : command.arguments());
+            String argumentsDigest = sha256(argumentsJson);
+            String policyRevision = "policy_" + (node.capabilityRevision() == null
+                    ? "default"
+                    : node.capabilityRevision());
+            invocation.dispatch(
+                    Math.max(1, invocation.dispatchAttempt() + 1),
+                    deadline,
+                    argumentsDigest,
+                    invocation.id(),
+                    policyRevision,
+                    now);
+            invocations.saveAndFlush(invocation);
+            return sessions.invoke(nodeId, new NodeInvocationDispatch(
+                    invocation.id(),
+                    invocation.runId(),
+                    invocation.toolCallId(),
+                    toolName,
+                    command == null ? Map.of() : command.arguments(),
+                    "workspace-default",
+                    executionSessionId,
+                    deadline,
+                    policyRevision,
+                    argumentsDigest,
+                    invocation.dispatchAttempt(),
+                    invocation.id(),
+                    "trace_" + invocation.id()), Duration.ofSeconds(timeoutSeconds));
+        }
         if (executionSessionId == null || executionSessionId.isBlank()) {
             return sessions.invoke(
                     nodeId,
@@ -836,8 +1556,80 @@ public class NodeService {
                 node.secretHash().getBytes(StandardCharsets.UTF_8))) {
             throw new IllegalArgumentException("Invalid node secret.");
         }
-        node.markOnline(Instant.now());
+        Instant now = Instant.now();
+        // 每次成功认证都递增 token。即使旧 WebSocket 在网络抖动后继续回包，也不能覆盖新会话。
+        node.advanceFencingToken(now);
+        node.markOnline(now);
         return nodes.save(node);
+    }
+
+    /** 把审批恢复和第一次审计调用绑死，避免审批通过后再创建新的传输调用。 */
+    private void linkApprovalToInvocation(NodeToolCallResult result, String invocationId, ActorContext actor) {
+        Object approvalId = result.result() == null ? null : result.result().get("approvalId");
+        if (approvalId == null || invocationId == null || invocationId.isBlank()) {
+            return;
+        }
+        approvals.findByIdAndTenantId(approvalId.toString(), actor.tenantId()).ifPresent(approval -> {
+            approval.linkInvocation(invocationId);
+            approvals.save(approval);
+        });
+    }
+
+    /** 节点已经把调用写入本地 journal，但还不能据此宣称副作用执行成功。 */
+    @Transactional
+    public void acceptInvocation(String nodeId, String invocationId) {
+        invocations.findByIdAndNodeId(invocationId, nodeId).ifPresent(invocation -> {
+            invocation.accept(Instant.now());
+            invocations.save(invocation);
+        });
+    }
+
+    /** 进度消息只推进服务端状态，不把节点日志原文保存进控制面审计字段。 */
+    @Transactional
+    public void startInvocation(String nodeId, String invocationId) {
+        invocations.findByIdAndNodeId(invocationId, nodeId).ifPresent(invocation -> {
+            invocation.start(Instant.now());
+            invocations.save(invocation);
+        });
+    }
+
+    /**
+     * 将“没有对应内存等待 Future”的节点终态与持久调用记录对账。
+     * 这是控制面或连接重启后的恢复路径，因此必须重新校验工具名、参数摘要和 attempt，
+     * 不能仅凭 invocationId 接受一个晚到或错配的结果。
+     */
+    @Transactional
+    public boolean reconcileInvocationResult(
+            NodeToolCallResult result, String toolName, String argumentsDigest, int attempt) {
+        if (result == null || result.invocationId() == null || result.invocationId().isBlank()) {
+            return false;
+        }
+        return invocations.findByIdAndNodeId(result.invocationId(), result.nodeId()).map(invocation -> {
+            if (!java.util.Objects.equals(invocation.toolName(), toolName)
+                    || !java.util.Objects.equals(invocation.argumentsDigest(), argumentsDigest)
+                    || invocation.dispatchAttempt() != attempt) {
+                return false;
+            }
+            // 已确认的确定终态不允许被网络迟到帧覆盖；UNKNOWN 则允许被同一调用的对账结果收敛。
+            if (invocation.terminal() && invocation.status() != NodeToolInvocationStatus.UNKNOWN) {
+                return false;
+            }
+            Instant now = Instant.now();
+            if ("SUCCEEDED".equalsIgnoreCase(result.status())) {
+                String resultJson = toJson(result.result());
+                invocation.succeed(resultJson, sha256(resultJson), now);
+            } else if ("CANCELLED".equalsIgnoreCase(result.status())) {
+                invocation.fail(NodeToolInvocationStatus.CANCELLED, result.errorMessage(), now);
+            } else if ("TIMED_OUT".equalsIgnoreCase(result.status())) {
+                invocation.fail(NodeToolInvocationStatus.TIMED_OUT, result.errorMessage(), now);
+            } else if ("UNKNOWN".equalsIgnoreCase(result.status())) {
+                invocation.unknown(result.errorMessage(), now);
+            } else {
+                invocation.fail(NodeToolInvocationStatus.FAILED, result.errorMessage(), now);
+            }
+            invocations.save(invocation);
+            return true;
+        }).orElse(false);
     }
 
     @Transactional
@@ -850,12 +1642,36 @@ public class NodeService {
         nodes.save(node);
     }
 
+    /**
+     * 返回节点重连后需要向本地 journal 查询的调用摘要。
+     * 只返回 invocationId、工具名、参数摘要和 attempt；服务端不会据此自动重放调用。
+     */
+    @Transactional(readOnly = true)
+    public List<NodeInvocationReconciliation> reconciliationRequests(String nodeId, int limit) {
+        int boundedLimit = Math.max(1, Math.min(limit, 100));
+        List<NodeToolInvocationStatus> statuses = List.of(
+                NodeToolInvocationStatus.DISPATCHED,
+                NodeToolInvocationStatus.ACCEPTED,
+                NodeToolInvocationStatus.RUNNING,
+                NodeToolInvocationStatus.UNKNOWN);
+        return invocations.findByNodeIdAndStatusInOrderByCreatedAtAsc(
+                        nodeId, statuses, org.springframework.data.domain.PageRequest.of(0, boundedLimit))
+                .stream()
+                .map(invocation -> new NodeInvocationReconciliation(
+                        invocation.id(), invocation.toolName(), invocation.argumentsDigest(), invocation.dispatchAttempt()))
+                .toList();
+    }
+
     @Transactional
     public void markOffline(String nodeId) {
         nodes.findById(nodeId).ifPresent(node -> {
             node.markOffline(Instant.now());
             nodes.save(node);
         });
+    }
+
+    public record NodeInvocationReconciliation(
+            String invocationId, String toolName, String argumentsDigest, int attempt) {
     }
 
     @Transactional

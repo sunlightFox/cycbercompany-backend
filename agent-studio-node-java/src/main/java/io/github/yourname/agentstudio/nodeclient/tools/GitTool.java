@@ -1,7 +1,9 @@
 package io.github.yourname.agentstudio.nodeclient.tools;
 
 import io.github.yourname.agentstudio.nodeclient.runtime.ToolExecutionResult;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -14,6 +16,7 @@ import java.util.Map;
 public final class GitTool {
 
     private static final int MAX_OUTPUT_BYTES = 64 * 1024;
+    private static final int MAX_REVIEW_FILES = 300;
     private final Path workspaceRoot;
 
     public GitTool(Path workspaceRoot) {
@@ -33,9 +36,80 @@ public final class GitTool {
         if (path != null && (path.contains("..") || Path.of(path).isAbsolute())) {
             return ToolExecutionResult.failure("git.diff path must be workspace-relative.");
         }
-        return path == null || path.isBlank()
-                ? run(List.of("git", "diff", "--no-ext-diff", "--"))
-                : run(List.of("git", "diff", "--no-ext-diff", "--", path));
+        Object rawStaged = arguments == null ? null : arguments.get("staged");
+        if (rawStaged != null && !(rawStaged instanceof Boolean)) {
+            return ToolExecutionResult.failure("git.diff staged must be a boolean when provided.");
+        }
+        boolean staged = Boolean.TRUE.equals(rawStaged);
+        List<String> command = new ArrayList<>(List.of("git", "diff", "--no-ext-diff"));
+        // git diff 默认不显示暂存区。交付审阅必须能覆盖 git.review 报告的两种已跟踪变更，
+        // 因此由显式 staged=true 请求 --cached；绝不把两类 diff 隐式混在同一份输出中。
+        if (staged) {
+            command.add("--cached");
+        }
+        command.add("--");
+        if (path != null && !path.isBlank()) {
+            command.add(path);
+        }
+        return run(command);
+    }
+
+    /**
+     * 汇总当前工作树中的已暂存、未暂存和未跟踪文件，用于编码任务交付前的最后审阅。
+     *
+     * <p>该方法只调用 porcelain 状态命令，不读取文件正文、不调用 diff，也不修改 Git 状态。
+     * 路径和状态来自仓库数据，调用方必须把它们当作不可信内容而非指令。
+     */
+    public ToolExecutionResult review() {
+        try {
+            CommandOutput output = execute(List.of("git", "status", "--porcelain=v1", "--branch"));
+            if (output.exitCode() != 0) {
+                return ToolExecutionResult.failure("Git command failed: " + output.text().trim());
+            }
+            String branch = "unknown";
+            int staged = 0;
+            int unstaged = 0;
+            int untracked = 0;
+            boolean truncated = output.truncated();
+            List<Map<String, Object>> changes = new ArrayList<>();
+            for (String line : output.text().split("\\R")) {
+                if (line.startsWith("## ")) {
+                    branch = line.substring(3).trim();
+                    continue;
+                }
+                if (line.length() < 3 || line.charAt(2) != ' ') {
+                    continue;
+                }
+                String status = line.substring(0, 2);
+                if (status.charAt(0) != ' ' && status.charAt(0) != '?') staged++;
+                // Git 用 ?? 专门表示未跟踪文件。它不是已跟踪文件的“未暂存修改”，
+                // 三个汇总数字必须互斥，调用方才能据此准确判断需要审阅的变更类别。
+                if ("??".equals(status)) {
+                    untracked++;
+                } else if (status.charAt(1) != ' ') {
+                    unstaged++;
+                }
+                if (changes.size() >= MAX_REVIEW_FILES) {
+                    truncated = true;
+                    continue;
+                }
+                changes.add(Map.of(
+                        "path", line.substring(3),
+                        "indexStatus", String.valueOf(status.charAt(0)),
+                        "worktreeStatus", String.valueOf(status.charAt(1)),
+                        "untracked", "??".equals(status)));
+            }
+            return ToolExecutionResult.success(Map.of(
+                    "branch", branch,
+                    "changes", changes,
+                    "stagedFiles", staged,
+                    "unstagedFiles", unstaged,
+                    "untrackedFiles", untracked,
+                    "truncated", truncated,
+                    "guidance", "Review each listed path with git.diff or fs.read before delivery. This summary does not prove tests passed."));
+        } catch (Exception ex) {
+            return ToolExecutionResult.failure("git.review failed: " + message(ex));
+        }
     }
 
     /**
@@ -119,17 +193,42 @@ public final class GitTool {
 
     private ToolExecutionResult run(List<String> command) {
         try {
-            Process process = new ProcessBuilder(command).directory(workspaceRoot.toFile()).redirectErrorStream(true).start();
-            byte[] output = process.getInputStream().readNBytes(MAX_OUTPUT_BYTES + 1);
-            int exitCode = process.waitFor();
-            boolean truncated = output.length > MAX_OUTPUT_BYTES;
-            String text = new String(output, 0, truncated ? MAX_OUTPUT_BYTES : output.length, StandardCharsets.UTF_8);
-            if (exitCode != 0) {
-                return ToolExecutionResult.failure("Git command failed: " + text.trim());
+            CommandOutput output = execute(command);
+            if (output.exitCode() != 0) {
+                return ToolExecutionResult.failure("Git command failed: " + output.text().trim());
             }
-            return ToolExecutionResult.success(Map.of("output", text, "truncated", truncated));
+            return ToolExecutionResult.success(Map.of("output", output.text(), "truncated", output.truncated()));
         } catch (Exception ex) {
-            return ToolExecutionResult.failure("Git command failed: " + ex.getMessage());
+            return ToolExecutionResult.failure("Git command failed: " + message(ex));
         }
+    }
+
+    /** 继续排空 Git 的输出流，即使模型侧结果已达到上限，也不能让子进程因管道写满而挂起。 */
+    private CommandOutput execute(List<String> command) throws IOException, InterruptedException {
+        Process process = new ProcessBuilder(command).directory(workspaceRoot.toFile()).redirectErrorStream(true).start();
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+        boolean truncated = false;
+        try (InputStream stream = process.getInputStream()) {
+            byte[] buffer = new byte[8_192];
+            for (int read; (read = stream.read(buffer)) != -1;) {
+                int remaining = MAX_OUTPUT_BYTES - captured.size();
+                if (remaining > 0) {
+                    captured.write(buffer, 0, Math.min(remaining, read));
+                }
+                if (read > remaining) {
+                    truncated = true;
+                }
+            }
+        }
+        int exitCode = process.waitFor();
+        String text = captured.toString(StandardCharsets.UTF_8);
+        return new CommandOutput(exitCode, text, truncated);
+    }
+
+    private static String message(Exception ex) {
+        return ex.getMessage() == null || ex.getMessage().isBlank() ? ex.getClass().getSimpleName() : ex.getMessage();
+    }
+
+    private record CommandOutput(int exitCode, String text, boolean truncated) {
     }
 }

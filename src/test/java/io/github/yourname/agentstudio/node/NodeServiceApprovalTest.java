@@ -143,6 +143,28 @@ class NodeServiceApprovalTest {
     }
 
     @Test
+    void failedApprovedExecutionMarksTheOriginalRunInvocationAsFailed() {
+        approval.linkToRun("run-1", "call-1");
+        NodeToolInvocationEntity invocation = new NodeToolInvocationEntity(
+                "nodeinv-1", TENANT, "run-1", "call-1", NODE_ID, TOOL_NAME, "{\"command\":\"whoami\"}", Instant.now());
+        invocation.fail(NodeToolInvocationStatus.APPROVAL_REQUIRED, "approval required", Instant.now());
+        when(approvals.findByIdAndTenantId(approval.id(), TENANT)).thenReturn(Optional.of(approval));
+        when(invocations.findFirstByTenantIdAndRunIdAndToolCallIdOrderByCreatedAtDesc(TENANT, "run-1", "call-1"))
+                .thenReturn(Optional.of(invocation));
+        when(sessions.isConnected(NODE_ID)).thenReturn(true);
+        when(sessions.invoke(eq(NODE_ID), eq(TOOL_NAME), any(), eq(Duration.ofSeconds(45)), eq("run-1")))
+                .thenReturn(new NodeToolCallResult("nodeinv-1", NODE_ID, TOOL_NAME, "FAILED", Map.of(), "command failed"));
+
+        NodeToolApprovalDecisionView decision = service.decideToolApproval(
+                approval.id(), new DecideNodeToolApprovalCommand(true), ACTOR);
+
+        assertEquals("FAILED", decision.execution().status());
+        assertEquals(NodeToolInvocationStatus.FAILED, invocation.status());
+        assertEquals("command failed", invocation.errorMessage());
+        verify(invocations).save(invocation);
+    }
+
+    @Test
     void anotherTenantCannotDecideAnApproval() {
         ActorContext otherTenant = new ActorContext("tenant-b", "bob", Set.of(), Set.of());
         when(approvals.findByIdAndTenantId(approval.id(), otherTenant.tenantId())).thenReturn(Optional.empty());

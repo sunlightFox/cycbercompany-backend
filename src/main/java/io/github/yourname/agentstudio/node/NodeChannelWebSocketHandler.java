@@ -3,8 +3,8 @@ package io.github.yourname.agentstudio.node;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.time.Instant;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import org.springframework.http.HttpHeaders;
@@ -24,6 +24,7 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 public class NodeChannelWebSocketHandler extends TextWebSocketHandler {
 
     private static final String NODE_ID_ATTR = "nodeId";
+    private static final String SESSION_ID_ATTR = "nodeSessionId";
     static final String NODE_ID_HEADER = "X-Agent-Studio-Node-Id";
 
     private final NodeService nodes;
@@ -41,18 +42,25 @@ public class NodeChannelWebSocketHandler extends TextWebSocketHandler {
         NodeHandshakeCredentials credentials = credentials(session.getHandshakeHeaders());
         try {
             NodeConnectionEntity node = nodes.authenticateNode(credentials.nodeId(), credentials.nodeSecret());
+            String sessionId = "session_" + java.util.UUID.randomUUID();
             session.getAttributes().put(NODE_ID_ATTR, node.id());
-            sessions.register(node.id(), session);
-            send(session, Map.of(
-                    "type", "node.accepted",
+            session.getAttributes().put(SESSION_ID_ATTR, sessionId);
+            sessions.register(node.id(), session, sessionId, node.fencingToken());
+            sessions.sendControl(node.id(), "node.accepted", null, Map.of(
                     "nodeId", node.id(),
                     "heartbeatIntervalSeconds", 20,
-                    "timestamp", Instant.now().toString()));
+                    "fencingToken", node.fencingToken()));
+            // 连接确认后只查询节点本地 journal 的既有记录，严禁把未知副作用重新变成 tool.invoke。
+            for (NodeService.NodeInvocationReconciliation request : nodes.reconciliationRequests(node.id(), 100)) {
+                sessions.sendControl(node.id(), "tool.status", request.invocationId(), Map.of(
+                        "invocationId", request.invocationId(),
+                        "toolName", request.toolName(),
+                        "argumentsDigest", request.argumentsDigest(),
+                        "attempt", request.attempt()));
+            }
         } catch (Exception ex) {
-            send(session, Map.of(
-                    "type", "node.rejected",
-                    "error", "Node authentication failed.",
-                    "timestamp", Instant.now().toString()));
+            // 握手失败时没有可信 node session，因此只发送最小拒绝信封后立刻关闭。
+            sendUnauthenticated(session, "node.rejected", Map.of("error", "Node authentication failed."));
             session.close(CloseStatus.POLICY_VIOLATION);
         }
     }
@@ -72,62 +80,102 @@ public class NodeChannelWebSocketHandler extends TextWebSocketHandler {
             return;
         }
 
-        JsonNode root = objectMapper.readTree(message.getPayload());
-        String type = root.path("type").asText("");
+        NodeProtocolEnvelope envelope = objectMapper.readValue(message.getPayload(), NodeProtocolEnvelope.class);
+        if (!sessions.acceptInbound(nodeId, session, envelope)) {
+            // 旧 fencing token、过期帧、错误 session 或乱序帧都不能影响最新连接。
+            return;
+        }
+        String type = envelope.type();
+        JsonNode payload = envelope.payload();
         if ("node.heartbeat".equals(type)) {
             nodes.heartbeat(
                     nodeId,
-                    textOrNull(root, "hostname"),
-                    textOrNull(root, "osName"),
-                    textOrNull(root, "osArch"),
-                    textOrNull(root, "clientVersion"));
-            send(session, Map.of(
-                    "type", "node.heartbeat.ack",
-                    "timestamp", Instant.now().toString()));
+                    textOrNull(payload, "hostname"),
+                    textOrNull(payload, "osName"),
+                    textOrNull(payload, "osArch"),
+                    textOrNull(payload, "clientVersion"));
+            sessions.sendControl(nodeId, "node.heartbeat.ack", envelope.messageId(), Map.of());
             return;
         }
 
         if ("node.capabilities".equals(type)) {
             List<NodeCapabilityPayload> capabilities = objectMapper.convertValue(
-                    root.path("capabilities"),
+                    payload.path("capabilities"),
                     new TypeReference<List<NodeCapabilityPayload>>() {
                     });
             Map<String, String> runtimes = objectMapper.convertValue(
-                    root.path("runtimes"), new TypeReference<Map<String, String>>() { });
+                    payload.path("runtimes"), new TypeReference<Map<String, String>>() { });
             java.util.Set<String> features = objectMapper.convertValue(
-                    root.path("features"), new TypeReference<java.util.Set<String>>() { });
+                    payload.path("features"), new TypeReference<java.util.Set<String>>() { });
             List<NodeToolView> saved = nodes.saveCapabilities(
                     nodeId,
-                    textOrNull(root, "capabilityRevision"),
+                    textOrNull(payload, "capabilityRevision"),
                     runtimes,
                     features,
                     capabilities);
-            send(session, Map.of(
-                    "type", "node.capabilities.ack",
-                    "toolCount", saved.size(),
-                    "timestamp", Instant.now().toString()));
+            sessions.sendControl(nodeId, "node.capabilities.ack", envelope.messageId(), Map.of("toolCount", saved.size()));
             return;
         }
 
-        if ("tool.result".equals(type)) {
+        if ("tool.accepted".equals(type)) {
+            // The dispatch request is synchronously waiting inside the transaction that owns this
+            // invocation. Persisting progress here would contend for that same row and can close
+            // the WebSocket before the tool result reaches the waiting caller.
+            return;
+        }
+
+        if ("tool.progress".equals(type)) {
+            return;
+        }
+
+        if ("tool.result".equals(type) || "tool.status.result".equals(type)) {
             Map<String, Object> result = objectMapper.convertValue(
-                    root.path("result"),
+                    payload.path("result"),
                     new TypeReference<Map<String, Object>>() {
                     });
-            sessions.complete(new NodeToolCallResult(
-                    root.path("invocationId").asText(),
+            NodeToolCallResult callResult = new NodeToolCallResult(
+                    payload.path("invocationId").asText(),
                     nodeId,
-                    root.path("toolName").asText(),
-                    root.path("status").asText("UNKNOWN"),
+                    payload.path("toolName").asText(),
+                    payload.path("status").asText("UNKNOWN"),
                     result,
-                    textOrNull(root, "errorMessage")));
+                    textOrNull(payload, "errorMessage"));
+            // status 对账可能返回 ACCEPTED/RUNNING。它们说明节点仍在处理，不是失败也不是终态。
+            if (!terminalStatus(callResult.status())) {
+                if ("RUNNING".equalsIgnoreCase(callResult.status())) {
+                    nodes.startInvocation(nodeId, callResult.invocationId());
+                } else {
+                    nodes.acceptInvocation(nodeId, callResult.invocationId());
+                }
+                return;
+            }
+            boolean deliveredToWaitingCall = sessions.complete(
+                    envelope,
+                    nodeId,
+                    callResult.toolName(),
+                    textOrNull(payload, "argumentsDigest"),
+                    payload.path("attempt").asInt(1),
+                    callResult);
+            if (!deliveredToWaitingCall) {
+                // 重连对账或控制面重启后没有内存 Future；仅由 NodeService 在持久记录匹配时落库。
+                nodes.reconcileInvocationResult(
+                        callResult,
+                        callResult.toolName(),
+                        textOrNull(payload, "argumentsDigest"),
+                        payload.path("attempt").asInt(1));
+            }
+            // The originating NodeService call owns durable state transitions after its Future
+            // completes. Completing it here avoids a concurrent write to the locked invocation.
             return;
         }
 
-        send(session, Map.of(
-                "type", "node.message.ignored",
-                "reason", "Unsupported message type: " + type,
-                "timestamp", Instant.now().toString()));
+        if ("tool.cancel.ack".equals(type)) {
+            // ACK 说明节点收到取消，不能把它误写成 CANCELLED；终态仍以 result/status 为准。
+            return;
+        }
+
+        sessions.sendControl(nodeId, "node.message.ignored", envelope.messageId(),
+                Map.of("reason", "Unsupported message type: " + type));
     }
 
     @Override
@@ -149,9 +197,21 @@ public class NodeChannelWebSocketHandler extends TextWebSocketHandler {
         session.close(CloseStatus.SERVER_ERROR);
     }
 
-    private void send(WebSocketSession session, Object payload) throws Exception {
+    private void sendUnauthenticated(WebSocketSession session, String type, Object payload) throws Exception {
         if (session.isOpen()) {
-            String json = objectMapper.writeValueAsString(payload);
+            NodeProtocolEnvelope envelope = new NodeProtocolEnvelope(
+                    NodeProtocolEnvelope.CURRENT_VERSION,
+                    type,
+                    "msg_" + java.util.UUID.randomUUID(),
+                    "session_rejected",
+                    1,
+                    null,
+                    Instant.now(),
+                    null,
+                    null,
+                    0,
+                    objectMapper.valueToTree(payload));
+            String json = objectMapper.writeValueAsString(envelope);
             if (json.getBytes(StandardCharsets.UTF_8).length > NodeProtocolLimits.MAX_CONTROL_MESSAGE_BYTES) {
                 throw new IllegalArgumentException("Node protocol payload exceeds the control message size limit.");
             }
@@ -162,6 +222,14 @@ public class NodeChannelWebSocketHandler extends TextWebSocketHandler {
     private static String textOrNull(JsonNode root, String field) {
         JsonNode value = root.get(field);
         return value == null || value.isNull() ? null : value.asText();
+    }
+
+    private static boolean terminalStatus(String status) {
+        return "SUCCEEDED".equalsIgnoreCase(status)
+                || "FAILED".equalsIgnoreCase(status)
+                || "CANCELLED".equalsIgnoreCase(status)
+                || "TIMED_OUT".equalsIgnoreCase(status)
+                || "UNKNOWN".equalsIgnoreCase(status);
     }
 
     static NodeHandshakeCredentials credentials(HttpHeaders headers) {

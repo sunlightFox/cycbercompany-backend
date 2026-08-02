@@ -97,7 +97,8 @@ public class ToolRouter {
             throw new IllegalArgumentException("Tool provider is not available: " + request.binding().providerId());
         }
         // P1 先把 MCP 纳入通用审批。Node 的直接 API 仍保留原审批实体，P3 协议迁移时再统一历史入口。
-        if ("mcp".equals(request.binding().providerId())
+        if (("mcp".equals(request.binding().providerId())
+                || "skill-authoring".equals(request.binding().providerId()))
                 && request.binding().requiresApproval()
                 && (request.approvalId() == null || request.approvalId().isBlank())) {
             if (approvals == null) {

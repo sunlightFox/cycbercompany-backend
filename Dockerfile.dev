@@ -1,0 +1,9 @@
+FROM dockerproxy.net/library/eclipse-temurin:21-jdk-alpine
+
+WORKDIR /workspace
+
+RUN apk add --no-cache wget
+
+EXPOSE 8080
+
+CMD ["sh", "./gradlew", "bootRun", "--no-daemon"]

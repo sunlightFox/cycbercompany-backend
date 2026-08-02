@@ -33,7 +33,10 @@ public class SkillCompatibilityService {
             requiredRuntimes.addAll(analysis.runtimes());
             requiredFeatures.addAll(analysis.requiredFeatures());
             analysis.warnings().forEach(warning -> issues.add(new CompatibilityReport.Issue(
-                    "ERROR", "UNKNOWN_TOOL_ALIAS", analysis.skillId(), warning)));
+                    "ERROR",
+                    warning.startsWith("Unsupported script runtime:") ? "UNSUPPORTED_SCRIPT_RUNTIME" : "UNKNOWN_TOOL_ALIAS",
+                    analysis.skillId(),
+                    warning)));
             analysis.requiredTools().stream()
                     .filter(tool -> !availableTools.contains(tool))
                     .forEach(tool -> issues.add(new CompatibilityReport.Issue(
@@ -59,11 +62,12 @@ public class SkillCompatibilityService {
                     .forEach(feature -> issues.add(new CompatibilityReport.Issue(
                             "ERROR", "MISSING_FEATURE", analysis.skillId(),
                             "Skill requires node feature '" + feature + "', but the selected node did not report it.")));
-            if (!"none".equalsIgnoreCase(analysis.network())) {
+            if (analysis.network() != null && !analysis.network().isBlank()
+                    && !"none".equalsIgnoreCase(analysis.network())) {
                 issues.add(new CompatibilityReport.Issue(
-                        "WARNING", "NETWORK_REQUESTED", analysis.skillId(),
+                        "ERROR", "NETWORK_UNSUPPORTED", analysis.skillId(),
                         "Skill declares network='" + analysis.network()
-                                + "'. Network access still requires an independent execution policy and approval."));
+                                + "', but the available Docker Skill runtime supports only network='none'."));
             }
         }
         boolean compatible = issues.stream().noneMatch(issue -> "ERROR".equals(issue.severity()));

@@ -1,6 +1,7 @@
 package io.github.yourname.agentstudio.web;
 
 import io.github.yourname.agentstudio.node.NodeToolApprovalConflictException;
+import io.github.yourname.agentstudio.skill.SkillCompatibilityException;
 import java.time.Instant;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
@@ -11,6 +12,15 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 @RestControllerAdvice
 class ApiExceptionHandler {
+
+    @ExceptionHandler(SkillCompatibilityException.class)
+    ProblemDetail skillCompatibility(SkillCompatibilityException ex) {
+        var detail = ProblemDetail.forStatusAndDetail(HttpStatus.UNPROCESSABLE_CONTENT, ex.getMessage());
+        detail.setProperty("code", "SKILL_INCOMPATIBLE");
+        detail.setProperty("report", ex.report());
+        detail.setProperty("timestamp", Instant.now().toString());
+        return detail;
+    }
 
     @ExceptionHandler(NodeToolApprovalConflictException.class)
     ProblemDetail approvalConflict(NodeToolApprovalConflictException ex) {

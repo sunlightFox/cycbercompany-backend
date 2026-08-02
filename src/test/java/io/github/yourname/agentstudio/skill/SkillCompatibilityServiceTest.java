@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import io.github.yourname.agentstudio.node.NodeConnectionView;
 import io.github.yourname.agentstudio.node.NodeDetailView;
+import io.github.yourname.agentstudio.node.NodeKind;
 import io.github.yourname.agentstudio.node.NodeStatus;
 import io.github.yourname.agentstudio.tool.ResolvedToolBinding;
 import io.github.yourname.agentstudio.tool.RiskLevel;
@@ -71,6 +72,32 @@ class SkillCompatibilityServiceTest {
                 .contains("RUNTIME_VERSION_MISMATCH");
     }
 
+    @Test
+    void rejectsNetworkedScriptsBeforeTheyReachTheNetworkIsolatedRuntime() {
+        SkillAnalysis analysis = new SkillAnalysis(
+                "networked", 3, List.of(), List.of(), List.of(), List.of(),
+                "internet", List.of(), List.of("scripts/check.py"), List.of());
+
+        CompatibilityReport report = new SkillCompatibilityService().check(List.of(analysis), List.of(), null);
+
+        assertThat(report.compatible()).isFalse();
+        assertThat(report.issues()).extracting(CompatibilityReport.Issue::code)
+                .contains("NETWORK_UNSUPPORTED");
+    }
+
+    @Test
+    void presentsUnsupportedScriptRuntimesAsSpecificErrors() {
+        SkillAnalysis analysis = new SkillAnalysis(
+                "powershell", 3, List.of(), List.of(), List.of(), List.of(), "none",
+                List.of(), List.of("scripts/run.ps1"), List.of("Unsupported script runtime: scripts/run.ps1"));
+
+        CompatibilityReport report = new SkillCompatibilityService().check(List.of(analysis), List.of(), null);
+
+        assertThat(report.compatible()).isFalse();
+        assertThat(report.issues()).extracting(CompatibilityReport.Issue::code)
+                .contains("UNSUPPORTED_SCRIPT_RUNTIME");
+    }
+
     private static ResolvedToolBinding binding(String name) {
         return new ResolvedToolBinding(
                 "node:node-1:" + name, "tool_" + name.replace('.', '_'), name, "node", name,
@@ -81,6 +108,7 @@ class SkillCompatibilityServiceTest {
         Instant now = Instant.now();
         return new NodeDetailView(new NodeConnectionView(
                 "node-1", "Node", "host", "Windows", "amd64", "1.0",
-                "sha256:revision", runtimes, features, true, NodeStatus.ONLINE, now, now, now), List.of());
+                NodeKind.REGISTERED, "sha256:revision", runtimes, features,
+                true, NodeStatus.ONLINE, now, now, now), List.of());
     }
 }

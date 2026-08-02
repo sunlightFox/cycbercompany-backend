@@ -1,0 +1,11 @@
+FROM eclipse-temurin:21-jdk AS build
+WORKDIR /src
+COPY . .
+RUN chmod +x gradlew && ./gradlew :agent-studio-node-java:installDist --no-daemon
+
+FROM mcr.microsoft.com/playwright/java:v1.61.0-noble
+WORKDIR /app
+COPY --from=build /src/agent-studio-node-java/build/install/agent-studio-node-java/ ./
+RUN mkdir -p /workspace /root/.agent-studio-node/data
+VOLUME ["/workspace", "/root/.agent-studio-node"]
+CMD ["./bin/agent-studio-node-java", "start"]

@@ -12,9 +12,17 @@ public record NodeToolInvocationView(
         String argumentsJson,
         String resultJson,
         String errorMessage,
+        int dispatchAttempt,
+        String argumentsDigest,
+        String idempotencyKey,
+        String policyRevision,
+        String resultDigest,
         Instant createdAt,
+        Instant deadlineAt,
+        Instant acceptedAt,
         Instant startedAt,
-        Instant finishedAt) {
+        Instant finishedAt,
+        Instant updatedAt) {
 
     static NodeToolInvocationView from(NodeToolInvocationEntity entity) {
         return new NodeToolInvocationView(
@@ -28,8 +36,16 @@ public record NodeToolInvocationView(
                 SensitiveValueMasker.mask(entity.argumentsJson()),
                 SensitiveValueMasker.mask(entity.resultJson()),
                 SensitiveValueMasker.mask(entity.errorMessage()),
+                entity.dispatchAttempt(),
+                entity.argumentsDigest(),
+                entity.idempotencyKey(),
+                entity.policyRevision(),
+                entity.resultDigest(),
                 entity.createdAt(),
+                entity.deadlineAt(),
+                entity.acceptedAt(),
                 entity.startedAt(),
-                entity.finishedAt());
+                entity.finishedAt(),
+                entity.updatedAt());
     }
 }

@@ -1,6 +1,8 @@
 spring:
   datasource:
-    url: jdbc:h2:mem:agent-studio-test;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    # 多个 Spring 测试上下文可能并存；使用随机内存库，避免一个 create-drop 上下文删除另一个
+    # Outbox 调度器仍在轮询时所依赖的表，从而产生与业务无关的关库竞态日志。
+    url: jdbc:h2:mem:agent-studio-test-${random.uuid};MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
     username: sa
     password:
   jpa:

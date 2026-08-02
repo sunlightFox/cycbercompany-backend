@@ -35,12 +35,12 @@ public class KnowledgeCommandService {
     /**
      * 单块最大字符数。这里先用字符长度实现，后续接 tokenizer 后可以改成 token 数。
      */
-    private static final int CHUNK_SIZE = 1_200;
+    private static final int CHUNK_SIZE = 4_000;
 
     /**
      * 相邻 chunk 的重叠字符数。重叠能减少“答案刚好跨两个 chunk 边界”导致召回失败的问题。
      */
-    private static final int CHUNK_OVERLAP = 160;
+    private static final int CHUNK_OVERLAP = 1_500;
     private static final Pattern OPENXML_TEXT_NODE = Pattern.compile("<(?:[A-Za-z0-9]+:)?t[^>]*>(.*?)</(?:[A-Za-z0-9]+:)?t>");
 
     private final KnowledgeBaseRepository bases;
@@ -394,7 +394,7 @@ public class KnowledgeCommandService {
         }
         // Prefer a nearby paragraph, line, or sentence boundary. The lower bound keeps a
         // short trailing sentence from turning a 1,200-character chunk into a tiny fragment.
-        int lowerBound = Math.max(start + CHUNK_SIZE / 2, target - 400);
+        int lowerBound = Math.min(target - 1, Math.max(start + CHUNK_SIZE / 2, target - 2500));
         for (int index = target; index > lowerBound; index--) {
             char current = content.charAt(index - 1);
             if (current == '\n') {

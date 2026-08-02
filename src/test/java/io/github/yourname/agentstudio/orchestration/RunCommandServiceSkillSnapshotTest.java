@@ -24,6 +24,10 @@ import io.github.yourname.agentstudio.model.ModelCapability;
 import io.github.yourname.agentstudio.model.ModelProfileView;
 import io.github.yourname.agentstudio.model.ProviderType;
 import io.github.yourname.agentstudio.node.NodeService;
+import io.github.yourname.agentstudio.node.NodeConnectionView;
+import io.github.yourname.agentstudio.node.NodeDetailView;
+import io.github.yourname.agentstudio.node.NodeKind;
+import io.github.yourname.agentstudio.node.NodeStatus;
 import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.skill.SkillCatalog;
 import io.github.yourname.agentstudio.skill.SkillRunBinding;
@@ -340,6 +344,89 @@ class RunCommandServiceSkillSnapshotTest {
                 .contains("Enabled Skill instructions");
         assertThat(persisted.status()).isEqualTo(RunStatus.SUCCEEDED);
         verify(skills, times(2)).compileInstructions(List.of(binding));
+    }
+
+    @Test
+    void createRoutesComputerControlToTheOnlyReadySystemNode() {
+        ResolvedToolBinding binding = new ResolvedToolBinding(
+                "node:node-system:system.desktop.organize.list",
+                "tool_system_desktop_organize_list",
+                "system.desktop.organize.list",
+                "node",
+                "system.desktop.organize.list",
+                "Inspect the desktop files that may be organized",
+                RiskLevel.HIGH,
+                true,
+                Map.of("type", "object"),
+                Map.of("nodeId", "node-system"));
+        ResolvedToolBinding wallpaper = new ResolvedToolBinding(
+                "node:node-system:system.desktop.set_wallpaper",
+                "tool_system_desktop_set_wallpaper",
+                "system.desktop.set_wallpaper",
+                "node",
+                "system.desktop.set_wallpaper",
+                "Set wallpaper",
+                RiskLevel.HIGH,
+                true,
+                Map.of("type", "object"),
+                Map.of("nodeId", "node-system"));
+        when(nodes.resolveComputerControlNodeId(ACTOR)).thenReturn("node-system");
+        when(skills.resolveForRun(List.of())).thenReturn(List.of());
+        when(skills.compileInstructions(List.of())).thenReturn("");
+        when(nodes.get("node-system", ACTOR)).thenReturn(new NodeDetailView(
+                new NodeConnectionView(
+                        "node-system", "My PC", "host", "Windows", "amd64", "test", NodeKind.REGISTERED, null,
+                        Map.of(), Set.of(), true, NodeStatus.ONLINE, null, null, null),
+                List.of()));
+        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of(binding, wallpaper));
+
+        service.create(new CreateRunCommand(
+                "conversation-1", "Organize my desktop", "model-1", "agent-1", List.of(), List.of(), List.of(),
+                List.of("computer:*"), null, null), ACTOR);
+
+        ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(runs).save(runCaptor.capture());
+        assertThat(runCaptor.getValue().runSpecJson())
+                .contains("node-system")
+                .contains("system.*")
+                .doesNotContain("computer:*")
+                .doesNotContain("system.desktop.set_wallpaper");
+    }
+
+    @Test
+    void createResolvesAutoCodingRunToTheMatchingSandboxAndPinsTheConcreteNode() {
+        ResolvedToolBinding binding = new ResolvedToolBinding(
+                "node:sandbox-linux:fs.read",
+                "tool_fs_read",
+                "fs.read",
+                "node",
+                "fs.read",
+                "Read a workspace file",
+                RiskLevel.LOW,
+                false,
+                Map.of("type", "object"),
+                Map.of("nodeId", "sandbox-linux"));
+        when(nodes.resolveSandboxNodeId(List.of("linux", "java-21"), List.of("fs.read"), ACTOR))
+                .thenReturn("sandbox-linux");
+        when(skills.resolveForRun(List.of())).thenReturn(List.of());
+        when(skills.compileInstructions(List.of())).thenReturn("");
+        when(nodes.get("sandbox-linux", ACTOR)).thenReturn(new NodeDetailView(
+                new NodeConnectionView(
+                        "sandbox-linux", "Linux sandbox", "sandbox", "Linux", "amd64", "test", NodeKind.SANDBOX, null,
+                        Map.of(), Set.of(), Set.of("linux", "java-21"), true, NodeStatus.ONLINE, null, null, null),
+                List.of()));
+        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of(binding));
+
+        service.create(new CreateRunCommand(
+                "conversation-1", "Inspect the project", "model-1", "agent-1", List.of(), List.of(), List.of(),
+                List.of("fs.read"), "auto", ".", List.of(), List.of("linux", "java-21")), ACTOR);
+
+        ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(nodes).resolveSandboxNodeId(List.of("linux", "java-21"), List.of("fs.read"), ACTOR);
+        verify(runs).save(runCaptor.capture());
+        assertThat(runCaptor.getValue().runSpecJson())
+                .contains("sandbox-linux")
+                .doesNotContain("\"nodeId\":\"auto\"");
     }
 
     private static CreateRunCommand command(List<String> skillIds) {

@@ -75,6 +75,14 @@ public class SkillRepositoryService {
                         "https://github.com/composio-community/awesome-codex-skills",
                         "main",
                         0,
+                        "CURATED"),
+                new SkillRepositoryView(
+                        "ethanyoq-skill-hub",
+                        "EthanYoQ/Skill-hub",
+                        "Community SkillHub collection of reusable Codex and Claude Code workflows.",
+                        "https://github.com/EthanYoQ/Skill-hub",
+                        "mine",
+                        0,
                         "CURATED"));
     }
 

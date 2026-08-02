@@ -36,14 +36,23 @@ public class NodeConnectionEntity {
     private Map<String, String> runtimeVersions = new LinkedHashMap<>();
     @ElementCollection(fetch = FetchType.EAGER)
     private Set<String> features = new LinkedHashSet<>();
+    /**
+     * 管理员配置的调度标签，例如 linux、java-21、playwright。标签不是节点自行上报的
+     * 能力，也不参与权限判定；它只是让控制面从已被明确标记为 SANDBOX 的节点中选目标。
+     */
+    @ElementCollection(fetch = FetchType.EAGER)
+    private Set<String> labels = new LinkedHashSet<>();
     @Column(length = 128)
     private String secretHash;
+    @Enumerated(EnumType.STRING)
+    private NodeKind kind;
     private boolean enabled;
     @Enumerated(EnumType.STRING)
     private NodeStatus status;
     private Instant lastSeenAt;
     private Instant createdAt;
     private Instant updatedAt;
+    private long fencingToken;
 
     protected NodeConnectionEntity() {
     }
@@ -58,6 +67,20 @@ public class NodeConnectionEntity {
             String clientVersion,
             String secretHash,
             Instant now) {
+        this(id, tenantId, name, hostname, osName, osArch, clientVersion, secretHash, NodeKind.REGISTERED, now);
+    }
+
+    public NodeConnectionEntity(
+            String id,
+            String tenantId,
+            String name,
+            String hostname,
+            String osName,
+            String osArch,
+            String clientVersion,
+            String secretHash,
+            NodeKind kind,
+            Instant now) {
         this.id = id;
         this.tenantId = tenantId;
         this.name = name;
@@ -66,6 +89,7 @@ public class NodeConnectionEntity {
         this.osArch = osArch;
         this.clientVersion = clientVersion;
         this.secretHash = secretHash;
+        this.kind = kind == null ? NodeKind.REGISTERED : kind;
         this.enabled = true;
         this.status = NodeStatus.OFFLINE;
         this.createdAt = now;
@@ -82,12 +106,22 @@ public class NodeConnectionEntity {
     public String capabilityRevision() { return capabilityRevision; }
     public Map<String, String> runtimeVersions() { return Map.copyOf(runtimeVersions); }
     public Set<String> features() { return Set.copyOf(features); }
+    public Set<String> labels() { return Set.copyOf(labels); }
     public String secretHash() { return secretHash; }
+    public NodeKind kind() { return kind == null ? NodeKind.REGISTERED : kind; }
     public boolean enabled() { return enabled; }
     public NodeStatus status() { return status; }
     public Instant lastSeenAt() { return lastSeenAt; }
     public Instant createdAt() { return createdAt; }
     public Instant updatedAt() { return updatedAt; }
+    public long fencingToken() { return fencingToken; }
+
+    /** 每次认证成功建立新连接都递增，旧连接的迟到消息因 token 不匹配而失效。 */
+    public long advanceFencingToken(Instant now) {
+        this.fencingToken++;
+        this.updatedAt = now;
+        return this.fencingToken;
+    }
 
     public void update(String name, boolean enabled, Instant now) {
         if (name != null && !name.isBlank()) {
@@ -98,6 +132,18 @@ public class NodeConnectionEntity {
             this.status = NodeStatus.DISABLED;
         } else if (this.status == NodeStatus.DISABLED) {
             this.status = NodeStatus.OFFLINE;
+        }
+        this.updatedAt = now;
+    }
+
+    /** Updates only server-managed sandbox metadata after NodeService has applied its safety checks. */
+    public void updateSchedulingMetadata(NodeKind requestedKind, Set<String> requestedLabels, Instant now) {
+        if (requestedKind != null) {
+            this.kind = requestedKind;
+        }
+        if (requestedLabels != null) {
+            this.labels.clear();
+            this.labels.addAll(requestedLabels);
         }
         this.updatedAt = now;
     }

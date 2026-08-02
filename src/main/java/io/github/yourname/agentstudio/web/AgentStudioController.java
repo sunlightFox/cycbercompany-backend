@@ -1,6 +1,8 @@
 package io.github.yourname.agentstudio.web;
 
 import io.github.yourname.agentstudio.agent.AgentCatalog;
+import io.github.yourname.agentstudio.agent.CreateAgentCommand;
+import io.github.yourname.agentstudio.agent.UpdateAgentCommand;
 import io.github.yourname.agentstudio.conversation.ConversationAttachmentService;
 import io.github.yourname.agentstudio.conversation.ConversationService;
 import io.github.yourname.agentstudio.conversation.CreateConversationCommand;
@@ -16,12 +18,15 @@ import io.github.yourname.agentstudio.model.TestModelCommand;
 import io.github.yourname.agentstudio.model.UpdateModelStatusCommand;
 import io.github.yourname.agentstudio.model.UpsertModelProfileCommand;
 import io.github.yourname.agentstudio.node.CallNodeToolCommand;
+import io.github.yourname.agentstudio.node.BootstrapLocalExecutorCommand;
 import io.github.yourname.agentstudio.node.CreateNodeRegistrationTokenCommand;
 import io.github.yourname.agentstudio.node.DecideNodeToolApprovalCommand;
 import io.github.yourname.agentstudio.node.NodeService;
 import io.github.yourname.agentstudio.node.RegisterNodeCommand;
 import io.github.yourname.agentstudio.node.UpdateNodeCommand;
 import io.github.yourname.agentstudio.node.UpdateNodeToolCommand;
+import io.github.yourname.agentstudio.execution.ExecutionSettingsService;
+import io.github.yourname.agentstudio.execution.UpdateExecutionSettingsCommand;
 import io.github.yourname.agentstudio.mcp.CreateMcpConnectionCommand;
 import io.github.yourname.agentstudio.mcp.CallMcpToolCommand;
 import io.github.yourname.agentstudio.mcp.InstallNpmMcpServerCommand;
@@ -36,12 +41,19 @@ import io.github.yourname.agentstudio.orchestration.ConversationQueueQueryServic
 import io.github.yourname.agentstudio.orchestration.RunCommandService;
 import io.github.yourname.agentstudio.orchestration.RunEventPublisher;
 import io.github.yourname.agentstudio.orchestration.RunQueryService;
+import io.github.yourname.agentstudio.orchestration.RunWorkflowCheckpointService;
 import io.github.yourname.agentstudio.security.CurrentActorProvider;
 import io.github.yourname.agentstudio.skill.DiscoverRepositorySkillsCommand;
+import io.github.yourname.agentstudio.skill.ClawHubSkillService;
+import io.github.yourname.agentstudio.skill.CreateSkillCommand;
+import io.github.yourname.agentstudio.skill.InstallClawHubSkillCommand;
 import io.github.yourname.agentstudio.skill.InstallSkillCommand;
 import io.github.yourname.agentstudio.skill.SearchSkillRepositoriesCommand;
 import io.github.yourname.agentstudio.skill.SkillCatalog;
+import io.github.yourname.agentstudio.skill.SkillExperienceService;
+import io.github.yourname.agentstudio.skill.SkillPreflightCommand;
 import io.github.yourname.agentstudio.skill.SkillRepositoryService;
+import io.github.yourname.agentstudio.skill.UpdateSkillContentCommand;
 import io.github.yourname.agentstudio.skill.UpdateSkillCommand;
 import io.github.yourname.agentstudio.tool.ToolCatalog;
 import io.github.yourname.agentstudio.tool.ToolRouter;
@@ -51,6 +63,7 @@ import io.github.yourname.agentstudio.tool.WebSearchService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.util.List;
 import java.util.stream.Stream;
 import org.springframework.http.ResponseEntity;
@@ -83,16 +96,28 @@ class AgentStudioController {
     private final ToolRouter toolRouter;
     private final WebSearchService webSearch;
     private final SkillCatalog skills;
+    private final SkillExperienceService skillExperience;
     private final SkillRepositoryService skillRepositories;
+    private final ClawHubSkillService clawHubSkills;
     private final McpConnectionService mcpConnections;
     private final McpRepositoryService mcpRepositories;
     private final NodeService nodes;
+    private final ExecutionSettingsService executionSettings;
     private final KnowledgeCommandService knowledgeCommands;
     private final KnowledgeQueryService knowledgeQueries;
     private final RunCommandService runCommands;
     private final RunQueryService runQueries;
+    private final RunWorkflowCheckpointService workflowCheckpoints;
     private final ConversationQueueQueryService conversationQueues;
     private final RunEventPublisher runEvents;
+
+    private static boolean isLoopbackRequest(HttpServletRequest request) {
+        try {
+            return InetAddress.getByName(request.getRemoteAddr()).isLoopbackAddress();
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
 
     AgentStudioController(
             CurrentActorProvider actors,
@@ -104,14 +129,18 @@ class AgentStudioController {
             ToolRouter toolRouter,
             WebSearchService webSearch,
             SkillCatalog skills,
+            SkillExperienceService skillExperience,
             SkillRepositoryService skillRepositories,
+            ClawHubSkillService clawHubSkills,
             McpConnectionService mcpConnections,
             McpRepositoryService mcpRepositories,
             NodeService nodes,
+            ExecutionSettingsService executionSettings,
             KnowledgeCommandService knowledgeCommands,
             KnowledgeQueryService knowledgeQueries,
             RunCommandService runCommands,
             RunQueryService runQueries,
+            RunWorkflowCheckpointService workflowCheckpoints,
             ConversationQueueQueryService conversationQueues,
             RunEventPublisher runEvents) {
         this.actors = actors;
@@ -123,14 +152,18 @@ class AgentStudioController {
         this.toolRouter = toolRouter;
         this.webSearch = webSearch;
         this.skills = skills;
+        this.skillExperience = skillExperience;
         this.skillRepositories = skillRepositories;
+        this.clawHubSkills = clawHubSkills;
         this.mcpConnections = mcpConnections;
         this.mcpRepositories = mcpRepositories;
         this.nodes = nodes;
+        this.executionSettings = executionSettings;
         this.knowledgeCommands = knowledgeCommands;
         this.knowledgeQueries = knowledgeQueries;
         this.runCommands = runCommands;
         this.runQueries = runQueries;
+        this.workflowCheckpoints = workflowCheckpoints;
         this.conversationQueues = conversationQueues;
         this.runEvents = runEvents;
     }
@@ -158,6 +191,28 @@ class AgentStudioController {
     @GetMapping("/models")
     Object listModels() {
         return models.list();
+    }
+
+    @GetMapping("/execution-settings")
+    Object getExecutionSettings(HttpServletRequest request) {
+        return executionSettings.get(actors.current(request));
+    }
+
+    @PatchMapping("/execution-settings")
+    Object updateExecutionSettings(
+            @Valid @RequestBody UpdateExecutionSettingsCommand command,
+            HttpServletRequest request) {
+        return executionSettings.update(command, actors.current(request));
+    }
+
+    @PostMapping("/local-executor/bootstrap")
+    Object bootstrapLocalExecutor(
+            @RequestBody(required = false) BootstrapLocalExecutorCommand command,
+            HttpServletRequest request) {
+        if (!isLoopbackRequest(request)) {
+            throw new IllegalArgumentException("The local executor may only be provisioned from this computer.");
+        }
+        return nodes.bootstrapLocalExecutor(command, actors.current(request));
     }
 
     @GetMapping("/models/presets")
@@ -207,6 +262,17 @@ class AgentStudioController {
         return agents.list();
     }
 
+    @PostMapping("/agents")
+    @ResponseStatus(HttpStatus.CREATED)
+    Object createAgent(@Valid @RequestBody CreateAgentCommand command) {
+        return agents.create(command);
+    }
+
+    @PatchMapping("/agents/{id}")
+    Object updateAgent(@PathVariable String id, @Valid @RequestBody UpdateAgentCommand command) {
+        return agents.update(id, command);
+    }
+
     @GetMapping("/tools")
     Object listTools(HttpServletRequest request) {
         return Stream.concat(
@@ -230,15 +296,44 @@ class AgentStudioController {
         return skills.get(id);
     }
 
+    @PostMapping("/skills")
+    @ResponseStatus(HttpStatus.CREATED)
+    Object createSkill(@Valid @RequestBody CreateSkillCommand command) {
+        return skills.create(command);
+    }
+
     @PostMapping("/skills/install")
     @ResponseStatus(HttpStatus.CREATED)
     Object installSkill(@Valid @RequestBody InstallSkillCommand command) {
         return skills.install(command);
     }
 
+    @PostMapping("/skills/install/clawhub")
+    @ResponseStatus(HttpStatus.CREATED)
+    Object installClawHubSkill(@Valid @RequestBody InstallClawHubSkillCommand command) {
+        return skills.installClawHub(command, clawHubSkills);
+    }
+
     @PatchMapping("/skills/{id}")
     Object updateSkill(@PathVariable String id, @Valid @RequestBody UpdateSkillCommand command) {
         return skills.setEnabled(id, command);
+    }
+
+    @org.springframework.web.bind.annotation.PutMapping("/skills/{id}/content")
+    Object updateSkillContent(
+            @PathVariable String id,
+            @Valid @RequestBody UpdateSkillContentCommand command) {
+        return skills.updateContent(id, command);
+    }
+
+    @PostMapping("/skills/preflight")
+    Object preflightSkills(@RequestBody(required = false) SkillPreflightCommand command, HttpServletRequest request) {
+        return skillExperience.preflight(command, actors.current(request));
+    }
+
+    @PostMapping("/skills/test")
+    Object testSkills(@RequestBody(required = false) SkillPreflightCommand command, HttpServletRequest request) {
+        return skillExperience.test(command, actors.current(request));
     }
 
     @DeleteMapping("/skills/{id}")
@@ -255,6 +350,12 @@ class AgentStudioController {
     @PostMapping("/skill-repositories/search")
     Object searchSkillRepositories(@RequestBody SearchSkillRepositoriesCommand command) {
         return skillRepositories.search(command);
+    }
+
+    @GetMapping("/skill-registries/clawhub/search")
+    Object searchClawHubSkills(@org.springframework.web.bind.annotation.RequestParam(required = false) String query,
+            @org.springframework.web.bind.annotation.RequestParam(required = false) Integer limit) {
+        return clawHubSkills.search(query, limit);
     }
 
     @PostMapping("/skill-repositories/discover")
@@ -602,9 +703,25 @@ class AgentStudioController {
         return runCommands.cancel(id, actors.current(request));
     }
 
+    @PostMapping("/runs/{id}/reconcile")
+    Object reconcileRunNodeInvocations(@PathVariable String id, HttpServletRequest request) {
+        var actor = actors.current(request);
+        // 先解析 Run 本身，统一执行租户校验；不能让猜测到的 runId 成为查询其他租户节点命令的入口。
+        runQueries.get(id, actor);
+        return nodes.requestRunReconciliation(id, actor);
+    }
+
     @GetMapping("/runs/{id}")
     Object getRun(@PathVariable String id, HttpServletRequest request) {
         return runQueries.get(id, actors.current(request));
+    }
+
+    @GetMapping("/runs/{id}/workflow")
+    Object getRunWorkflowCheckpoint(@PathVariable String id, HttpServletRequest request) {
+        var actor = actors.current(request);
+        // 先解析 Run 本身，确保不存在的 Run 与没有检查点的旧数据都使用统一的租户校验。
+        runQueries.get(id, actor);
+        return workflowCheckpoints.get(id, actor);
     }
 
     @GetMapping("/runs/{id}/tool-invocations")

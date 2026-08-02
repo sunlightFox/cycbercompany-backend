@@ -1,0 +1,62 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: ../Dockerfile.backend
+    container_name: agent-studio-backend
+    restart: unless-stopped
+    environment:
+      EDGEFN_API_KEY: ${EDGEFN_API_KEY:-}
+      EDGEFN_BASE_URL: ${EDGEFN_BASE_URL:-https://api.edgefn.net/v1}
+      EDGEFN_MODEL: ${EDGEFN_MODEL:-MiniMax-M3}
+      SEARXNG_ENDPOINT: http://searxng:8080
+      SEARXNG_LANGUAGE: zh-CN
+      SEARXNG_SAFESEARCH: "1"
+    volumes:
+      - backend-data:/app/data
+    expose:
+      - "8080"
+    depends_on:
+      - searxng
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../Dockerfile.frontend
+    container_name: agent-studio-frontend
+    restart: unless-stopped
+    environment:
+      SPRING_AGENT_STUDIO_API_URL: http://backend:8080
+    ports:
+      - "5173:3000"
+    depends_on:
+      - backend
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: agent-studio-searxng
+    restart: unless-stopped
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    expose:
+      - "8080"
+
+  node:
+    build:
+      context: ./backend
+      dockerfile: ../Dockerfile.node
+    container_name: agent-studio-node
+    restart: unless-stopped
+    environment:
+      AGENT_STUDIO_SKILL_RUNTIME: docker
+    command: ["./bin/agent-studio-node-java", "start-local", "--server", "http://backend:8080", "--name", "server-workspace", "--workspace", "/workspace", "--config", "/root/.agent-studio-node/local-executor.json"]
+    user: "0:0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - backend
+
+volumes:
+  backend-data:
+  node-workspace:
+  node-data:

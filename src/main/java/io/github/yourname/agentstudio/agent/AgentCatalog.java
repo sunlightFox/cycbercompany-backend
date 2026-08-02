@@ -1,6 +1,8 @@
 package io.github.yourname.agentstudio.agent;
 
+import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -12,6 +14,8 @@ import org.springframework.transaction.annotation.Transactional;
  */
 @Service
 public class AgentCatalog {
+
+    private static final String DEFAULT_AGENT_ID = "default-assistant";
 
     private final AgentDefinitionRepository repository;
 
@@ -29,5 +33,37 @@ public class AgentCatalog {
     public AgentDefinitionView get(String id) {
         return repository.findById(id).map(AgentDefinitionView::from)
                 .orElseThrow(() -> new IllegalArgumentException("Agent not found: " + id));
+    }
+
+    @Transactional
+    public AgentDefinitionView create(CreateAgentCommand command) {
+        var defaultAgent = repository.findById(DEFAULT_AGENT_ID)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "A default agent is required before creating an employee."));
+        var agent = new AgentDefinitionEntity(
+                UUID.randomUUID().toString(),
+                command.name().trim(),
+                normalizeDescription(command.description()),
+                command.systemPrompt().trim(),
+                defaultAgent.defaultModelProfileId(),
+                defaultAgent.toolAllowList(),
+                true,
+                Instant.now());
+        return AgentDefinitionView.from(repository.save(agent));
+    }
+
+    @Transactional
+    public AgentDefinitionView update(String id, UpdateAgentCommand command) {
+        var agent = repository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Agent not found: " + id));
+        agent.updateBasicInfo(
+                command.name().trim(),
+                normalizeDescription(command.description()),
+                command.systemPrompt().trim());
+        return AgentDefinitionView.from(repository.save(agent));
+    }
+
+    private static String normalizeDescription(String description) {
+        return description == null ? "" : description.trim();
     }
 }

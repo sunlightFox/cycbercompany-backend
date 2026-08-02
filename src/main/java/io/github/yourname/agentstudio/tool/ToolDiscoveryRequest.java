@@ -1,6 +1,7 @@
 package io.github.yourname.agentstudio.tool;
 
 import io.github.yourname.agentstudio.security.ActorContext;
+import io.github.yourname.agentstudio.skill.SkillRunBinding;
 import java.util.List;
 
 /** Provider 发现工具时可见的、已经过控制面验证的运行范围。 */
@@ -9,11 +10,13 @@ public record ToolDiscoveryRequest(
         String nodeId,
         List<String> knowledgeBaseIds,
         List<String> mcpConnectionIds,
+        List<SkillRunBinding> skillBindings,
         ActorContext actor) {
 
     public ToolDiscoveryRequest {
         knowledgeBaseIds = knowledgeBaseIds == null ? List.of() : List.copyOf(knowledgeBaseIds);
         mcpConnectionIds = mcpConnectionIds == null ? List.of() : List.copyOf(mcpConnectionIds);
+        skillBindings = skillBindings == null ? List.of() : List.copyOf(skillBindings);
         if (actor == null) {
             throw new IllegalArgumentException("Tool discovery requires a trusted actor.");
         }
@@ -23,8 +26,17 @@ public record ToolDiscoveryRequest(
     public ToolDiscoveryRequest(
             String runId,
             String nodeId,
+            List<String> knowledgeBaseIds,
             List<String> mcpConnectionIds,
             ActorContext actor) {
-        this(runId, nodeId, List.of(), mcpConnectionIds, actor);
+        this(runId, nodeId, knowledgeBaseIds, mcpConnectionIds, List.of(), actor);
+    }
+
+    public ToolDiscoveryRequest(
+            String runId,
+            String nodeId,
+            List<String> mcpConnectionIds,
+            ActorContext actor) {
+        this(runId, nodeId, List.of(), mcpConnectionIds, List.of(), actor);
     }
 }

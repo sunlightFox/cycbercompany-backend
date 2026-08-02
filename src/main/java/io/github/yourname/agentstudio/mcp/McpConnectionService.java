@@ -110,6 +110,7 @@ public class McpConnectionService {
     }
 
     public McpConnectionView installNpm(InstallNpmMcpServerCommand command) {
+        validateNpmInstall(command);
         List<String> args = new ArrayList<>();
         String executable = windowsNpxCommand();
         if (isWindows()) {
@@ -470,7 +471,17 @@ public class McpConnectionService {
         for (UpsertMcpToolCommand update : updates) {
             StoredMcpTool incoming = toStoredTool(connectionId, update);
             StoredMcpTool current = merged.get(incoming.name());
-            merged.put(incoming.name(), current == null ? incoming : incoming.withDiscoveredAt(current.discoveredAt()));
+            // Discovery is allowed to refresh server-owned metadata, but it must
+            // never silently overwrite an administrator's execution policy.
+            merged.put(incoming.name(), current == null ? incoming : new StoredMcpTool(
+                    current.id(),
+                    incoming.name(),
+                    incoming.description(),
+                    incoming.inputSchema(),
+                    current.riskLevel(),
+                    current.requiresApproval(),
+                    current.enabled(),
+                    current.discoveredAt()));
         }
         return new ArrayList<>(merged.values());
     }
@@ -577,6 +588,18 @@ public class McpConnectionService {
             return "";
         }
         return " " + String.join(" ", packageArgs);
+    }
+
+    private static void validateNpmInstall(InstallNpmMcpServerCommand command) {
+        if (!command.npmPackage().matches("^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$")) {
+            throw new IllegalArgumentException("Invalid npm package name.");
+        }
+        if (command.packageArgs() == null) return;
+        for (String argument : command.packageArgs()) {
+            if (argument == null || argument.isBlank() || argument.matches(".*[&|<>^\\r\\n].*")) {
+                throw new IllegalArgumentException("Invalid npm package argument.");
+            }
+        }
     }
 
     private static String normalizeId(String value) {

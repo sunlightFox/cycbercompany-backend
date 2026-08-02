@@ -37,7 +37,11 @@ public class AgentStudioNodeApplication {
             return;
         }
         if ("start".equals(command)) {
-            start(configStore, objectMapper, httpClient);
+            start(options, configStore, objectMapper, httpClient);
+            return;
+        }
+        if ("start-local".equals(command)) {
+            startLocal(options, new NodeConfigStore(objectMapper, localConfigPath(options)), objectMapper, httpClient);
             return;
         }
         if ("install-browsers".equals(command)) {
@@ -77,10 +81,43 @@ public class AgentStudioNodeApplication {
         System.out.println("config=" + configStore.path());
     }
 
-    private static void start(NodeConfigStore configStore, ObjectMapper objectMapper, HttpClient httpClient) throws Exception {
+    private static void start(
+            Map<String, String> options,
+            NodeConfigStore configStore,
+            ObjectMapper objectMapper,
+            HttpClient httpClient) throws Exception {
         NodeConfig config = configStore.load();
-        NodeWebSocketClient client = new NodeWebSocketClient(objectMapper, httpClient, config, SystemInfo.current());
+        NodeWebSocketClient client = new NodeWebSocketClient(
+                objectMapper,
+                httpClient,
+                config,
+                SystemInfo.current(),
+                optionalDesktopRoot(options.get("desktop-root")));
         client.startBlocking();
+    }
+
+    private static void startLocal(
+            Map<String, String> options,
+            NodeConfigStore configStore,
+            ObjectMapper objectMapper,
+            HttpClient httpClient) throws Exception {
+        String server = required(options, "server");
+        String name = options.getOrDefault("name", "This computer");
+        // Provision on every launch. This keeps a local companion self-healing when the
+        // server data directory is reset or a prior local credential has been rotated.
+        // The bootstrap endpoint is loopback-only and reuses the same managed-local identity.
+        NodeConfig registered = new NodeRegistrar(objectMapper, httpClient)
+                .bootstrapLocalExecutor(server, name, SystemInfo.current());
+        NodeConfig config = new NodeConfig(
+                registered.serverUrl(),
+                registered.nodeId(),
+                registered.nodeSecret(),
+                registered.websocketUrl(),
+                registered.name(),
+                workspacePath(options).toString(),
+                NodeAccessMode.SYSTEM.name());
+        configStore.save(config);
+        start(options, configStore, objectMapper, httpClient);
     }
 
     private static String required(Map<String, String> options, String name) {
@@ -101,7 +138,8 @@ public class AgentStudioNodeApplication {
 
                 Commands:
                   register --server http://localhost:8080 --token <registrationToken> [--name my-pc] [--workspace path] [--access workspace|system] [--config node-config.json]
-                  start [--config node-config.json]
+                  start [--config node-config.json] [--desktop-root path]
+                  start-local --server http://localhost:8080 [--name "This computer"] [--workspace path] [--config local-executor.json]
                   install-browsers
                 """);
     }
@@ -124,5 +162,24 @@ public class AgentStudioNodeApplication {
             return Path.of(configured).toAbsolutePath().normalize();
         }
         return defaultConfigPath();
+    }
+
+    private static Path localConfigPath(Map<String, String> options) {
+        String configured = options.get("config");
+        if (configured != null && !configured.isBlank()) {
+            return Path.of(configured).toAbsolutePath().normalize();
+        }
+        return Path.of(System.getProperty("user.home"), ".agent-studio-node", "local-executor.json");
+    }
+
+    private static Path optionalDesktopRoot(String configured) {
+        if (configured == null || configured.isBlank()) {
+            return null;
+        }
+        Path root = Path.of(configured).toAbsolutePath().normalize();
+        if (!java.nio.file.Files.isDirectory(root)) {
+            throw new IllegalArgumentException("Desktop root must be an existing directory: " + root);
+        }
+        return root;
     }
 }

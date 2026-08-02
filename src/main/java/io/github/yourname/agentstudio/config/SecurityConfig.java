@@ -39,6 +39,9 @@ class SecurityConfig {
             http.authorizeHttpRequests(auth -> auth
                     .requestMatchers(HttpMethod.GET, "/actuator/health").permitAll()
                     .requestMatchers(HttpMethod.POST, "/api/v1/nodes/register").permitAll()
+                    // 节点下载使用自己的长期凭据，进入控制器后由 NodeService 校验。
+                    .requestMatchers(HttpMethod.GET, "/api/v1/node/skill-bundles/**").permitAll()
+                    .requestMatchers(HttpMethod.POST, "/api/v1/node/artifacts").permitAll()
                     .requestMatchers("/api/v1/node-channel").permitAll()
                     .anyRequest().authenticated());
         } else {

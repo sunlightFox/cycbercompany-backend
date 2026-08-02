@@ -8,5 +8,7 @@ public interface NodeConnectionRepository extends JpaRepository<NodeConnectionEn
 
     List<NodeConnectionEntity> findByTenantIdOrderByCreatedAtDesc(String tenantId);
 
+    Optional<NodeConnectionEntity> findByTenantIdAndKind(String tenantId, NodeKind kind);
+
     Optional<NodeConnectionEntity> findByIdAndTenantId(String id, String tenantId);
 }

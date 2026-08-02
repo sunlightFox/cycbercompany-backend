@@ -66,4 +66,40 @@ class McpConnectionServiceAuditTest {
         assertThat(audit.errorCategory()).isEqualTo("APPROVAL_REQUIRED");
         verify(stdio, never()).callTool(any(), any(), any());
     }
+
+    @Test
+    void refreshPreservesAdministratorToolPolicy() throws Exception {
+        AppProperties properties = mock(AppProperties.class);
+        AppProperties.McpStore store = new AppProperties.McpStore(Files.createTempDirectory("mcp-refresh-test"));
+        when(properties.mcp()).thenReturn(store);
+        McpStdioClient stdio = mock(McpStdioClient.class);
+        McpToolInvocationRepository invocations = mock(McpToolInvocationRepository.class);
+        McpConnectionService service = new McpConnectionService(
+                properties, new ObjectMapper().registerModule(new JavaTimeModule()), stdio, invocations);
+        service.ensureConfigDirectoryExists();
+        service.create(new CreateMcpConnectionCommand(
+                "catalog",
+                "Catalog MCP",
+                "test",
+                McpTransportType.STDIO,
+                true,
+                "test-command",
+                List.of(),
+                null,
+                Map.of(),
+                Map.of(),
+                List.of(new UpsertMcpToolCommand(
+                        "search", "old description", "{\"type\":\"object\"}", RiskLevel.HIGH, true, false))));
+        when(stdio.listTools(any())).thenReturn(List.of(new UpsertMcpToolCommand(
+                "search", "new description", "{\"type\":\"object\",\"properties\":{\"query\":{}}}",
+                RiskLevel.LOW, false, true)));
+
+        McpToolView refreshed = service.refreshTools("catalog").tools().getFirst();
+
+        assertThat(refreshed.description()).isEqualTo("new description");
+        assertThat(refreshed.inputSchema()).contains("query");
+        assertThat(refreshed.riskLevel()).isEqualTo(RiskLevel.HIGH);
+        assertThat(refreshed.requiresApproval()).isTrue();
+        assertThat(refreshed.enabled()).isFalse();
+    }
 }

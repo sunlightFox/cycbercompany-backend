@@ -50,6 +50,35 @@ public class NodeRegistrar {
                 null);
     }
 
+    /** Provisions the implicit companion used by a personal local installation. */
+    public NodeConfig bootstrapLocalExecutor(String serverUrl, String name, SystemInfo systemInfo) throws Exception {
+        String normalizedServer = trimTrailingSlash(serverUrl);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("name", name);
+        payload.put("hostname", systemInfo.hostname());
+        payload.put("osName", systemInfo.osName());
+        payload.put("osArch", systemInfo.osArch());
+        payload.put("clientVersion", systemInfo.clientVersion());
+        HttpRequest request = HttpRequest.newBuilder(URI.create(normalizedServer + "/api/v1/local-executor/bootstrap"))
+                .header("content-type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload)))
+                .build();
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw new IllegalStateException("Local executor provisioning failed: HTTP "
+                    + response.statusCode() + " " + response.body());
+        }
+        RegisterNodeResult result = objectMapper.readValue(response.body(), RegisterNodeResult.class);
+        return new NodeConfig(
+                normalizedServer,
+                result.nodeId(),
+                result.nodeSecret(),
+                result.websocketUrl(),
+                name,
+                null,
+                null);
+    }
+
     private static String trimTrailingSlash(String value) {
         return value.endsWith("/") ? value.substring(0, value.length() - 1) : value;
     }

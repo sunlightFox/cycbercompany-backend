@@ -20,6 +20,18 @@ class ConversationRunQueue {
 
     synchronized int reserve(QueueKey key, String runId, Runnable worker) {
         QueueState state = queues.computeIfAbsent(key, ignored -> new QueueState());
+        // outbox 轮询和启动恢复都可能再次看到同一个 READY 任务。内存队列必须幂等，
+        // 否则会保存两个 Runnable，导致同一个 Run 被两个本地 worker 依次执行。
+        if (runId.equals(state.activeRunId)) {
+            return 0;
+        }
+        int existingPosition = 1;
+        for (QueuedRun pending : state.pending) {
+            if (runId.equals(pending.runId())) {
+                return existingPosition;
+            }
+            existingPosition++;
+        }
         state.pending.addLast(new QueuedRun(runId, worker));
         return (state.activeRunId == null ? 1 : 2) + state.pending.size() - 1;
     }

@@ -91,4 +91,127 @@ class ProjectToolTest {
         assertTrue(((List<?>) modules.getFirst().get("configurationFiles")).contains("pom.xml"));
         assertTrue(backend.toString().contains("backend"));
     }
+
+    @Test
+    void indexesBoundedDeclarationsAcrossBackendFrontendAndTests() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-project");
+        Path java = Files.createDirectories(workspace.resolve("backend/src/main/java/demo"));
+        Path tests = Files.createDirectories(workspace.resolve("backend/src/test/java/demo"));
+        Path web = Files.createDirectories(workspace.resolve("frontend/src"));
+        Files.writeString(java.resolve("TaskService.java"), """
+                package demo;
+                public class TaskService {
+                    public String createTask(String title) { return title; }
+                }
+                """);
+        Files.writeString(tests.resolve("TaskServiceTest.java"), """
+                class TaskServiceTest {
+                    void createsTask() { }
+                }
+                """);
+        Files.writeString(web.resolve("TaskList.tsx"), """
+                export interface Task { id: string }
+                export const TaskList = () => null;
+                """);
+
+        ProjectTool tool = new ProjectTool(workspace);
+        var all = tool.symbols(Map.of("query", "task", "maxResults", 20));
+        var productionOnly = tool.symbols(Map.of("query", "task", "includeTests", false));
+
+        assertTrue(all.success());
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> allSymbols = (List<Map<String, Object>>) all.result().get("symbols");
+        assertTrue(allSymbols.stream().anyMatch(symbol -> "TaskService".equals(symbol.get("name"))));
+        assertTrue(allSymbols.stream().anyMatch(symbol -> "createTask".equals(symbol.get("name"))));
+        assertTrue(allSymbols.stream().anyMatch(symbol -> "TaskList".equals(symbol.get("name"))));
+        assertTrue(allSymbols.stream().allMatch(symbol -> ((Number) symbol.get("line")).intValue() > 0));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> productionSymbols = (List<Map<String, Object>>) productionOnly.result().get("symbols");
+        assertFalse(productionSymbols.stream().anyMatch(symbol -> symbol.get("path").toString().contains("src/test")));
+    }
+
+    @Test
+    void findsBoundedCandidateReferencesWithoutMatchingLongerIdentifiersOrDependencies() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-references");
+        Path production = Files.createDirectories(workspace.resolve("backend/src/main/java/demo"));
+        Path tests = Files.createDirectories(workspace.resolve("backend/src/test/java/demo"));
+        Path dependencies = Files.createDirectories(workspace.resolve("frontend/node_modules/example"));
+        Files.writeString(production.resolve("TaskService.java"), "public class TaskService {}\n");
+        Files.writeString(production.resolve("TaskConsumer.java"), "var task = new TaskService(); TaskService.class; TaskServiceExtra ignored;\n");
+        Files.writeString(tests.resolve("TaskServiceTest.java"), "new TaskService();\n");
+        Files.writeString(dependencies.resolve("ignored.js"), "const value = TaskService;\n");
+
+        ProjectTool tool = new ProjectTool(workspace);
+        var all = tool.references(Map.of("symbol", "TaskService", "maxResults", 20));
+        var productionOnly = tool.references(Map.of("symbol", "TaskService", "includeTests", false));
+        var invalid = tool.references(Map.of("symbol", "TaskService()"));
+
+        assertTrue(all.success());
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> allReferences = (List<Map<String, Object>>) all.result().get("references");
+        assertEquals(3, allReferences.size());
+        assertTrue(allReferences.stream().anyMatch(reference -> "declaration".equals(reference.get("kind"))));
+        assertTrue(allReferences.stream().anyMatch(reference -> "candidate-reference".equals(reference.get("kind"))
+                && Integer.valueOf(2).equals(reference.get("occurrences"))));
+        assertFalse(allReferences.stream().anyMatch(reference -> reference.get("path").toString().contains("node_modules")));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> productionReferences = (List<Map<String, Object>>) productionOnly.result().get("references");
+        assertEquals(2, productionReferences.size());
+        assertFalse(productionReferences.stream().anyMatch(reference -> reference.get("path").toString().contains("src/test")));
+        assertFalse(invalid.success());
+        assertTrue(invalid.errorMessage().contains("simple identifier"));
+    }
+
+    @Test
+    void normalizesMavenTypeScriptGradleAndCompilerDiagnosticsWithoutExecutingAnything() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-diagnostics");
+        Path java = Files.createDirectories(workspace.resolve("backend/src/main/java/demo")).resolve("TaskService.java");
+        Path web = Files.createDirectories(workspace.resolve("frontend/src")).resolve("TaskList.tsx");
+        Path kotlin = Files.createDirectories(workspace.resolve("backend/src/main/kotlin/demo")).resolve("TaskApi.kt");
+        Files.writeString(java, "class TaskService {}\n");
+        Files.writeString(web, "export const TaskList = () => null;\n");
+        Files.writeString(kotlin, "class TaskApi\n");
+
+        String output = """
+                [ERROR] %s:[12,8] cannot find symbol
+                frontend/src/TaskList.tsx(5,17): error TS2304: Cannot find name 'missingTask'.
+                e: file://%s:7:3 - Unresolved reference: task
+                backend/src/main/java/demo/TaskService.java:21: assertion failed
+                """.formatted(java, kotlin);
+
+        var result = new ProjectTool(workspace).diagnose(Map.of("output", output));
+
+        assertTrue(result.success());
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> diagnostics = (List<Map<String, Object>>) result.result().get("diagnostics");
+        assertEquals(4, diagnostics.size());
+        assertEquals("backend/src/main/java/demo/TaskService.java", diagnostics.getFirst().get("path"));
+        assertEquals("maven", diagnostics.getFirst().get("source"));
+        assertEquals("typescript", diagnostics.get(1).get("source"));
+        assertEquals("backend/src/main/kotlin/demo/TaskApi.kt", diagnostics.get(2).get("path"));
+        assertEquals("gradle", diagnostics.get(2).get("source"));
+        assertEquals(0, diagnostics.get(3).get("column"));
+        assertEquals("compiler-or-test", diagnostics.get(3).get("source"));
+    }
+
+    @Test
+    void boundsLargeDiagnosticStreamsAndPreservesTheFirstActionableLocations() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-diagnostics");
+        StringBuilder output = new StringBuilder();
+        for (int index = 1; index <= 125; index++) {
+            output.append("src/Example.ts(").append(index).append(",1): error TS1000: broken\n");
+        }
+
+        var result = new ProjectTool(workspace).diagnose(Map.of("output", output.toString()));
+
+        assertTrue(result.success());
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> diagnostics = (List<Map<String, Object>>) result.result().get("diagnostics");
+        assertEquals(120, diagnostics.size());
+        assertEquals(120, result.result().get("errorCount"));
+        assertEquals(true, result.result().get("inputTruncated"));
+        assertEquals("src/Example.ts", diagnostics.getFirst().get("path"));
+    }
 }

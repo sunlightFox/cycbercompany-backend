@@ -44,21 +44,139 @@ class NodeServiceCodingEvidenceTest {
         NodeToolInvocationEntity browser = successful("browser.open", "{\"url\":\"http://localhost:8080\"}");
         NodeToolInvocationEntity trace = successful("browser.trace.stop", "{}");
         trace.succeed("{\"path\":\"C:\\\\Users\\\\node\\\\AppData\\\\Local\\\\Temp\\\\browser-2026.zip\"}", NOW);
+        NodeToolInvocationEntity review = successful("git.review", "{}");
+        NodeToolInvocationEntity read = successful("fs.read", "{\"path\":\"projects/app/src/App.java\"}");
+        NodeToolInvocationEntity browserVerify = successful("browser.verify", "{\"checks\":[]}");
         NodeToolInvocationEntity failedRead = failed("fs.read");
 
         when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
-                .thenReturn(List.of(write, patch, command, browser, trace, failedRead));
+                .thenReturn(List.of(write, patch, command, browser, trace, review, read, browserVerify, failedRead));
 
         CodingRunEvidenceView evidence = service().codingEvidence("run-a", ACTOR);
 
         assertThat(evidence.runId()).isEqualTo("run-a");
-        assertThat(evidence.toolCalls()).isEqualTo(6);
+        assertThat(evidence.toolCalls()).isEqualTo(9);
+        assertThat(evidence.succeededTools()).containsExactly(
+                "fs.write", "fs.apply_patch", "shell.run", "browser.open", "browser.trace.stop", "git.review", "fs.read", "browser.verify");
         assertThat(evidence.changedFiles()).containsExactly("projects/app/src/App.java");
-        assertThat(evidence.verificationTools()).containsExactly("shell.run", "browser.open", "browser.trace.stop");
+        assertThat(evidence.gitReviewed()).isTrue();
+        assertThat(evidence.reviewedChangedFiles()).containsExactly("projects/app/src/App.java");
+        assertThat(evidence.verificationTools()).containsExactly("shell.run", "browser.open", "browser.trace.stop", "browser.verify");
         assertThat(evidence.commandVerifications()).containsExactly("test");
         assertThat(evidence.browserTraceArtifacts()).containsExactly("browser-2026.zip");
         assertThat(evidence.browserVerified()).isTrue();
         assertThat(evidence.failedTools()).containsExactly("fs.read");
+    }
+
+    @Test
+    void doesNotTreatOpeningAPageAsACompletedBrowserVerification() {
+        NodeToolInvocationEntity open = successful("browser.open", "{\"url\":\"http://localhost:8080\"}");
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(open));
+
+        CodingRunEvidenceView evidence = service().codingEvidence("run-a", ACTOR);
+
+        assertThat(evidence.verificationTools()).containsExactly("browser.open");
+        assertThat(evidence.browserVerified()).isFalse();
+    }
+
+    @Test
+    void distinguishesPostInteractionApiEvidenceFromOrdinaryPageAssertions() {
+        NodeToolInvocationEntity open = successful("browser.open", "{\"url\":\"http://localhost:8080\"}");
+        NodeToolInvocationEntity apiVerify = successful("browser.verify", "{\"checks\":[]}");
+        apiVerify.succeed("""
+                {"verified":true,"checks":[
+                  {"type":"textContains","passed":true},
+                  {"type":"responseStatus","passed":true}
+                ]}
+                """, NOW);
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(open, apiVerify));
+
+        CodingRunEvidenceView apiEvidence = service().codingEvidence("run-a", ACTOR);
+
+        assertThat(apiEvidence.browserVerified()).isTrue();
+        assertThat(apiEvidence.browserApiVerified()).isTrue();
+
+        NodeToolInvocationEntity visibleOnlyVerify = successful("browser.verify", "{\"checks\":[]}");
+        visibleOnlyVerify.succeed("""
+                {"verified":true,"checks":[{"type":"textContains","passed":true}]}
+                """, NOW);
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(open, visibleOnlyVerify));
+
+        assertThat(service().codingEvidence("run-a", ACTOR).browserApiVerified()).isFalse();
+    }
+
+    @Test
+    void treatsSuccessfulManagedLoopbackReadinessAsHttpVerificationEvidence() {
+        NodeToolInvocationEntity waitHttp = successful("process.wait_http", "{\"processId\":\"proc-a\",\"url\":\"http://127.0.0.1:8080/health\"}");
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(waitHttp));
+
+        CodingRunEvidenceView evidence = service().codingEvidence("run-a", ACTOR);
+
+        assertThat(evidence.verificationTools()).containsExactly("process.wait_http");
+        assertThat(evidence.commandVerifications()).containsExactly("http");
+    }
+
+    @Test
+    void requiresDesktopUiVerificationToFollowTheFinalControlAction() {
+        NodeToolInvocationEntity click = successful("system.desktop.ui.click", "{\"processId\":12,\"automationId\":\"Save\"}");
+        NodeToolInvocationEntity verify = successful("system.desktop.ui.verify", "{\"processId\":12,\"automationId\":\"Save\"}");
+        NodeToolInvocationEntity type = successful("system.desktop.ui.type", "{\"processId\":12,\"automationId\":\"Name\",\"text\":\"new\"}");
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(click, verify, type));
+
+        CodingRunEvidenceView staleVerification = service().codingEvidence("run-a", ACTOR);
+
+        assertThat(staleVerification.desktopUiVerified()).isFalse();
+
+        NodeToolInvocationEntity finalVerify = successful("system.desktop.ui.verify", "{\"processId\":12,\"automationId\":\"Name\"}");
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(click, verify, type, finalVerify));
+
+        assertThat(service().codingEvidence("run-a", ACTOR).desktopUiVerified()).isTrue();
+    }
+
+    @Test
+    void treatsApprovedDesktopValueReadAsPostActionControlEvidence() {
+        NodeToolInvocationEntity typed = successful("system.desktop.ui.type", "{\"processId\":12,\"automationId\":\"Name\",\"text\":\"new\"}");
+        NodeToolInvocationEntity read = successful("system.desktop.ui.read_value", "{\"processId\":12,\"automationId\":\"Name\"}");
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(typed, read));
+
+        assertThat(service().codingEvidence("run-a", ACTOR).desktopUiVerified()).isTrue();
+    }
+
+    @Test
+    void ignoresGitReviewAndReadsThatHappenedBeforeTheLastWrite() {
+        NodeToolInvocationEntity oldReview = successful("git.review", "{}");
+        NodeToolInvocationEntity oldRead = successful("fs.read", "{\"path\":\"src/App.java\"}");
+        NodeToolInvocationEntity write = successful("fs.write", "{\"path\":\"src/App.java\"}");
+        NodeToolInvocationEntity command = successful("shell.run", "{\"command\":\"./gradlew test\"}");
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(oldReview, oldRead, write, command));
+
+        CodingRunEvidenceView evidence = service().codingEvidence("run-a", ACTOR);
+
+        assertThat(evidence.changedFiles()).containsExactly("src/App.java");
+        assertThat(evidence.gitReviewed()).isFalse();
+        assertThat(evidence.reviewedChangedFiles()).isEmpty();
+    }
+
+    @Test
+    void treatsAPostChangeScopedGitDiffAsReviewEvidenceForFilesUnderThatScope() {
+        NodeToolInvocationEntity write = successful("fs.write", "{\"path\":\"src/api/TaskService.java\"}");
+        NodeToolInvocationEntity review = successful("git.review", "{}");
+        NodeToolInvocationEntity diff = successful("git.diff", "{\"path\":\"src\",\"staged\":true}");
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(write, review, diff));
+
+        CodingRunEvidenceView evidence = service().codingEvidence("run-a", ACTOR);
+
+        assertThat(evidence.gitReviewed()).isTrue();
+        assertThat(evidence.reviewedChangedFiles()).containsExactly("src/api/TaskService.java");
     }
 
     @Test
@@ -76,12 +194,26 @@ class NodeServiceCodingEvidenceTest {
     }
 
     @Test
+    void exposesOnlyTheScopedDesktopNoOpCountNeededByTheDeliveryGate() {
+        NodeToolInvocationEntity inspected = successful("system.desktop.organize.list", "{}");
+        inspected.succeed("{\"sortableFiles\":0,\"path\":\".\"}", NOW);
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(inspected));
+
+        CodingRunEvidenceView evidence = service().codingEvidence("run-a", ACTOR);
+
+        assertThat(evidence.succeededTools()).containsExactly("system.desktop.organize.list");
+        assertThat(evidence.desktopSortableFiles()).isZero();
+    }
+
+    @Test
     void scoresCompleteEvidenceAndExplainsMissingVerification() {
         NodeToolInvocationEntity write = successful("fs.write", "{\"path\":\"src/App.java\"}");
         NodeToolInvocationEntity command = successful("shell.run", "{\"command\":\"./gradlew test\"}");
         NodeToolInvocationEntity browser = successful("browser.open", "{\"url\":\"http://localhost:8080\"}");
+        NodeToolInvocationEntity browserVerify = successful("browser.verify", "{\"checks\":[]}");
         when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
-                .thenReturn(List.of(write, command, browser));
+                .thenReturn(List.of(write, command, browser, browserVerify));
 
         CodingRunQualityView complete = service().codingQuality("run-a", ACTOR);
         assertThat(complete.score()).isEqualTo(100);
