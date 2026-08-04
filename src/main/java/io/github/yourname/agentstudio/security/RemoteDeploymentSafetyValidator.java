@@ -31,6 +31,9 @@ public final class RemoteDeploymentSafetyValidator implements InitializingBean {
         if (isLoopback(address)) {
             return;
         }
+        if (allowsLocalProxy(address)) {
+            return;
+        }
         if (!security.tokenMode()) {
             throw unsafe("app.security.mode must be TOKEN");
         }
@@ -51,6 +54,14 @@ public final class RemoteDeploymentSafetyValidator implements InitializingBean {
         } catch (UnknownHostException ex) {
             return false;
         }
+    }
+
+    private boolean allowsLocalProxy(String address) {
+        // Docker port forwarding reaches the container over its non-loopback interface even
+        // when the host publishes that port to 127.0.0.1 only. The host mapping is outside
+        // this process, so require an explicit, default-off operator assertion for that case.
+        return "0.0.0.0".equals(address)
+                && environment.getProperty("app.security.allow-local-proxy", Boolean.class, false);
     }
 
     private static IllegalStateException unsafe(String reason) {

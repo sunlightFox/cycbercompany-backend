@@ -81,6 +81,14 @@ public final class CodingDeliveryGate {
             reasons.add("已执行 Windows UI Automation 点击或输入，但最后一次操作后没有成功的 system.desktop.ui.verify 或受审批 read_value 证据。");
         }
 
+        // Start-Process 返回 PID 只说明进程创建请求成功，并不能证明用户桌面上已经出现窗口。
+        // 这条门禁由服务端按调用顺序计算，避免模型把“已启动”误写成“已打开并可操作”。
+        boolean startedDesktopApplication = evidence.succeededTools() != null
+                && evidence.succeededTools().contains("system.desktop.application.start");
+        if (startedDesktopApplication && !evidence.desktopApplicationVerified()) {
+            reasons.add("已启动桌面应用，但后续 system.desktop.session.snapshot 未确认对应 PID 的可见窗口。");
+        }
+
         return reasons.isEmpty()
                 ? new Decision(Status.PASS, List.of())
                 : new Decision(Status.NEEDS_VERIFICATION, List.copyOf(reasons));
@@ -99,42 +107,4 @@ public final class CodingDeliveryGate {
         return "system.desktop.ui.click".equals(toolName) || "system.desktop.ui.type".equals(toolName);
     }
 
-    /** Applies task-specific evidence requirements after the general node-run checks. */
-    public Decision evaluate(CodingRunEvidenceView evidence, NodeTaskPolicy taskPolicy) {
-        Decision base = evaluate(evidence);
-        if (taskPolicy == null
-                || (!taskPolicy.requiresDesktopOrganizationEvidence() && !taskPolicy.requiresFullStackApiEvidence())) {
-            return base;
-        }
-
-        List<String> reasons = new ArrayList<>(base.reasons());
-        if (taskPolicy.requiresFullStackApiEvidence()
-                && (evidence == null || !evidence.browserApiVerified())) {
-            // 面向“前后端联调”的任务，页面文字、路由变化或旧网络记录都不足以说明请求成功。
-            // Node 只在最后一次页面操作之后存在成功 responseStatus/responseUrlContains 断言时才给出该证据。
-            reasons.add("前后端联调任务缺少最后一次页面操作后的成功 API 响应验证证据。");
-        }
-        if (!taskPolicy.requiresDesktopOrganizationEvidence()) {
-            return reasons.isEmpty()
-                    ? new Decision(Status.PASS, List.of())
-                    : new Decision(Status.NEEDS_VERIFICATION, List.copyOf(reasons));
-        }
-        List<String> succeededTools = evidence == null || evidence.succeededTools() == null
-                ? List.of()
-                : evidence.succeededTools();
-        if (!succeededTools.contains("system.desktop.organize.list")) {
-            reasons.add("The desktop contents were not successfully inspected before completion.");
-        }
-        if (evidence == null) {
-            reasons.add("Desktop execution evidence is unavailable for this task.");
-        } else if (!succeededTools.contains("system.desktop.organize.write")
-                && !succeededTools.contains("system.desktop.organize.move")
-                && !succeededTools.contains("system.desktop.organize.delete")
-                && evidence.desktopSortableFiles() != 0) {
-            reasons.add("No successful desktop file creation, move, or deletion was recorded for this task.");
-        }
-        return reasons.isEmpty()
-                ? new Decision(Status.PASS, List.of())
-                : new Decision(Status.NEEDS_VERIFICATION, List.copyOf(reasons));
-    }
 }

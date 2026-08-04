@@ -12,7 +12,8 @@ public record ToolInvocationRequest(
         Integer timeoutSeconds,
         CodingWorkspaceScope workspaceScope,
         ActorContext actor,
-        String approvalId) {
+        String approvalId,
+        ApprovalMode approvalMode) {
 
     public ToolInvocationRequest {
         if (binding == null) {
@@ -23,6 +24,7 @@ public record ToolInvocationRequest(
         if (actor == null) {
             throw new IllegalArgumentException("Tool invocation requires a trusted actor.");
         }
+        approvalMode = approvalMode == null ? ApprovalMode.ON_REQUEST : approvalMode;
     }
 
     public ToolInvocationRequest(
@@ -33,6 +35,18 @@ public record ToolInvocationRequest(
             Integer timeoutSeconds,
             CodingWorkspaceScope workspaceScope,
             ActorContext actor) {
-        this(runId, toolCallId, binding, arguments, timeoutSeconds, workspaceScope, actor, null);
+        this(runId, toolCallId, binding, arguments, timeoutSeconds, workspaceScope, actor, null, ApprovalMode.ON_REQUEST);
+    }
+
+    public ToolInvocationRequest(
+            String runId,
+            String toolCallId,
+            ResolvedToolBinding binding,
+            Map<String, Object> arguments,
+            Integer timeoutSeconds,
+            CodingWorkspaceScope workspaceScope,
+            ActorContext actor,
+            String approvalId) {
+        this(runId, toolCallId, binding, arguments, timeoutSeconds, workspaceScope, actor, approvalId, ApprovalMode.ON_REQUEST);
     }
 }

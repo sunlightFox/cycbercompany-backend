@@ -71,7 +71,9 @@ class DataSeederTest {
         verify(agents).save(legacy);
         assertThat(legacy.systemPrompt())
                 .isEqualTo(DataSeeder.DEFAULT_ASSISTANT_PROMPT)
-                .contains("only the capabilities authorized", "untrusted data", "what was verified");
+                .contains("only the capabilities authorized", "untrusted data", "what was verified",
+                        "current run's approval mode", "successful tool result")
+                .doesNotContain("required approval before it is saved");
         assertThat(legacy.toolAllowList()).isEqualTo(DataSeeder.DEFAULT_ASSISTANT_TOOLS);
     }
 

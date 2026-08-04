@@ -18,13 +18,13 @@ class NodeSessionRegistryMessageBudgetTest {
     void rejectsOversizedToolInvokeBeforeWritingToTheSocket() throws Exception {
         WebSocketSession session = org.mockito.Mockito.mock(WebSocketSession.class);
         when(session.isOpen()).thenReturn(true);
-        NodeSessionRegistry registry = new NodeSessionRegistry(new ObjectMapper());
+        NodeSessionRegistry registry = new NodeSessionRegistry(new ObjectMapper().findAndRegisterModules());
         registry.register("node-1", session);
 
         assertThatThrownBy(() -> registry.invoke(
                         "node-1",
                         "fs.write",
-                        Map.of("content", "你".repeat(NodeProtocolLimits.MAX_CONTROL_MESSAGE_BYTES)),
+                        Map.of("content", "x".repeat(NodeProtocolLimits.MAX_CONTROL_MESSAGE_BYTES)),
                         Duration.ofSeconds(1)))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("size limit");

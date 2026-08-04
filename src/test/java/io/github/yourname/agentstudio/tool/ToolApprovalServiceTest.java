@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -90,6 +91,25 @@ class ToolApprovalServiceTest {
         assertThat(decision.execution()).isNull();
         assertThat(decision.approval().status()).isEqualTo(ToolApprovalStatus.REJECTED);
         assertThat(provider.lastInvocation).isNull();
+    }
+
+    @Test
+    void fullAccessInvokesAnApprovedToolWithoutCreatingAnApprovalRequest() {
+        ToolApprovalService approvalService = mock(ToolApprovalService.class);
+        RecordingMcpProvider provider = new RecordingMcpProvider();
+        ToolRouter router = new ToolRouter(List.of(provider), approvalService);
+        ActorContext actor = new ActorContext("tenant", "local-user", Set.of("LOCAL_USER"), Set.of());
+        ResolvedToolBinding binding = new ResolvedToolBinding(
+                "mcp:docs:delete", "tool_delete", "delete", "mcp", "delete", "Delete",
+                RiskLevel.HIGH, true, Map.of(), Map.of("connectionId", "docs"));
+
+        ToolProviderResult result = router.invoke(new ToolInvocationRequest(
+                "run-3", "call-3", binding, Map.of(), null, CodingWorkspaceScope.from(null), actor,
+                null, ApprovalMode.FULL_ACCESS));
+
+        assertThat(result.succeeded()).isTrue();
+        assertThat(provider.lastInvocation).isNotNull();
+        verifyNoInteractions(approvalService);
     }
 
     private static final class RecordingMcpProvider implements ToolProvider {

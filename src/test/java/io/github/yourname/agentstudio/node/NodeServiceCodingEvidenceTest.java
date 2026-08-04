@@ -69,6 +69,57 @@ class NodeServiceCodingEvidenceTest {
     }
 
     @Test
+    void recognizesUploadedTraceArtifactReferences() {
+        NodeToolInvocationEntity trace = successful("browser.trace.stop", "{}");
+        trace.succeed("""
+                {"artifact":{"id":"artifact-trace","filename":"browser-trace-2026.zip","digest":"sha256:abc"}}
+                """, NOW);
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(trace));
+
+        CodingRunEvidenceView evidence = service().codingEvidence("run-a", ACTOR);
+
+        assertThat(evidence.browserTraceArtifacts()).containsExactly("browser-trace-2026.zip");
+    }
+
+    @Test
+    void treatsALaterSuccessfulRetryAsResolvingAnEarlierToolFailure() {
+        NodeToolInvocationEntity failedShell = failed("shell.run");
+        NodeToolInvocationEntity retriedShell = successful("shell.run", "{\"command\":\"cmd /c powershell\"}");
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(failedShell, retriedShell));
+
+        CodingRunEvidenceView evidence = service().codingEvidence("run-a", ACTOR);
+
+        assertThat(evidence.failedTools()).isEmpty();
+    }
+
+    @Test
+    void treatsWritingTheSameFileAsRecoveringAReadBeforeCreateProbe() {
+        NodeToolInvocationEntity failedRead = failed("fs.read", "{\"path\":\"projects/tetris/index.html\"}");
+        NodeToolInvocationEntity write = successful("fs.write", "{\"path\":\"projects/tetris/index.html\"}");
+        NodeToolInvocationEntity unrelatedWrite = successful("fs.write", "{\"path\":\"projects/tetris/style.css\"}");
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(failedRead, unrelatedWrite, write));
+
+        CodingRunEvidenceView evidence = service().codingEvidence("run-a", ACTOR);
+
+        assertThat(evidence.failedTools()).isEmpty();
+    }
+
+    @Test
+    void keepsAFailedReadUnresolvedWhenOnlyAnotherFileIsWritten() {
+        NodeToolInvocationEntity failedRead = failed("fs.read", "{\"path\":\"projects/tetris/index.html\"}");
+        NodeToolInvocationEntity unrelatedWrite = successful("fs.write", "{\"path\":\"projects/tetris/style.css\"}");
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(failedRead, unrelatedWrite));
+
+        CodingRunEvidenceView evidence = service().codingEvidence("run-a", ACTOR);
+
+        assertThat(evidence.failedTools()).containsExactly("fs.read");
+    }
+
+    @Test
     void doesNotTreatOpeningAPageAsACompletedBrowserVerification() {
         NodeToolInvocationEntity open = successful("browser.open", "{\"url\":\"http://localhost:8080\"}");
         when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
@@ -121,6 +172,58 @@ class NodeServiceCodingEvidenceTest {
     }
 
     @Test
+    void recognizesAConventionalPlainJavaTestMainAsTestEvidence() {
+        NodeToolInvocationEntity plainJavaTest = successful("shell.run", "{\"command\":\"java TaxCalculatorTest\"}");
+        NodeToolInvocationEntity ordinaryJavaProgram = successful("shell.run", "{\"command\":\"java TaxCalculator\"}");
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(plainJavaTest, ordinaryJavaProgram));
+
+        CodingRunEvidenceView evidence = service().codingEvidence("run-a", ACTOR);
+
+        assertThat(evidence.commandVerifications()).containsExactly("test");
+    }
+
+    @Test
+    void linksManagedHttpReadinessToTheProcessStartedByTheSameRun() {
+        NodeToolInvocationEntity started = successful("process.start", "{}");
+        started.succeed("{\"processId\":\"proc-current-run\"}", NOW);
+        NodeToolInvocationEntity ready = successful(
+                "process.wait_http",
+                "{\"processId\":\"proc-current-run\",\"url\":\"http://127.0.0.1:8080/health\"}");
+        NodeToolInvocationEntity unrelatedReady = successful(
+                "process.wait_http",
+                "{\"processId\":\"proc-other-run\",\"url\":\"http://127.0.0.1:9090/health\"}");
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(started, unrelatedReady, ready));
+
+        CodingRunEvidenceView evidence = service().codingEvidence("run-a", ACTOR);
+
+        assertThat(evidence.managedProcessReady()).isTrue();
+        assertThat(evidence.managedProcessReadyAfterLastProjectChange()).isTrue();
+
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(unrelatedReady));
+        assertThat(service().codingEvidence("run-a", ACTOR).managedProcessReady()).isFalse();
+    }
+
+    @Test
+    void doesNotReuseAServiceReadinessCheckThatPredatesTheLastProjectChange() {
+        NodeToolInvocationEntity started = successful("process.start", "{}");
+        started.succeed("{\"processId\":\"proc-before-change\"}", NOW);
+        NodeToolInvocationEntity ready = successful(
+                "process.wait_http",
+                "{\"processId\":\"proc-before-change\",\"url\":\"http://127.0.0.1:8080/health\"}");
+        NodeToolInvocationEntity write = successful("fs.write", "{\"path\":\"src/App.java\"}");
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(started, ready, write));
+
+        CodingRunEvidenceView evidence = service().codingEvidence("run-a", ACTOR);
+
+        assertThat(evidence.managedProcessReady()).isTrue();
+        assertThat(evidence.managedProcessReadyAfterLastProjectChange()).isFalse();
+    }
+
+    @Test
     void requiresDesktopUiVerificationToFollowTheFinalControlAction() {
         NodeToolInvocationEntity click = successful("system.desktop.ui.click", "{\"processId\":12,\"automationId\":\"Save\"}");
         NodeToolInvocationEntity verify = successful("system.desktop.ui.verify", "{\"processId\":12,\"automationId\":\"Save\"}");
@@ -147,6 +250,48 @@ class NodeServiceCodingEvidenceTest {
                 .thenReturn(List.of(typed, read));
 
         assertThat(service().codingEvidence("run-a", ACTOR).desktopUiVerified()).isTrue();
+    }
+
+    @Test
+    void doesNotTreatDesktopApplicationStartAsAVisibleWindow() {
+        NodeToolInvocationEntity started = successful(
+                "system.desktop.application.start", "{\"application\":\"notepad\"}");
+        started.succeed("{\"application\":\"notepad\",\"processId\":77}", NOW);
+        NodeToolInvocationEntity snapshot = successful("system.desktop.session.snapshot", "{}");
+        snapshot.succeed("{\"windows\":[]}", NOW);
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(started, snapshot));
+
+        CodingRunEvidenceView evidence = service().codingEvidence("run-a", ACTOR);
+
+        assertThat(evidence.desktopApplicationVerified()).isFalse();
+    }
+
+    @Test
+    void acceptsOnlyASnapshotContainingTheStartedProcessId() {
+        NodeToolInvocationEntity started = successful(
+                "system.desktop.application.start", "{\"application\":\"notepad\"}");
+        started.succeed("{\"application\":\"notepad\",\"processId\":77}", NOW);
+        NodeToolInvocationEntity snapshot = successful("system.desktop.session.snapshot", "{}");
+        snapshot.succeed("{\"windows\":[{\"processId\":77,\"processName\":\"notepad\"}]}", NOW);
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(started, snapshot));
+
+        assertThat(service().codingEvidence("run-a", ACTOR).desktopApplicationVerified()).isTrue();
+    }
+
+    @Test
+    void rejectsNonIntegralOrCorruptProcessIdsInHistoricalAuditData() {
+        NodeToolInvocationEntity started = successful(
+                "system.desktop.application.start", "{\"application\":\"notepad\"}");
+        // 77.5 不能因为 longValue 截断为 77 后，被误判成已在窗口快照中出现。
+        started.succeed("{\"application\":\"notepad\",\"processId\":77.5}", NOW);
+        NodeToolInvocationEntity snapshot = successful("system.desktop.session.snapshot", "{}");
+        snapshot.succeed("{\"windows\":[{\"processId\":77}]}", NOW);
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(started, snapshot));
+
+        assertThat(service().codingEvidence("run-a", ACTOR).desktopApplicationVerified()).isFalse();
     }
 
     @Test
@@ -242,8 +387,12 @@ class NodeServiceCodingEvidenceTest {
     }
 
     private NodeToolInvocationEntity failed(String toolName) {
+        return failed(toolName, "{}");
+    }
+
+    private NodeToolInvocationEntity failed(String toolName, String argumentsJson) {
         NodeToolInvocationEntity invocation = new NodeToolInvocationEntity(
-                "id-" + toolName, ACTOR.tenantId(), "run-a", "call-" + toolName, "node-a", toolName, "{}", NOW);
+                "id-" + toolName, ACTOR.tenantId(), "run-a", "call-" + toolName, "node-a", toolName, argumentsJson, NOW);
         invocation.start(NOW);
         invocation.fail(NodeToolInvocationStatus.FAILED, "test failure", NOW);
         return invocation;

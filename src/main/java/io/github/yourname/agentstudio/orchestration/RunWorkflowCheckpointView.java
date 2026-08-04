@@ -12,6 +12,7 @@ public record RunWorkflowCheckpointView(
         String workspaceScope,
         String goal,
         String planJson,
+        CodingWorkflowPlan plan,
         RunWorkflowPhase phase,
         String lastToolName,
         int completedToolCalls,
@@ -23,12 +24,14 @@ public record RunWorkflowCheckpointView(
 
     static RunWorkflowCheckpointView from(
             RunWorkflowCheckpointEntity checkpoint,
+            CodingWorkflowPlan plan,
             RunExecutionTaskView executionTask) {
         return new RunWorkflowCheckpointView(
                 checkpoint.runId(),
                 checkpoint.workspaceScope(),
                 checkpoint.goal(),
                 checkpoint.planJson(),
+                plan,
                 checkpoint.phase(),
                 checkpoint.lastToolName(),
                 checkpoint.completedToolCalls(),

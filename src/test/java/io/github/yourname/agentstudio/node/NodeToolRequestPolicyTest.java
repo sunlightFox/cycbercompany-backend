@@ -63,4 +63,25 @@ class NodeToolRequestPolicyTest {
 
         assertThat(prepared).containsEntry("fullPage", false).doesNotContainKey("path");
     }
+
+    @Test
+    void rejectsTruncatedPowerShellCommandBeforeApproval() {
+        NodeToolRequestPolicy policy = new NodeToolRequestPolicy(BrowserPolicyProperties.secureDefaults());
+
+        assertThatThrownBy(() -> policy.prepare("system.shell.run", Map.of(
+                "command", "powershell -NoProfile -Command ")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("PowerShell -Command is incomplete");
+    }
+
+    @Test
+    void acceptsQuoteSafePowerShellWrapperAndCompleteScript() {
+        NodeToolRequestPolicy policy = new NodeToolRequestPolicy(BrowserPolicyProperties.secureDefaults());
+
+        Map<String, Object> wrapped = policy.prepare("system.shell.run", Map.of(
+                "command", "cmd /c powershell -NoProfile -Command \"Write-Output 'quoted-success'\""));
+
+        assertThat(wrapped.get("command"))
+                .isEqualTo("cmd /c powershell -NoProfile -Command \"Write-Output 'quoted-success'\"");
+    }
 }

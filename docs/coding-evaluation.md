@@ -7,6 +7,96 @@
 每次运行先访问 `GET /api/v1/runs/{runId}/coding-evidence` 和
 `GET /api/v1/runs/{runId}/coding-quality`。质量分只表示“交付证据是否完整”，不能代替人工审查业务逻辑。
 
+完成一次场景 Run 后，还应调用：
+
+```text
+GET /api/v1/runs/{runId}/coding-evaluation?scenario=minimal-full-stack
+```
+
+运行过程还可以通过下面的接口查看服务端持久化的结构化编码计划：
+
+```text
+GET /api/v1/runs/{runId}/workflow
+```
+
+响应中的 `plan` 包含 `inspect`、`plan`、`implement`、`verify`、`review` 和 `deliver` 六个步骤，
+每一步都有 `pending`、`in_progress`、`completed`、`blocked` 或 `not_required` 状态。步骤只会由
+服务端观察到的工具结果推进；服务重启或审批恢复后，模型会收到同一份不含命令、绝对路径和原始输出的
+恢复摘要。项目文件发生新修改后，之前的验证和审阅状态会自动失效，必须在最后一次修改之后重新验证。
+全栈场景还会检查受管服务是否在最后一次项目修改后重新通过 loopback HTTP 就绪探测；旧进程的健康检查
+不能证明新代码已经完成联调。
+
+`scenario` 必须明确指定，支持以下稳定值：
+
+| 场景 | scenario |
+| --- | --- |
+| 最小全栈待办应用 | `minimal-full-stack` |
+| 测试失败后的最小修复 | `failed-test-minimal-fix` |
+| 前后端分离仓库 | `split-frontend-backend` |
+| 存量仓库小功能 | `existing-repository-feature` |
+| 长任务恢复 | `long-task-recovery` |
+
+评测接口只读取服务端已持久化的 Run 状态、节点调用审计与生命周期事件，不相信模型回答或客户端上传的“已通过”字段。它返回总分、是否达到 80 分通过线、每个评分项以及下一步建议；报告不包含原始命令、源代码、浏览器响应正文或节点绝对路径。
+
+## 可重复执行
+
+先在专用测试根目录创建一个全新的 Fixture。脚本只会新建带时间戳的子目录，不会清空已有目录；不要把 `WorkspaceRoot` 指向桌面、业务仓库或磁盘根目录：
+
+```powershell
+$fixture = .\scripts\new-coding-evaluation-fixture.ps1 `
+  -Scenario failed-test-minimal-fix `
+  -WorkspaceRoot D:\agent-studio-evaluation | Select-Object -Last 1
+```
+
+创建脚本会写入一个无敏感数据的 `.agent-studio-evaluation-fixture` 标记。独立预检脚本会检查该标记、后端健康状态、模型能力和节点工具；它默认不调用模型，因此不会额外消耗额度。需要在开始五场景评测前确认真实模型连通性时，再显式增加 `-ProbeModel`：
+
+```powershell
+.\scripts\test-coding-evaluation-preflight.ps1 `
+  -Scenario failed-test-minimal-fix `
+  -WorkingDirectory $fixture `
+  -NodeId sandbox-java `
+  -ProbeModel
+```
+
+直接执行 `run-coding-evaluation.ps1` 时，脚本会默认增加模型连通性探测，因为它随后必然会创建真实
+Run 并调用模型。仅排查夹具或节点环境时，才使用 `-SkipModelProbe` 跳过这一步；预检报告中的
+`modelConnectivity=NOT_PROBED` 不代表模型已经可用。
+
+`NodeId=auto` 仅会接受在线、启用且标签和工具匹配的 `SANDBOX` 节点。个人桌面节点必须明确填写节点 ID。预检失败时不会创建 Conversation、Run 或审批记录；只有在确认该隔离目录是测试夹具且确有必要时，才可使用 `run-coding-evaluation.ps1 -SkipPreflight` 跳过检查。
+
+启动后端和节点，并准备好模型、Agent 与节点配置后，对该目录发起真实 Run：
+
+若本地尚未有隔离节点，可先从构建产物启动一个只访问该 Fixture 的 `SANDBOX` 节点：
+
+```powershell
+.\gradlew.bat :agent-studio-node-java:installDist
+
+.\scripts\start-coding-evaluation-sandbox.ps1 `
+  -Scenario failed-test-minimal-fix `
+  -WorkingDirectory $fixture `
+  -BaseUrl http://127.0.0.1:18080
+```
+
+该脚本必须看到 Fixture 标记才会继续；节点使用 `workspace` 权限，配置文件与凭据保存在
+Fixture 外部。目标后端必须已经是隔离的 `NODES_ONLY` 实例；脚本不会修改执行模式。
+脚本输出的 `nodeId` 可传给后续预检和评测命令。
+
+```powershell
+.\scripts\run-coding-evaluation.ps1 `
+  -Scenario failed-test-minimal-fix `
+  -Prompt "Read README.md, fix only the failing test defect, run the same test again, then review the diff." `
+  -WorkingDirectory $fixture `
+  -RunWorkingDirectory . `
+  -NodeId sandbox-java `
+  -ApprovalMode auto-approve
+```
+
+脚本会把 Run、评分、编码证据和质量评分写入 `evaluation-results/` 下的 JSON 与 Markdown 文件。默认不会批准高风险请求；只有在隔离测试节点上明确加 `-ApproveHighRisk` 时，才会代替人工批准节点工具调用。长任务恢复场景应使用 `on-request`，以保留暂停与恢复事件。
+
+评测 Run 创建成功后，脚本会在总超时内重试短暂的 `429`、`502`、`503`、`504` 和连接重置类读取故障。即使轮询耗尽，脚本也会保留 Run ID，并额外尝试读取最终状态后写入报告；报告中的 `transientFailures` 和 `pollingError` 可用于区分评测失败与评测基础设施短暂不可用。
+
+未传入 `-ToolNames` 时，评测脚本会按场景选取最小工具集。例如 `failed-test-minimal-fix` 只开放工作区文件、项目诊断、命令和 Git 工具，不开放浏览器或受管进程，避免无关能力干扰简单修复任务。需要覆盖额外能力时再显式传入 `-ToolNames`。
+
 评测总分为 100 分：
 
 | 项目 | 分值 | 证据 |

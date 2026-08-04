@@ -1,6 +1,5 @@
 package io.github.yourname.agentstudio.knowledge;
 
-import io.github.yourname.agentstudio.config.AppProperties;
 import io.github.yourname.agentstudio.security.ActorContext;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -30,31 +29,26 @@ public class KnowledgeQueryService {
     private final KnowledgeDocumentRepository documentRepo;
     private final KnowledgeChunkRepository chunks;
     private final KnowledgeEmbeddingService embeddings;
-    private final AppProperties properties;
+    private final KnowledgeSettingsService settings;
 
     public KnowledgeQueryService(
             KnowledgeBaseRepository bases,
             KnowledgeDocumentRepository documents,
             KnowledgeChunkRepository chunks,
             KnowledgeEmbeddingService embeddings,
-            AppProperties properties,
+            KnowledgeSettingsService settings,
             KnowledgeDocumentRepository documentRepo) {
         this.bases = bases;
         this.documents = documents;
         this.chunks = chunks;
         this.embeddings = embeddings;
-        this.properties = properties;
+        this.settings = settings;
         this.documentRepo = documentRepo;
     }
 
     @Transactional(readOnly = true)
     public KnowledgeSettingsView settings() {
-        var rag = properties.rag();
-        return new KnowledgeSettingsView(
-                rag != null && rag.embeddingEnabled(),
-                rag == null ? "" : rag.embeddingModelProfileId(),
-                rag == null || rag.maxEmbeddingChars() <= 0 ? 6_000 : rag.maxEmbeddingChars(),
-                embeddings.vectorWeight());
+        return settings.view();
     }
 
     @Transactional(readOnly = true)

@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Function;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -52,7 +53,7 @@ public class ModelCatalog {
     public List<ModelProfileView> list() {
         String defaultId = defaultModelProfileId();
         return repository.findAll().stream()
-                .map(entity -> ModelProfileView.from(entity, entity.id().equals(defaultId)))
+                .map(entity -> viewOf(entity, entity.id().equals(defaultId)))
                 .toList();
     }
 
@@ -127,14 +128,14 @@ public class ModelCatalog {
                 command.capabilities(),
                 command.enabled());
         var saved = repository.save(entity);
-        return ModelProfileView.from(saved, saved.id().equals(defaultModelProfileId()));
+        return viewOf(saved, saved.id().equals(defaultModelProfileId()));
     }
 
     @Transactional(readOnly = true)
     public ModelProfileView get(String id) {
         var entity = repository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Model profile not found: " + id));
-        return ModelProfileView.from(entity, entity.id().equals(defaultModelProfileId()));
+        return viewOf(entity, entity.id().equals(defaultModelProfileId()));
     }
 
     @Transactional
@@ -149,7 +150,30 @@ public class ModelCatalog {
                 null,
                 entity.capabilities(),
                 enabled);
-        return ModelProfileView.from(repository.save(entity), entity.id().equals(defaultModelProfileId()));
+        var saved = repository.save(entity);
+        return viewOf(saved, saved.id().equals(defaultModelProfileId()));
+    }
+
+    private ModelProfileView viewOf(ModelProfileEntity entity, boolean defaultProfile) {
+        return ModelProfileView.from(entity, defaultProfile, hasConfiguredApiKey(entity));
+    }
+
+    private static boolean hasConfiguredApiKey(ModelProfileEntity entity) {
+        return hasConfiguredApiKey(entity, System::getenv);
+    }
+
+    static boolean hasConfiguredApiKey(
+            ModelProfileEntity entity,
+            Function<String, String> environmentLookup) {
+        if (entity.apiKey() != null && !entity.apiKey().isBlank()) {
+            return true;
+        }
+        String credentialRef = entity.credentialRef();
+        if (credentialRef == null || credentialRef.isBlank()) {
+            return false;
+        }
+        String environmentKey = environmentLookup.apply(credentialRef);
+        return environmentKey != null && !environmentKey.isBlank();
     }
 
     @Transactional

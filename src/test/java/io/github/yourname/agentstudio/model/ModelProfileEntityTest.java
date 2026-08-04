@@ -9,6 +9,27 @@ import org.junit.jupiter.api.Test;
 class ModelProfileEntityTest {
 
     @Test
+    void exposesEnvironmentBackedCredentialAsConfiguredWithoutExposingItsValue() {
+        ModelProfileEntity profile = new ModelProfileEntity(
+                "environment-backed",
+                ProviderType.OPENAI_COMPATIBLE,
+                "https://configured.example/v1",
+                "configured-model",
+                "CONFIGURED_KEY",
+                null,
+                EnumSet.of(ModelCapability.TEXT),
+                true,
+                Instant.now());
+
+        ModelProfileView view = ModelProfileView.from(profile, false, true);
+
+        assertThat(view.apiKeyConfigured()).isTrue();
+        assertThat(view.apiKeyPreview()).isNull();
+        assertThat(ModelCatalog.hasConfiguredApiKey(profile, name -> "environment-key")).isTrue();
+        assertThat(ModelCatalog.hasConfiguredApiKey(profile, name -> " ")).isFalse();
+    }
+
+    @Test
     void upgradesOnlyTheMissingCapabilityOnAnExistingProfile() {
         ModelProfileEntity profile = new ModelProfileEntity(
                 "minimax-m3",

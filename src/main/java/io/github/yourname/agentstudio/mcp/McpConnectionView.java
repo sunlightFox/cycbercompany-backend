@@ -24,5 +24,6 @@ public record McpConnectionView(
         Map<String, String> metadata,
         List<McpToolView> tools,
         Instant createdAt,
-        Instant updatedAt) {
+        Instant updatedAt,
+        String lastError) {
 }

@@ -4,6 +4,10 @@ plugins {
 	id("io.spring.dependency-management") version "1.1.7"
 }
 
+tasks.withType<JavaCompile>().configureEach {
+	options.encoding = "UTF-8"
+}
+
 group = "io.github.yourname"
 version = "0.0.1-SNAPSHOT"
 
@@ -44,4 +48,5 @@ dependencies {
 
 tasks.withType<Test> {
 	useJUnitPlatform()
+	systemProperty("file.encoding", "UTF-8")
 }

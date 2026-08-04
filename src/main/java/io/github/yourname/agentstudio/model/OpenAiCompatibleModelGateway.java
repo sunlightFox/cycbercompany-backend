@@ -1,8 +1,16 @@
 package io.github.yourname.agentstudio.model;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZonedDateTime;
@@ -11,6 +19,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -45,6 +54,11 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
         this.profiles = profiles;
         this.restClientBuilder = restClientBuilder;
         this.objectMapper = objectMapper;
+    }
+
+    @Override
+    public boolean supportsStreaming() {
+        return true;
     }
 
     @Override
@@ -130,17 +144,194 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
                         retryAfter(ex.getResponseHeaders()),
                         ex);
             }
+            if (isRetryableStatus(ex.getStatusCode().value())) {
+                throw new ModelTransientException(
+                        "Model provider temporarily failed with status " + ex.getStatusCode().value() + ".",
+                        ex.getStatusCode().value(),
+                        ex);
+            }
             throw new ModelGatewayException("Model provider call failed: " + ex.getMessage(), ex);
         } catch (RestClientException ex) {
-            throw new ModelGatewayException("Model provider call failed: " + ex.getMessage(), ex);
+            throw new ModelTransientException("Model provider transport failed: " + ex.getMessage(), null, ex);
         }
     }
 
-    private static Duration retryAfter(HttpHeaders headers) {
-        if (headers == null) {
-            return null;
+    @Override
+    public ModelAnswer stream(ModelCompletionRequest request, Consumer<String> onToken) {
+        var profile = profiles.findById(request.modelProfileId())
+                .orElseThrow(() -> new ModelGatewayException("Model profile not found: " + request.modelProfileId()));
+        if (!profile.enabled()) {
+            throw new ModelGatewayException("Model profile is disabled: " + profile.id());
         }
-        String value = headers.getFirst(HttpHeaders.RETRY_AFTER);
+        if (!profile.capabilities().contains(ModelCapability.TEXT)) {
+            throw new ModelGatewayException("Selected model does not advertise TEXT capability: " + profile.id());
+        }
+        if (!request.tools().isEmpty() && !profile.capabilities().contains(ModelCapability.TOOLS)) {
+            throw new ModelGatewayException("Selected model does not advertise TOOLS capability: " + profile.id());
+        }
+        if (profile.providerType() != ProviderType.OPENAI_COMPATIBLE) {
+            throw new ModelGatewayException("Provider is not implemented yet: " + profile.providerType());
+        }
+
+        String apiKey = profile.apiKey();
+        if (apiKey == null || apiKey.isBlank()) {
+            apiKey = System.getenv(profile.credentialRef());
+        }
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new ModelGatewayException("Missing model API key. Save it on the selected model profile or set environment variable " + profile.credentialRef());
+        }
+
+        try {
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("model", profile.modelName());
+            payload.put("messages", request.messages().stream().map(this::messagePayload).toList());
+            payload.put("stream", true);
+            if (!request.tools().isEmpty()) {
+                payload.put("tools", request.tools().stream()
+                        .map(tool -> Map.of(
+                                "type", "function",
+                                "function", Map.of(
+                                        "name", tool.name(),
+                                        "description", tool.description(),
+                                        "parameters", tool.inputSchema())))
+                        .toList());
+                if (request.toolChoice() == ToolChoice.REQUIRED) {
+                    payload.put("tool_choice", "required");
+                }
+            }
+
+            var httpRequest = HttpRequest.newBuilder()
+                    .uri(URI.create(trimTrailingSlash(profile.baseUrl()) + "/chat/completions"))
+                    .timeout(READ_TIMEOUT)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
+                    .header(HttpHeaders.ACCEPT, MediaType.TEXT_EVENT_STREAM_VALUE)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload)))
+                    .build();
+            var response = HttpClient.newBuilder()
+                    .connectTimeout(CONNECT_TIMEOUT)
+                    .build()
+                    .send(httpRequest, HttpResponse.BodyHandlers.ofInputStream());
+            if (response.statusCode() == 429) {
+                throw new ModelRateLimitException(
+                        "Model provider rate limited the request.",
+                        retryAfter(response.headers().firstValue(HttpHeaders.RETRY_AFTER).orElse(null)),
+                        null);
+            }
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                if (isRetryableStatus(response.statusCode())) {
+                    throw new ModelTransientException(
+                            "Model provider temporarily failed with status " + response.statusCode() + ".",
+                            response.statusCode(),
+                            null);
+                }
+                throw new ModelGatewayException("Model provider call failed with status " + response.statusCode() + ".");
+            }
+
+            var state = new StreamingAnswer();
+            try (var reader = new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
+                StringBuilder data = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (line.isEmpty()) {
+                        if (consumeStreamEvent(data, state, onToken)) {
+                            break;
+                        }
+                        data.setLength(0);
+                    } else if (line.startsWith("data:")) {
+                        if (!data.isEmpty()) {
+                            data.append('\n');
+                        }
+                        data.append(line.substring(5).stripLeading());
+                    }
+                }
+                consumeStreamEvent(data, state, onToken);
+            }
+            return new ModelAnswer(
+                    state.content.toString(),
+                    state.promptTokens,
+                    state.completionTokens,
+                    state.model,
+                    state.toolCalls.complete(objectMapper),
+                    state.finishReason == null ? "stop" : state.finishReason);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new ModelGatewayException("Model provider stream was interrupted.", ex);
+        } catch (IOException ex) {
+            throw new ModelGatewayException("Model provider stream failed: " + ex.getMessage(), ex);
+        }
+    }
+
+    /** @return true only for the OpenAI SSE end marker, which ends this response without waiting for socket close. */
+    private boolean consumeStreamEvent(StringBuilder data, StreamingAnswer state, Consumer<String> onToken) {
+        if (data.isEmpty()) {
+            return false;
+        }
+        if ("[DONE]".contentEquals(data)) {
+            return true;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(data.toString());
+            if (root == null) {
+                return false;
+            }
+            if (root.hasNonNull("model")) {
+                state.model = root.get("model").asText();
+            }
+            JsonNode usage = root.get("usage");
+            if (usage != null) {
+                state.promptTokens = intValue(usage, "prompt_tokens", state.promptTokens);
+                state.completionTokens = intValue(usage, "completion_tokens", state.completionTokens);
+            }
+            JsonNode choices = root.get("choices");
+            if (choices == null || !choices.isArray() || choices.isEmpty()) {
+                return false;
+            }
+            JsonNode choice = choices.get(0);
+            if (choice.hasNonNull("finish_reason")) {
+                state.finishReason = choice.get("finish_reason").asText();
+            }
+            JsonNode content = choice.path("delta").get("content");
+            if (content != null && !content.isNull()) {
+                String token = content.asText();
+                if (!token.isEmpty()) {
+                    state.content.append(token);
+                    onToken.accept(token);
+                }
+            }
+            // 工具调用与普通文本使用同一条 SSE 流，但它们不能混为 TOKEN_DELTA。
+            // 组装器只保存协议字段，流结束后才把完整调用交给 CodingAgentLoop 执行。
+            state.toolCalls.accept(choice.path("delta").get("tool_calls"));
+            return false;
+        } catch (Exception ex) {
+            throw new ModelGatewayException("Model provider returned an invalid stream event.", ex);
+        }
+    }
+
+    private static Integer intValue(JsonNode node, String field, Integer fallback) {
+        JsonNode value = node.get(field);
+        return value != null && value.canConvertToInt() ? value.asInt() : fallback;
+    }
+
+    private static boolean isRetryableStatus(int statusCode) {
+        return statusCode == 408 || statusCode == 409 || statusCode == 425
+                || (statusCode >= 500 && statusCode <= 599);
+    }
+
+    private static final class StreamingAnswer {
+        private final StringBuilder content = new StringBuilder();
+        private final OpenAiStreamingToolCallAssembler toolCalls = new OpenAiStreamingToolCallAssembler();
+        private Integer promptTokens;
+        private Integer completionTokens;
+        private String model;
+        private String finishReason;
+    }
+
+    private static Duration retryAfter(HttpHeaders headers) {
+        return retryAfter(headers == null ? null : headers.getFirst(HttpHeaders.RETRY_AFTER));
+    }
+
+    private static Duration retryAfter(String value) {
         if (value == null || value.isBlank()) {
             return null;
         }

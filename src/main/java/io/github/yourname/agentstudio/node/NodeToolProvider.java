@@ -92,13 +92,23 @@ public class NodeToolProvider implements ToolProvider {
             Integer timeoutSeconds = request.timeoutSeconds() == null
                     ? timeoutSeconds(scopedArguments)
                     : request.timeoutSeconds();
-            NodeToolCallResult result = nodes.callToolForRun(
-                    request.runId(),
-                    request.toolCallId(),
-                    nodeId,
-                    toolName,
-                    new CallNodeToolCommand(scopedArguments, timeoutSeconds),
-                    request.actor());
+            CallNodeToolCommand command = new CallNodeToolCommand(scopedArguments, timeoutSeconds);
+            NodeToolCallResult result = request.approvalMode().bypassesApproval(request.binding())
+                    ? nodes.callToolForRun(
+                            request.runId(),
+                            request.toolCallId(),
+                            nodeId,
+                            toolName,
+                            command,
+                            request.actor(),
+                            true)
+                    : nodes.callToolForRun(
+                            request.runId(),
+                            request.toolCallId(),
+                            nodeId,
+                            toolName,
+                            command,
+                            request.actor());
             boolean succeeded = "SUCCEEDED".equalsIgnoreCase(result.status());
             Map<String, Object> content = new LinkedHashMap<>();
             content.put("tool", toolName);
@@ -151,7 +161,9 @@ public class NodeToolProvider implements ToolProvider {
             return emptySchema();
         }
         try {
-            return objectMapper.readValue(schemaJson, new TypeReference<LinkedHashMap<String, Object>>() { });
+            Map<String, Object> schema = objectMapper.readValue(
+                    schemaJson, new TypeReference<LinkedHashMap<String, Object>>() { });
+            return ModelVisibleText.schema(schema);
         } catch (Exception ignored) {
             // 节点上报的 schema 是不可信输入。格式错误时暴露空 schema，不能让整个工具目录崩溃。
             return emptySchema();
@@ -159,7 +171,7 @@ public class NodeToolProvider implements ToolProvider {
     }
 
     private static Map<String, Object> emptySchema() {
-        return Map.of("type", "object", "properties", Map.of());
+        return ModelVisibleText.schema(Map.of());
     }
 
     private static Map<String, Object> scopedArguments(
@@ -178,7 +190,9 @@ public class NodeToolProvider implements ToolProvider {
         if ("fs.apply_patch_batch".equals(toolName)) {
             scopeBatchPatchPaths(scoped, scope);
         }
-        if (List.of("project.inspect", "project.discover", "project.map").contains(toolName)) {
+        // 项目导航同样必须继承 Run 的工作目录。只读不等于可以跨项目读取：symbols/references
+        // 会递归扫描源码，遗漏这里会让一个编码任务看见同一节点上其他项目的声明和引用。
+        if (List.of("project.inspect", "project.discover", "project.map", "project.symbols", "project.references").contains(toolName)) {
             scopeArgument(scoped, "cwd", scope);
         }
         if (List.of("git.diff", "browser.screenshot").contains(toolName) && scoped.containsKey("path")) {

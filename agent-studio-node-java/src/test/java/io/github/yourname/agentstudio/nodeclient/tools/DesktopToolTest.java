@@ -87,6 +87,26 @@ class DesktopToolTest {
     }
 
     @Test
+    void startsOnlyFixedApprovedApplicationsAndRequiresASubsequentSnapshot() {
+        AtomicReference<List<String>> command = new AtomicReference<>();
+        DesktopTool tool = new DesktopTool(value -> {
+            command.set(value);
+            return new DesktopTool.CommandResult(0, "{\"Id\":77,\"ProcessName\":\"notepad\"}");
+        }, "Windows 11");
+
+        var started = tool.startApprovedApplication(Map.of("application", "notepad"));
+        var rejectedPath = tool.startApprovedApplication(Map.of("application", "C:\\Windows\\System32\\cmd.exe"));
+
+        assertTrue(started.success());
+        assertEquals(77L, started.result().get("processId"));
+        assertEquals("notepad", started.result().get("application"));
+        assertTrue(started.result().get("nextStep").toString().contains("session.snapshot"));
+        assertTrue(command.get().contains("-EncodedCommand"));
+        assertFalse(rejectedPath.success());
+        assertTrue(rejectedPath.errorMessage().contains("Unsupported desktop application"));
+    }
+
+    @Test
     void capturesDesktopToAnArtifactRelativePathWithoutExposingTheNodePath() throws Exception {
         Path artifactRoot = Files.createTempDirectory("agent-studio-desktop-artifacts");
         DesktopTool tool = new DesktopTool(

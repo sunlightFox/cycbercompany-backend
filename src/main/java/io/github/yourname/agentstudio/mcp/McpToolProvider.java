@@ -80,19 +80,23 @@ public class McpToolProvider implements ToolProvider {
             throw new IllegalArgumentException("MCP binding has no fixed connectionId: " + request.binding().bindingId());
         }
         try {
-            McpToolCallResult result = request.approvalId() == null || request.approvalId().isBlank()
-                    ? connections.callTool(
-                            connectionId,
-                            request.binding().providerToolName(),
-                            new CallMcpToolCommand(request.arguments()),
-                            request.runId(),
-                            request.actor())
-                    : connections.callToolAfterApproval(
-                            connectionId,
-                            request.binding().providerToolName(),
-                            new CallMcpToolCommand(request.arguments()),
-                            request.runId(),
-                            request.actor());
+            boolean approvalGranted = request.approvalMode().bypassesApproval(request.binding());
+            McpToolCallResult result;
+            if (approvalGranted || (request.approvalId() != null && !request.approvalId().isBlank())) {
+                result = connections.callToolAfterApproval(
+                        connectionId,
+                        request.binding().providerToolName(),
+                        new CallMcpToolCommand(request.arguments()),
+                        request.runId(),
+                        request.actor());
+            } else {
+                result = connections.callTool(
+                        connectionId,
+                        request.binding().providerToolName(),
+                        new CallMcpToolCommand(request.arguments()),
+                        request.runId(),
+                        request.actor());
+            }
             Map<String, Object> content = new LinkedHashMap<>();
             content.put("connectionId", connectionId);
             content.put("tool", request.binding().providerToolName());
@@ -124,14 +128,16 @@ public class McpToolProvider implements ToolProvider {
             return emptySchema();
         }
         try {
-            return objectMapper.readValue(schemaJson, new TypeReference<LinkedHashMap<String, Object>>() { });
+            Map<String, Object> schema = objectMapper.readValue(
+                    schemaJson, new TypeReference<LinkedHashMap<String, Object>>() { });
+            return ModelVisibleText.schema(schema);
         } catch (Exception ignored) {
             return emptySchema();
         }
     }
 
     private static Map<String, Object> emptySchema() {
-        return Map.of("type", "object", "properties", Map.of());
+        return ModelVisibleText.schema(Map.of());
     }
 
     private static String message(Exception ex) {

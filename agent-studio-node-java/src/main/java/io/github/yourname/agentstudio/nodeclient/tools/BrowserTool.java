@@ -141,7 +141,7 @@ public class BrowserTool implements AutoCloseable {
             BrowserNetworkPolicy.requireAllowed(current.url(), browserSession.allowedPrivateHosts);
             return ToolExecutionResult.success(pageState(browserSession, current));
         } catch (Exception ex) {
-            return ToolExecutionResult.failure(playwrightError("browser.open", ex));
+            return failureWithDiagnostics("browser.open", ex, executionSessionId);
         }
     }
 
@@ -252,9 +252,10 @@ public class BrowserTool implements AutoCloseable {
             result.put("networkEvidenceScope", "responses-after-last-page-action");
             return allPassed
                     ? ToolExecutionResult.success(result)
-                    : ToolExecutionResult.failure(result, "One or more browser verification checks failed.");
+                    : failureWithDiagnostics(
+                            "browser.verify", "One or more browser verification checks failed.", executionSessionId, result);
         } catch (Exception ex) {
-            return ToolExecutionResult.failure(playwrightError("browser.verify", ex));
+            return failureWithDiagnostics("browser.verify", ex, executionSessionId);
         }
     }
 
@@ -344,7 +345,7 @@ public class BrowserTool implements AutoCloseable {
                     "networkEvidenceScope", "responses-after-last-page-action",
                     "snapshotRevision", browserSession.snapshotRevision));
         } catch (Exception ex) {
-            return ToolExecutionResult.failure(playwrightError("browser.wait_response", ex));
+            return failureWithDiagnostics("browser.wait_response", ex, executionSessionId);
         }
     }
 
@@ -381,7 +382,10 @@ public class BrowserTool implements AutoCloseable {
     public synchronized ToolExecutionResult startTrace(String executionSessionId, Map<String, Object> arguments) {
         try {
             BrowserSession session = session(executionSessionId);
-            requirePage(session);
+            // A trace may be requested before browser.open. Initialize an empty page so the
+            // following navigation is captured instead of turning a recoverable ordering
+            // difference into a failed run.
+            ensurePage(session, arguments);
             if (session.traceRecording) {
                 return ToolExecutionResult.success(Map.of("recording", true, "alreadyRecording", true));
             }
@@ -443,7 +447,7 @@ public class BrowserTool implements AutoCloseable {
             }
             return ToolExecutionResult.success(result);
         } catch (Exception ex) {
-            return ToolExecutionResult.failure(playwrightError("browser.click", ex));
+            return failureWithDiagnostics("browser.click", ex, executionSessionId);
         }
     }
 
@@ -464,7 +468,7 @@ public class BrowserTool implements AutoCloseable {
             current.fill(selector, text, new Page.FillOptions().setTimeout(number(arguments, "timeoutMs", 10_000)));
             return ToolExecutionResult.success(pageState(browserSession, current));
         } catch (Exception ex) {
-            return ToolExecutionResult.failure(playwrightError("browser.type", ex));
+            return failureWithDiagnostics("browser.type", ex, executionSessionId);
         }
     }
 
@@ -1079,6 +1083,51 @@ public class BrowserTool implements AutoCloseable {
                     + "gradlew :agent-studio-node-java:run --args=\"install-browsers\"";
         }
         return toolName + " failed: " + message;
+    }
+
+    /**
+     * 在核心页面操作失败时保留可复盘证据。
+     *
+     * <p>已经显式开启的 Trace 优先封存，因为它包含交互与页面快照；否则保存当前页面
+     * 截图。Artifact 上传后会由节点传输层删除本地文件，服务端只收到受控引用。
+     */
+    private ToolExecutionResult failureWithDiagnostics(String operation, Exception error, String executionSessionId) {
+        return failureWithDiagnostics(operation, playwrightError(operation, error), executionSessionId, Map.of());
+    }
+
+    private ToolExecutionResult failureWithDiagnostics(
+            String operation, String errorMessage, String executionSessionId, Map<String, Object> existingResult) {
+        Map<String, Object> result = new LinkedHashMap<>(existingResult == null ? Map.of() : existingResult);
+        result.put("operation", operation);
+        result.put("diagnosticArtifactCaptured", false);
+        BrowserSession session = sessions.get(sessionKey(executionSessionId));
+        if (session == null || session.page == null || session.page.isClosed()) {
+            return ToolExecutionResult.failure(Map.copyOf(result), errorMessage);
+        }
+        try {
+            Path output;
+            if (session.traceRecording && session.context != null) {
+                output = createArtifactPath(executionSessionId, "failure-traces", ".zip");
+                Files.createDirectories(output.getParent());
+                session.context.tracing().stop(new Tracing.StopOptions().setPath(output));
+                session.traceRecording = false;
+                result.put("artifactType", "playwright-failure-trace");
+                result.put("mimeType", "application/zip");
+            } else {
+                output = createArtifactPath(executionSessionId, "failure-screenshots", ".png");
+                Files.createDirectories(output.getParent());
+                session.page.screenshot(new Page.ScreenshotOptions().setFullPage(true).setPath(output));
+                result.put("artifactType", "browser-failure-screenshot");
+                result.put("mimeType", "image/png");
+            }
+            result.put("artifactPath", relativeArtifactPath(output));
+            result.put("sizeBytes", Files.size(output));
+            result.put("diagnosticArtifactCaptured", true);
+        } catch (Exception ignored) {
+            // 保留原始操作错误；取证失败不能掩盖真正需要模型恢复的页面错误。
+            result.put("diagnosticCaptureFailed", true);
+        }
+        return ToolExecutionResult.failure(Map.copyOf(result), errorMessage);
     }
 
     private static final class BrowserSession {

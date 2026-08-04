@@ -124,13 +124,23 @@ public class SkillToolProvider implements ToolProvider {
         int timeout = integer(request.arguments().get("timeoutSeconds"), 60, 1, 120);
         arguments.put("timeoutSeconds", timeout);
         String nodeId = attribute(request, "nodeId");
-        NodeToolCallResult result = nodes.callToolForRun(
-                request.runId(),
-                request.toolCallId(),
-                nodeId,
-                "skill.script.run",
-                new CallNodeToolCommand(arguments, timeout),
-                request.actor());
+        CallNodeToolCommand command = new CallNodeToolCommand(arguments, timeout);
+        NodeToolCallResult result = request.approvalMode().bypassesApproval(request.binding())
+                ? nodes.callToolForRun(
+                        request.runId(),
+                        request.toolCallId(),
+                        nodeId,
+                        "skill.script.run",
+                        command,
+                        request.actor(),
+                        true)
+                : nodes.callToolForRun(
+                        request.runId(),
+                        request.toolCallId(),
+                        nodeId,
+                        "skill.script.run",
+                        command,
+                        request.actor());
         boolean succeeded = "SUCCEEDED".equalsIgnoreCase(result.status());
         return new ToolProviderResult(
                 result.status(),

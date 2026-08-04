@@ -110,4 +110,26 @@ class NodeChannelWebSocketHandlerTest {
 
         verify(nodes).reconcileInvocationResult(any(NodeToolCallResult.class), eq("fs.write"), eq("sha256:args"), eq(2));
     }
+
+    @Test
+    void bindsIntermediateStatusToThePersistedInvocationMetadata() throws Exception {
+        NodeService nodes = mock(NodeService.class);
+        NodeSessionRegistry sessions = mock(NodeSessionRegistry.class);
+        WebSocketSession session = mock(WebSocketSession.class);
+        HashMap<String, Object> attributes = new HashMap<>();
+        attributes.put("nodeId", "node-123");
+        when(session.getAttributes()).thenReturn(attributes);
+        when(sessions.acceptInbound(eq("node-123"), eq(session), any())).thenReturn(true);
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+        NodeProtocolEnvelope envelope = new NodeProtocolEnvelope(
+                "1.1", "tool.status.result", "msg-progress", "session-1", 1, "inv-1", Instant.now(), null, null, 1,
+                mapper.valueToTree(java.util.Map.of(
+                        "invocationId", "inv-1", "toolName", "fs.write", "argumentsDigest", "wrong-digest",
+                        "attempt", 2, "status", "RUNNING")));
+        NodeChannelWebSocketHandler handler = new NodeChannelWebSocketHandler(nodes, sessions, mapper);
+
+        handler.handleTextMessage(session, new TextMessage(mapper.writeValueAsString(envelope)));
+
+        verify(nodes).startInvocation("node-123", "inv-1", "fs.write", "wrong-digest", 2);
+    }
 }

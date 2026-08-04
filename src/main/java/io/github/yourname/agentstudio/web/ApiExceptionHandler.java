@@ -1,11 +1,14 @@
 package io.github.yourname.agentstudio.web;
 
 import io.github.yourname.agentstudio.node.NodeToolApprovalConflictException;
+import io.github.yourname.agentstudio.execution.ExecutionModeChangeNotAllowedException;
 import io.github.yourname.agentstudio.skill.SkillCompatibilityException;
 import java.time.Instant;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -30,6 +33,14 @@ class ApiExceptionHandler {
         return detail;
     }
 
+    @ExceptionHandler(ExecutionModeChangeNotAllowedException.class)
+    ProblemDetail executionModeConflict(ExecutionModeChangeNotAllowedException ex) {
+        var detail = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+        detail.setProperty("code", "EXECUTION_MODE_NOT_ALLOWED");
+        detail.setProperty("timestamp", Instant.now().toString());
+        return detail;
+    }
+
     /** 将业务输入错误转换为 RFC 9457 风格的 ProblemDetail，而不是暴露堆栈。 */
     @ExceptionHandler(IllegalArgumentException.class)
     ProblemDetail badRequest(IllegalArgumentException ex) {
@@ -48,6 +59,23 @@ class ApiExceptionHandler {
                 .map(error -> Map.of("field", error.getField(), "message", error.getDefaultMessage()))
                 .toList());
         return detail;
+    }
+
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    ProblemDetail methodNotAllowed(HttpRequestMethodNotSupportedException ex) {
+        var detail = ProblemDetail.forStatusAndDetail(HttpStatus.METHOD_NOT_ALLOWED, ex.getMessage());
+        detail.setProperty("code", "METHOD_NOT_ALLOWED");
+        return detail;
+    }
+
+    /**
+     * A browser may close an SSE stream immediately after receiving its terminal
+     * event. The response is already committed at that point, so attempting to
+     * serialize a JSON ProblemDetail would create a misleading converter warning.
+     */
+    @ExceptionHandler(AsyncRequestNotUsableException.class)
+    void asyncRequestNotUsable(AsyncRequestNotUsableException ignored) {
+        // The client already closed the stream; there is no response to write.
     }
 
     @ExceptionHandler(Exception.class)

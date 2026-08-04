@@ -74,13 +74,24 @@ public final class ShellTool {
             try (ExecutorService readers = Executors.newVirtualThreadPerTaskExecutor()) {
                 Future<CapturedOutput> stdoutReader = readers.submit(() -> readOutput(process.getInputStream()));
                 Future<CapturedOutput> stderrReader = readers.submit(() -> readOutput(process.getErrorStream()));
-                finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
-                if (!finished) {
+                try {
+                    finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
+                    if (!finished) {
+                        terminateProcessTree(process, false);
+                        if (!process.waitFor(2, TimeUnit.SECONDS)) {
+                            terminateProcessTree(process, true);
+                            process.waitFor(2, TimeUnit.SECONDS);
+                        }
+                    }
+                } catch (InterruptedException ex) {
+                    // Future.cancel(true) is how the node transport interrupts a running invocation.
+                    // Do not leave cmd.exe or its descendants running after the caller has stopped the run.
                     terminateProcessTree(process, false);
                     if (!process.waitFor(2, TimeUnit.SECONDS)) {
                         terminateProcessTree(process, true);
                         process.waitFor(2, TimeUnit.SECONDS);
                     }
+                    throw ex;
                 }
                 stdout = stdoutReader.get();
                 stderr = stderrReader.get();
@@ -88,8 +99,9 @@ public final class ShellTool {
 
             long durationMs = Duration.ofNanos(System.nanoTime() - startedAt).toMillis();
             Map<String, Object> result = new LinkedHashMap<>();
-            result.put("command", command);
-            result.put("cwd", cwd.toString());
+            // 命令和绝对目录已经是调用参数，重复返回只会把本机环境细节带进模型上下文。
+            // systemAccess 场景也只说明执行范围，绝不披露工作区外目录。
+            result.put("workingDirectoryScope", cwd.startsWith(workspaceRoot) ? "workspace" : "system");
             result.put("durationMs", durationMs);
             result.put("timedOut", !finished);
             result.put("stdout", stdout.text());
@@ -112,12 +124,12 @@ public final class ShellTool {
         } catch (IllegalArgumentException ex) {
             return ToolExecutionResult.failure(ex.getMessage());
         } catch (IOException ex) {
-            return ToolExecutionResult.failure("Failed to start command: " + ex.getMessage());
+            return ToolExecutionResult.failure("Failed to start command.");
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             return ToolExecutionResult.failure("Command execution was interrupted.");
         } catch (ExecutionException ex) {
-            return ToolExecutionResult.failure("Failed to read command output: " + safeMessage(ex.getCause()));
+            return ToolExecutionResult.failure("Failed to read command output.");
         }
     }
 
@@ -130,7 +142,7 @@ public final class ShellTool {
         }
         candidate = candidate.normalize();
         if (!Files.isDirectory(candidate)) {
-            throw new IllegalArgumentException("Working directory does not exist: " + candidate);
+            throw new IllegalArgumentException("Working directory does not exist or is inaccessible.");
         }
         try {
             Path realPath = candidate.toRealPath();
@@ -139,7 +151,7 @@ public final class ShellTool {
             }
             return realPath;
         } catch (IOException ex) {
-            throw new IllegalArgumentException("Cannot resolve working directory: " + candidate, ex);
+            throw new IllegalArgumentException("Cannot resolve working directory.", ex);
         }
     }
 
@@ -148,6 +160,20 @@ public final class ShellTool {
         return osName.contains("win")
                 ? List.of("cmd.exe", "/d", "/s", "/c", command)
                 : List.of("/bin/sh", "-lc", command);
+    }
+
+    /**
+     * Describes the shell grammar that receives the command argument. This is
+     * advertised with the capability because a generic "platform shell" label
+     * causes models to mix CMD, PowerShell, and POSIX syntax.
+     */
+    public static String commandDialectDescription() {
+        String osName = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        if (osName.contains("win")) {
+            return "Commands run through cmd.exe /d /s /c. Use CMD syntax such as dir and &&; do not use POSIX "
+                    + "syntax such as ls, ';', $?, xxd, or PowerShell variables unless invoking PowerShell explicitly.";
+        }
+        return "Commands run through /bin/sh -lc. Use POSIX shell syntax.";
     }
 
     private static void terminateProcessTree(Process process, boolean forcibly) {
@@ -200,10 +226,6 @@ public final class ShellTool {
     private static String stringValue(Map<String, Object> arguments, String key) {
         Object value = arguments == null ? null : arguments.get(key);
         return value == null ? null : value.toString();
-    }
-
-    private static String safeMessage(Throwable error) {
-        return error == null || error.getMessage() == null ? "unknown error" : error.getMessage();
     }
 
     private record CapturedOutput(String text, boolean truncated) {

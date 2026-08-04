@@ -61,6 +61,29 @@ public class NodeSessionRegistry {
         return connected != null && connected.socket().isOpen();
     }
 
+    public boolean awaitConnected(String nodeId, Duration timeout) {
+        if (isConnected(nodeId)) {
+            return true;
+        }
+        if (timeout == null || timeout.isZero() || timeout.isNegative()) {
+            return false;
+        }
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (System.nanoTime() < deadline) {
+            long remainingMillis = Math.max(1, TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()));
+            try {
+                Thread.sleep(Math.min(100, remainingMillis));
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                return isConnected(nodeId);
+            }
+            if (isConnected(nodeId)) {
+                return true;
+            }
+        }
+        return isConnected(nodeId);
+    }
+
     public void disconnect(String nodeId, String reason) {
         ConnectedSession connected = sessions.remove(nodeId);
         if (connected == null) {
@@ -152,7 +175,18 @@ public class NodeSessionRegistry {
                 future);
         pendingInvocations.put(invocationId, pending);
         try {
-            sendLegacyInvoke(connected, invocationId, toolName, arguments, executionSessionId);
+            // Direct management calls must use the same envelope as Run-bound calls. Current
+            // clients reject the former protocol-1.0 object and require these correlation fields.
+            Map<String, Object> payload = new java.util.LinkedHashMap<>();
+            payload.put("invocationId", invocationId);
+            payload.put("toolName", toolName);
+            payload.put("arguments", arguments == null ? Map.of() : arguments);
+            payload.put("argumentsDigest", "legacy");
+            payload.put("attempt", 1);
+            if (executionSessionId != null && !executionSessionId.isBlank()) {
+                payload.put("executionSessionId", executionSessionId);
+            }
+            send(connected, "tool.invoke", invocationId, payload, Instant.now().plus(timeout), "trace_" + invocationId);
             return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
@@ -272,29 +306,6 @@ public class NodeSessionRegistry {
                 connected.fencingToken(),
                 objectMapper.valueToTree(payload == null ? Map.of() : payload));
         String json = objectMapper.writeValueAsString(envelope);
-        if (json.getBytes(StandardCharsets.UTF_8).length > NodeProtocolLimits.MAX_CONTROL_MESSAGE_BYTES) {
-            throw new IllegalArgumentException("Node protocol payload exceeds the control message size limit.");
-        }
-        synchronized (connected.socket()) {
-            connected.socket().sendMessage(new TextMessage(json));
-        }
-    }
-
-    private void sendLegacyInvoke(
-            ConnectedSession connected,
-            String invocationId,
-            String toolName,
-            Map<String, Object> arguments,
-            String executionSessionId) throws Exception {
-        Map<String, Object> payload = new java.util.LinkedHashMap<>();
-        payload.put("type", "tool.invoke");
-        payload.put("invocationId", invocationId);
-        payload.put("toolName", toolName);
-        payload.put("arguments", arguments == null ? Map.of() : arguments);
-        if (executionSessionId != null && !executionSessionId.isBlank()) {
-            payload.put("executionSessionId", executionSessionId);
-        }
-        String json = objectMapper.writeValueAsString(payload);
         if (json.getBytes(StandardCharsets.UTF_8).length > NodeProtocolLimits.MAX_CONTROL_MESSAGE_BYTES) {
             throw new IllegalArgumentException("Node protocol payload exceeds the control message size limit.");
         }

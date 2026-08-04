@@ -1,0 +1,6 @@
+FROM spring-agent-studio-web-web:latest
+WORKDIR /app
+COPY dist /app/dist
+COPY server.cjs /app/server.cjs
+EXPOSE 5173
+CMD ["node", "server.cjs"]

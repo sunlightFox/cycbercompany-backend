@@ -2,8 +2,15 @@ HELP.md
 .gradle
 build/
 data/
+.runtime-data/
 frontend/
 logs/
+evaluation-results/
+.playwright-cli/
+.tmp-ui-skill-data/
+*.err.log
+*.out.log
+backend-*.log
 !gradle/wrapper/gradle-wrapper.jar
 !**/src/main/**/build/
 !**/src/test/**/build/

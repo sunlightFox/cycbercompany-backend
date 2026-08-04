@@ -26,6 +26,7 @@ class BrowserToolIntegrationTest {
                     <label for='task-title'>Task</label>
                     <input id='task-title' name='title' placeholder='Add a task'>
                     <button id='submit' type='button' onclick="window.location.assign('/api/tasks?title=' + encodeURIComponent(document.querySelector('#task-title').value))">Save</button>
+                    <p id='chinese'>你好，浏览器</p>
                     <p id='result'></p>
                     <script>setTimeout(() => document.body.insertAdjacentHTML('beforeend', '<button id=loaded>Ready</button>'), 100)</script>
                     </body></html>
@@ -42,14 +43,15 @@ class BrowserToolIntegrationTest {
                 Map.of(BrowserNetworkPolicy.ALLOWED_PRIVATE_HOSTS, List.of("127.0.0.1")));
         try (BrowserTool tool = new BrowserTool(HttpClient.newHttpClient(), artifactRoot)) {
             int port = server.getAddress().getPort();
-            assertTrue(tool.open("run-a", merge(localPolicy, "url", "http://127.0.0.1:" + port + "/")).success());
             assertTrue(tool.startTrace("run-a", Map.of()).success());
+            assertTrue(tool.open("run-a", merge(localPolicy, "url", "http://127.0.0.1:" + port + "/")).success());
             assertTrue(tool.waitFor("run-a", Map.of("selector", "#loaded", "timeoutMs", 5_000)).success());
 
             var snapshot = tool.snapshot("run-a", Map.of());
             assertTrue(snapshot.success());
             assertTrue(snapshot.result().get("interactiveElements").toString().contains("#task-title"));
             assertTrue(snapshot.result().get("interactiveElements").toString().contains("#submit"));
+            assertTrue(snapshot.result().get("textPreview").toString().contains("你好，浏览器"));
 
             assertTrue(tool.type("run-a", Map.of("selector", "#task-title", "text", "Browser E2E")).success());
             assertTrue(tool.click("run-a", Map.of("selector", "#submit")).success());

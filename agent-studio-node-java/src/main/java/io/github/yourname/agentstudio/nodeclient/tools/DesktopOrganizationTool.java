@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.StandardOpenOption;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -45,7 +46,9 @@ public final class DesktopOrganizationTool {
         }
         try {
             Map<String, Object> result = new LinkedHashMap<>(listed.result());
+            result.put("desktopPath", desktopRoot.toString());
             result.put("sortableFiles", countSortableFiles());
+            result.put("visibleDirectories", visibleDirectories());
             return ToolExecutionResult.success(Map.copyOf(result));
         } catch (IOException ex) {
             return ToolExecutionResult.failure("desktop.organize.list failed: " + message(ex));
@@ -126,6 +129,19 @@ public final class DesktopOrganizationTool {
                     .filter(Files::isRegularFile)
                     .filter(this::isVisible)
                     .count();
+        }
+    }
+
+    private List<String> visibleDirectories() throws IOException {
+        try (var entries = Files.list(desktopRoot)) {
+            return entries
+                    .filter(path -> !Files.isSymbolicLink(path))
+                    .filter(Files::isDirectory)
+                    .filter(this::isVisible)
+                    .map(path -> path.getFileName().toString())
+                    .sorted(String.CASE_INSENSITIVE_ORDER)
+                    .limit(200)
+                    .toList();
         }
     }
 

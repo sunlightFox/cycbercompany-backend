@@ -43,6 +43,10 @@ app:
     user-id: ${APP_SECURITY_USER_ID:remote-owner}
   run:
     timeout-seconds: 120
+  execution:
+    # Shared interactive deployments must not be switched to sandbox-only routing.
+    # Dedicated evaluation backends opt in explicitly with this environment variable.
+    allow-nodes-only: ${APP_EXECUTION_ALLOW_NODES_ONLY:false}
   web-search:
     enabled: ${WEB_SEARCH_ENABLED:true}
     max-results: ${WEB_SEARCH_MAX_RESULTS:5}

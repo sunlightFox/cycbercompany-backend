@@ -28,6 +28,7 @@ import io.github.yourname.agentstudio.node.NodeConnectionView;
 import io.github.yourname.agentstudio.node.NodeDetailView;
 import io.github.yourname.agentstudio.node.NodeKind;
 import io.github.yourname.agentstudio.node.NodeStatus;
+import io.github.yourname.agentstudio.node.CodingRunEvidenceView;
 import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.skill.SkillCatalog;
 import io.github.yourname.agentstudio.skill.SkillRunBinding;
@@ -41,6 +42,8 @@ import java.util.Map;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.ArrayList;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -257,7 +260,7 @@ class RunCommandServiceSkillSnapshotTest {
         when(skills.resolveForRun(List.of())).thenReturn(List.of());
         when(skills.compileInstructions(List.of())).thenReturn("");
         when(conversations.history("conversation-1", ACTOR)).thenReturn(List.of());
-        when(codingAgentLoop.execute(anyString(), anyString(), any(), any(), any(), any()))
+        when(codingAgentLoop.executeInteraction(anyString(), anyString(), any(), any(), any(), any(), any()))
                 .thenReturn("done");
 
         service.create(commandForNode(), ACTOR);
@@ -276,8 +279,8 @@ class RunCommandServiceSkillSnapshotTest {
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<ResolvedToolBinding>> bindingCaptor = ArgumentCaptor.forClass(List.class);
-        verify(codingAgentLoop).execute(
-                anyString(), anyString(), bindingCaptor.capture(), any(), any(), any());
+        verify(codingAgentLoop).executeInteraction(
+                anyString(), anyString(), bindingCaptor.capture(), any(), any(), any(), any());
         assertThat(bindingCaptor.getValue()).containsExactly(originalBinding);
         assertThat(persisted.runSpecJson())
                 .contains("Original immutable prompt")
@@ -309,6 +312,48 @@ class RunCommandServiceSkillSnapshotTest {
 
         verify(toolRouter, never()).invoke(any());
         verify(modelGateway).complete(any());
+        assertThat(persisted.status()).isEqualTo(RunStatus.SUCCEEDED);
+    }
+
+    @Test
+    void selectedNodeGreetingUsesDynamicToolLoopWithoutForcingANativeToolCall() {
+        ResolvedToolBinding nodeBinding = new ResolvedToolBinding(
+                "node:node-1:browser.open",
+                "tool_browser_open",
+                "browser.open",
+                "node",
+                "browser.open",
+                "Open a browser page",
+                RiskLevel.LOW,
+                false,
+                Map.of("type", "object"),
+                Map.of("nodeId", "node-1"));
+        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of(nodeBinding));
+        when(skills.resolveForRun(List.of())).thenReturn(List.of());
+        when(skills.compileInstructions(List.of())).thenReturn("");
+        when(conversations.history("conversation-1", ACTOR)).thenReturn(List.of());
+        when(codingAgentLoop.executeInteraction(anyString(), anyString(), any(), any(), any(), any(), any()))
+                .thenReturn("你好！");
+        when(nodes.codingEvidence(anyString(), any())).thenReturn(new CodingRunEvidenceView(
+                "run", 0, List.of(), -1, List.of(), false, List.of(), List.of(), List.of(), List.of(),
+                false, false, List.of()));
+
+        service.create(new CreateRunCommand(
+                "conversation-1", "你好呀", "model-1", "agent-1", List.of(), List.of(), List.of(),
+                List.of(), "node-1", null), ACTOR);
+        ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(runs).save(runCaptor.capture());
+        AgentRunEntity persisted = runCaptor.getValue();
+        when(runs.findById(persisted.id())).thenReturn(Optional.of(persisted));
+        when(runs.findByIdAndTenantId(persisted.id(), ACTOR.tenantId())).thenReturn(Optional.of(persisted));
+
+        queuedWorker.run();
+
+        verify(codingAgentLoop).executeInteraction(
+                anyString(), anyString(), any(), any(), any(), any(), any());
+        verify(nodes).validateExecutionTarget("node-1", ACTOR);
+        verify(nodes).codingEvidence(anyString(), any());
+        assertThat(persisted.runSpecJson()).contains("\"executionMode\":\"NODE_INTERACTION\"");
         assertThat(persisted.status()).isEqualTo(RunStatus.SUCCEEDED);
     }
 
@@ -347,7 +392,56 @@ class RunCommandServiceSkillSnapshotTest {
     }
 
     @Test
-    void createRoutesComputerControlToTheOnlyReadySystemNode() {
+    void streamingModelPublishesOnlyFilteredDeltasBeforeTheFinalAnswer() {
+        List<RunEventType> eventTypes = new ArrayList<>();
+        List<String> eventPayloads = new ArrayList<>();
+        doAnswer(invocation -> {
+            eventTypes.add(invocation.getArgument(1));
+            eventPayloads.add(invocation.getArgument(2));
+            return null;
+        }).when(events).publish(anyString(), any(), anyString(), any());
+        when(skills.resolveForRun(List.of())).thenReturn(List.of());
+        when(skills.compileInstructions(List.of())).thenReturn("");
+        when(conversations.history("conversation-1", ACTOR)).thenReturn(List.of());
+        when(modelGateway.supportsStreaming()).thenReturn(true);
+        when(modelGateway.stream(any(), any())).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            Consumer<String> onToken = invocation.getArgument(1);
+            // 模拟真实 SSE 将隐藏标签拆到多个网络分片中。
+            onToken.accept("Visible <thi");
+            onToken.accept("nk>internal reasoning</think>");
+            onToken.accept(" final");
+            return new ModelGateway.ModelAnswer(
+                    "Visible <think>internal reasoning</think> final", 8, 4, "stream-model");
+        });
+
+        service.create(commandWithText("Give a concise answer"), ACTOR);
+        ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(runs).save(runCaptor.capture());
+        AgentRunEntity persisted = runCaptor.getValue();
+        when(runs.findById(persisted.id())).thenReturn(Optional.of(persisted));
+        when(runs.findByIdAndTenantId(persisted.id(), ACTOR.tenantId())).thenReturn(Optional.of(persisted));
+
+        queuedWorker.run();
+
+        List<String> deltas = new ArrayList<>();
+        for (int index = 0; index < eventTypes.size(); index++) {
+            if (eventTypes.get(index) == RunEventType.TOKEN_DELTA) {
+                deltas.add(eventPayloads.get(index));
+            }
+        }
+        assertThat(String.join("", deltas))
+                .isEqualTo("Visible  final")
+                .doesNotContain("internal reasoning")
+                .doesNotContain("<think>");
+        assertThat(eventTypes.indexOf(RunEventType.TOKEN_DELTA))
+                .isLessThan(eventTypes.indexOf(RunEventType.FINAL_ANSWER));
+        assertThat(eventTypes.stream().filter(type -> type == RunEventType.TOKEN_DELTA).count()).isEqualTo(2);
+        verify(modelGateway, never()).complete(any());
+    }
+
+    @Test
+    void createRoutesComputerControlToTheReadyNodeWithoutTextBasedToolFiltering() {
         ResolvedToolBinding binding = new ResolvedToolBinding(
                 "node:node-system:system.desktop.organize.list",
                 "tool_system_desktop_organize_list",
@@ -390,7 +484,9 @@ class RunCommandServiceSkillSnapshotTest {
                 .contains("node-system")
                 .contains("system.*")
                 .doesNotContain("computer:*")
-                .doesNotContain("system.desktop.set_wallpaper");
+                .contains("system.desktop.organize.list")
+                .contains("system.desktop.set_wallpaper")
+                .contains("\"executionMode\":\"NODE_INTERACTION\"");
     }
 
     @Test

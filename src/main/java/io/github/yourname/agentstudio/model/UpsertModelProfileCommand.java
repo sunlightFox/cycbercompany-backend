@@ -10,7 +10,11 @@ public record UpsertModelProfileCommand(
         @NotNull ProviderType providerType,
         @NotBlank String baseUrl,
         @NotBlank String modelName,
-        @NotBlank String credentialRef,
+        /**
+         * Optional legacy environment-variable reference. New profiles should
+         * provide {@code apiKey} directly instead.
+         */
+        String credentialRef,
         String apiKey,
         @NotEmpty Set<ModelCapability> capabilities,
         boolean enabled) {

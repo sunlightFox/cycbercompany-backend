@@ -32,7 +32,7 @@ class NodeServiceApprovalTest {
 
     private static final String TENANT = "tenant-a";
     private static final String NODE_ID = "node-1";
-    private static final String TOOL_NAME = "shell.run";
+    private static final String TOOL_NAME = "system.shell.run";
     private static final ActorContext ACTOR = new ActorContext(
             TENANT, "alice", Set.of("NODE_TOOL_APPROVER"), Set.of());
 
@@ -51,6 +51,7 @@ class NodeServiceApprovalTest {
 
     private NodeService service;
     private NodeToolApprovalEntity approval;
+    private NodeToolEntity tool;
 
     @BeforeEach
     void setUp() {
@@ -59,7 +60,7 @@ class NodeServiceApprovalTest {
         NodeConnectionEntity node = new NodeConnectionEntity(
                 NODE_ID, TENANT, "local", "host", "Windows", "amd64", "test", "secret", now);
         node.markOnline(now);
-        NodeToolEntity tool = new NodeToolEntity(
+        tool = new NodeToolEntity(
                 TENANT, NODE_ID, TOOL_NAME, "run a command", RiskLevel.HIGH, true, true, "{}", now);
         approval = new NodeToolApprovalEntity(
                 "nodeapproval-1", TENANT, NODE_ID, TOOL_NAME, "{\"command\":\"whoami\"}", 45, "alice", now);
@@ -80,6 +81,23 @@ class NodeServiceApprovalTest {
         assertEquals("PENDING", result.result().get("status"));
         verify(approvals).save(any(NodeToolApprovalEntity.class));
         verifyNoInteractions(sessions);
+    }
+
+    @Test
+    void highestSystemAccessDispatchesShellWithoutCreatingApproval() {
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+        tool.updatePolicy(true, false, now);
+        when(sessions.isConnected(NODE_ID)).thenReturn(true);
+        when(sessions.invoke(eq(NODE_ID), any(NodeInvocationDispatch.class), eq(Duration.ofSeconds(45))))
+                .thenReturn(new NodeToolCallResult(
+                        "nodeinv-1", NODE_ID, TOOL_NAME, "SUCCEEDED", Map.of("stdout", "alice"), null));
+
+        NodeToolCallResult result = service.callTool(
+                NODE_ID, TOOL_NAME, new CallNodeToolCommand(Map.of("command", "whoami"), 45), ACTOR);
+
+        assertEquals("SUCCEEDED", result.status());
+        verify(approvals, never()).save(any(NodeToolApprovalEntity.class));
+        verify(sessions).invoke(eq(NODE_ID), any(NodeInvocationDispatch.class), eq(Duration.ofSeconds(45)));
     }
 
     @Test
@@ -143,6 +161,23 @@ class NodeServiceApprovalTest {
     }
 
     @Test
+    void approvalWaitsForNodeReconnectBeforeDispatchingStoredCommand() {
+        when(approvals.findByIdAndTenantId(approval.id(), TENANT)).thenReturn(Optional.of(approval));
+        when(sessions.isConnected(NODE_ID)).thenReturn(false, true);
+        when(sessions.awaitConnected(eq(NODE_ID), any(Duration.class))).thenReturn(true);
+        when(sessions.invoke(eq(NODE_ID), eq(TOOL_NAME), any(), eq(Duration.ofSeconds(45))))
+                .thenReturn(new NodeToolCallResult(
+                        "nodeinv-1", NODE_ID, TOOL_NAME, "SUCCEEDED", Map.of("stdout", "alice"), null));
+
+        NodeToolApprovalDecisionView decision = service.decideToolApproval(
+                approval.id(), new DecideNodeToolApprovalCommand(true), ACTOR);
+
+        assertEquals("SUCCEEDED", decision.execution().status());
+        verify(sessions).awaitConnected(eq(NODE_ID), any(Duration.class));
+        verify(sessions).invoke(eq(NODE_ID), eq(TOOL_NAME), any(), eq(Duration.ofSeconds(45)));
+    }
+
+    @Test
     void failedApprovedExecutionMarksTheOriginalRunInvocationAsFailed() {
         approval.linkToRun("run-1", "call-1");
         NodeToolInvocationEntity invocation = new NodeToolInvocationEntity(
@@ -162,6 +197,27 @@ class NodeServiceApprovalTest {
         assertEquals(NodeToolInvocationStatus.FAILED, invocation.status());
         assertEquals("command failed", invocation.errorMessage());
         verify(invocations).save(invocation);
+    }
+
+    @Test
+    void successfulApprovedExecutionClearsApprovalPlaceholderError() {
+        approval.linkToRun("run-1", "call-1");
+        NodeToolInvocationEntity invocation = new NodeToolInvocationEntity(
+                "nodeinv-1", TENANT, "run-1", "call-1", NODE_ID, TOOL_NAME, "{\"command\":\"whoami\"}", Instant.now());
+        invocation.fail(NodeToolInvocationStatus.APPROVAL_REQUIRED, "approval required", Instant.now());
+        when(approvals.findByIdAndTenantId(approval.id(), TENANT)).thenReturn(Optional.of(approval));
+        when(invocations.findFirstByTenantIdAndRunIdAndToolCallIdOrderByCreatedAtDesc(TENANT, "run-1", "call-1"))
+                .thenReturn(Optional.of(invocation));
+        when(sessions.isConnected(NODE_ID)).thenReturn(true);
+        when(sessions.invoke(eq(NODE_ID), eq(TOOL_NAME), any(), eq(Duration.ofSeconds(45)), eq("run-1")))
+                .thenReturn(new NodeToolCallResult("nodeinv-1", NODE_ID, TOOL_NAME, "SUCCEEDED", Map.of("stdout", "alice"), null));
+
+        NodeToolApprovalDecisionView decision = service.decideToolApproval(
+                approval.id(), new DecideNodeToolApprovalCommand(true), ACTOR);
+
+        assertEquals("SUCCEEDED", decision.execution().status());
+        assertEquals(NodeToolInvocationStatus.SUCCEEDED, invocation.status());
+        assertNull(invocation.errorMessage());
     }
 
     @Test

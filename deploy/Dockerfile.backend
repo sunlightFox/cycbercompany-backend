@@ -1,10 +1,5 @@
-FROM eclipse-temurin:21-jdk AS build
-WORKDIR /src
-COPY . .
-RUN chmod +x gradlew && ./gradlew bootJar --no-daemon
-
-FROM eclipse-temurin:21-jre
+FROM agent-studio/backend:latest
 WORKDIR /app
-COPY --from=build /src/build/libs/*.jar /app/app.jar
+COPY release-artifacts/backend.jar /app/app.jar
 EXPOSE 8080
 ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-jar", "/app/app.jar"]

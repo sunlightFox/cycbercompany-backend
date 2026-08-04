@@ -1,5 +1,14 @@
 package io.github.yourname.agentstudio.nodeclient.tools;
 
+import com.sun.source.tree.ClassTree;
+import com.sun.source.tree.CompilationUnitTree;
+import com.sun.source.tree.IdentifierTree;
+import com.sun.source.tree.MethodTree;
+import com.sun.source.tree.VariableTree;
+import com.sun.source.util.JavacTask;
+import com.sun.source.util.SourcePositions;
+import com.sun.source.util.TreePathScanner;
+import com.sun.source.util.Trees;
 import io.github.yourname.agentstudio.nodeclient.runtime.ToolExecutionResult;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -15,6 +24,12 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import javax.tools.JavaCompiler;
+import javax.tools.Diagnostic;
+import javax.tools.DiagnosticCollector;
+import javax.tools.JavaFileObject;
+import javax.tools.StandardJavaFileManager;
+import javax.tools.ToolProvider;
 
 /**
  * 在指定工作区中识别常见项目，并给出可供后续工具执行的建议命令。
@@ -161,9 +176,9 @@ public final class ProjectTool {
                     "symbols", symbols,
                     "scannedFiles", scan.scannedFiles,
                     "includeTests", includeTests,
-                    "parser", "bounded-lightweight-declaration-index",
+                    "parser", "bounded-java-ast-and-lexical-declaration-index",
                     "truncated", scan.truncated,
-                    "guidance", "Read the selected file and nearby lines before editing; this index is navigation evidence, not a compiler AST."));
+                    "guidance", "Java declarations are parsed from a bounded compiler AST; other languages use a lexical index. Read the selected file and nearby lines before editing."));
         } catch (IOException ex) {
             return ToolExecutionResult.failure("project.symbols failed: " + ex.getMessage());
         } catch (IllegalArgumentException ex) {
@@ -196,9 +211,9 @@ public final class ProjectTool {
                     "references", references,
                     "scannedFiles", scan.scannedFiles,
                     "includeTests", includeTests,
-                    "parser", "bounded-lexical-candidate-reference-index",
+                    "parser", "bounded-java-ast-and-lexical-candidate-reference-index",
                     "truncated", scan.truncated,
-                    "guidance", "Review each candidate with fs.read before editing. This is lexical navigation evidence, not a complete semantic reference graph."));
+                    "guidance", "Java candidate references exclude comments and string literals through a bounded AST parse. Review every result with fs.read before editing; this is not a complete cross-module semantic graph."));
         } catch (IOException ex) {
             return ToolExecutionResult.failure("project.references failed: " + ex.getMessage());
         } catch (IllegalArgumentException ex) {
@@ -529,6 +544,136 @@ public final class ProjectTool {
         return raw == null || raw.isBlank() ? fallback : Boolean.parseBoolean(raw);
     }
 
+    /**
+     * 用 JDK 自带编译器只解析单个 Java 文件的语法树。
+     *
+     * <p>这里刻意只调用 {@code parse()}，不调用会加载依赖、执行注解处理器或编译输出的
+     * {@code analyze()/generate()}。因此它既能识别多行声明，又不会把只读导航工具变成构建工具。
+     * 如果节点运行在纯 JRE 或遇到不完整源码，则调用方会安全地回退到原有词法扫描。
+     */
+    private List<SymbolDeclaration> javaAstDeclarations(Path file, String queryLowerCase, int maximum) throws IOException {
+        JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+        if (compiler == null || maximum <= 0) {
+            return List.of();
+        }
+        String[] lines = Files.readString(file).split("\\R", -1);
+        try (StandardJavaFileManager fileManager = compiler.getStandardFileManager(null, Locale.ROOT, java.nio.charset.StandardCharsets.UTF_8)) {
+            Iterable<? extends JavaFileObject> units = fileManager.getJavaFileObjects(file.toFile());
+            DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();
+            JavacTask task = (JavacTask) compiler.getTask(null, fileManager, diagnostics, List.of("-proc:none"), null, units);
+            List<SymbolDeclaration> declarations = new ArrayList<>();
+            for (CompilationUnitTree unit : task.parse()) {
+                Trees trees = Trees.instance(task);
+                SourcePositions positions = trees.getSourcePositions();
+                new TreePathScanner<Void, Void>() {
+                    @Override
+                    public Void visitClass(ClassTree node, Void unused) {
+                        add(node.getKind().name().toLowerCase(Locale.ROOT), node.getSimpleName().toString(), node);
+                        return super.visitClass(node, unused);
+                    }
+
+                    @Override
+                    public Void visitMethod(MethodTree node, Void unused) {
+                        add("method", node.getName().toString(), node);
+                        return super.visitMethod(node, unused);
+                    }
+
+                    @Override
+                    public Void visitVariable(VariableTree node, Void unused) {
+                        // 字段、参数和局部变量都可能是重构前需要确认的声明；调用方仍需 fs.read 审阅作用域。
+                        add("variable", node.getName().toString(), node);
+                        return super.visitVariable(node, unused);
+                    }
+
+                    private void add(String kind, String name, com.sun.source.tree.Tree tree) {
+                        if (name == null || name.isBlank() || declarations.size() >= maximum
+                                || (!queryLowerCase.isEmpty() && !name.toLowerCase(Locale.ROOT).contains(queryLowerCase))) {
+                            return;
+                        }
+                        long position = positions.getStartPosition(unit, tree);
+                        if (position == javax.tools.Diagnostic.NOPOS) {
+                            return;
+                        }
+                        int line = (int) unit.getLineMap().getLineNumber(position);
+                        if (line <= 0 || line > lines.length) {
+                            return;
+                        }
+                        declarations.add(new SymbolDeclaration(
+                                workspaceRelative(file), line, "java", kind, name, declarationPreview(lines[line - 1])));
+                    }
+                }.scan(unit, null);
+            }
+            if (hasJavaSyntaxErrors(diagnostics)) {
+                return List.of();
+            }
+            return declarations;
+        } catch (RuntimeException ex) {
+            // 语法树解析失败时由外层继续使用原有词法索引，避免一份临时半成品源码阻断导航。
+            return List.of();
+        }
+    }
+
+    /**
+     * 返回 Java AST 中真实的标识符节点，而不是按文本搜索。
+     *
+     * <p>它不会尝试加载整个项目或解析第三方 classpath，所以“引用”仍是候选影响范围，不能替代
+     * 语言服务器的跨模块符号解析；但注释和字符串不会再因为同名文字被误报。
+     */
+    private List<ReferenceOccurrence> javaAstReferences(Path file, String symbol, int maximum) throws IOException {
+        JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+        if (compiler == null || maximum <= 0) {
+            return List.of();
+        }
+        String[] lines = Files.readString(file).split("\\R", -1);
+        try (StandardJavaFileManager fileManager = compiler.getStandardFileManager(null, Locale.ROOT, java.nio.charset.StandardCharsets.UTF_8)) {
+            Iterable<? extends JavaFileObject> units = fileManager.getJavaFileObjects(file.toFile());
+            DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();
+            JavacTask task = (JavacTask) compiler.getTask(null, fileManager, diagnostics, List.of("-proc:none"), null, units);
+            Map<Integer, AstReferenceLine> references = new LinkedHashMap<>();
+            for (CompilationUnitTree unit : task.parse()) {
+                Trees trees = Trees.instance(task);
+                SourcePositions positions = trees.getSourcePositions();
+                new TreePathScanner<Void, Void>() {
+                    @Override
+                    public Void visitIdentifier(IdentifierTree node, Void unused) {
+                        if (!symbol.equals(node.getName().toString())) {
+                            return super.visitIdentifier(node, unused);
+                        }
+                        long position = positions.getStartPosition(unit, node);
+                        if (position == javax.tools.Diagnostic.NOPOS) {
+                            return super.visitIdentifier(node, unused);
+                        }
+                        int line = (int) unit.getLineMap().getLineNumber(position);
+                        int column = (int) unit.getLineMap().getColumnNumber(position);
+                        if (line > 0 && line <= lines.length) {
+                            AstReferenceLine existing = references.get(line);
+                            if (existing != null) {
+                                references.put(line, existing.withOccurrences(existing.occurrences() + 1));
+                            } else if (references.size() < maximum) {
+                                references.put(line, new AstReferenceLine(line, column, 1));
+                            }
+                        }
+                        return super.visitIdentifier(node, unused);
+                    }
+                }.scan(unit, null);
+            }
+            if (hasJavaSyntaxErrors(diagnostics)) {
+                return List.of();
+            }
+            return references.values().stream()
+                    .map(reference -> new ReferenceOccurrence(
+                            workspaceRelative(file), reference.line(), reference.column(), "java", "candidate-reference",
+                            reference.occurrences(), declarationPreview(lines[reference.line() - 1])))
+                    .toList();
+        } catch (RuntimeException ex) {
+            return List.of();
+        }
+    }
+
+    private static boolean hasJavaSyntaxErrors(DiagnosticCollector<JavaFileObject> diagnostics) {
+        return diagnostics.getDiagnostics().stream().anyMatch(diagnostic -> diagnostic.getKind() == Diagnostic.Kind.ERROR);
+    }
+
     private final class SymbolScan extends SimpleFileVisitor<Path> {
         private final Path root;
         private final String queryLowerCase;
@@ -567,6 +712,18 @@ public final class ProjectTool {
                     return FileVisitResult.CONTINUE;
                 }
                 String language = sourceLanguage(file).orElseThrow();
+                if ("java".equals(language)) {
+                    List<SymbolDeclaration> astSymbols = javaAstDeclarations(
+                            file, queryLowerCase, maxResults - symbols.size());
+                    if (!astSymbols.isEmpty()) {
+                        symbols.addAll(astSymbols);
+                        if (symbols.size() >= maxResults) {
+                            truncated = true;
+                            return FileVisitResult.TERMINATE;
+                        }
+                        return FileVisitResult.CONTINUE;
+                    }
+                }
                 String[] lines = Files.readString(file).split("\\R", -1);
                 for (int index = 0; index < lines.length; index++) {
                     SymbolMatch match = declaration(language, lines[index]);
@@ -632,6 +789,28 @@ public final class ProjectTool {
                     return FileVisitResult.CONTINUE;
                 }
                 String language = sourceLanguage(file).orElseThrow();
+                if ("java".equals(language)) {
+                    int remaining = maxResults - references.size();
+                    List<SymbolDeclaration> declarations = javaAstDeclarations(
+                            file, symbol.toLowerCase(Locale.ROOT), remaining);
+                    for (SymbolDeclaration declaration : declarations) {
+                        if (!symbol.equals(declaration.name) || references.size() >= maxResults) {
+                            continue;
+                        }
+                        references.add(new ReferenceOccurrence(
+                                declaration.path, declaration.line, 1, "java", "declaration", 1, declaration.declaration));
+                    }
+                    remaining = maxResults - references.size();
+                    List<ReferenceOccurrence> astReferences = javaAstReferences(file, symbol, remaining);
+                    if (!declarations.isEmpty() || !astReferences.isEmpty()) {
+                        references.addAll(astReferences);
+                        if (references.size() >= maxResults) {
+                            truncated = true;
+                            return FileVisitResult.TERMINATE;
+                        }
+                        return FileVisitResult.CONTINUE;
+                    }
+                }
                 String[] lines = Files.readString(file).split("\\R", -1);
                 for (int index = 0; index < lines.length; index++) {
                     Matcher matcher = occurrence.matcher(lines[index]);
@@ -766,12 +945,19 @@ public final class ProjectTool {
                 if (real.startsWith(workspaceRoot)) {
                     return workspaceRoot.relativize(real).toString().replace('\\', '/');
                 }
-                return path;
+                // 构建日志可能包含 JDK、缓存或其他工作区的绝对路径。诊断器不能据此读取文件，
+                // 也不应把节点磁盘布局返回给模型，因此用稳定占位符保留"位置不可用"这一事实。
+                return "[outside-workspace path omitted]";
             }
+            Path normalized = candidate.normalize();
+            if (normalized.startsWith("..")) {
+                return "[outside-workspace path omitted]";
+            }
+            return normalized.toString().replace('\\', '/');
         } catch (Exception ignored) {
-            // 编译器可能输出带驱动器或 URI 的非标准路径，保留已截断的原文供人工判断。
+            // 编译器可能输出带驱动器或 URI 的非标准路径。无法安全归一化时不能原样回传。
+            return "[unrecognized path omitted]";
         }
-        return path;
     }
 
     private static String boundedText(String text, int maxLength) {
@@ -780,6 +966,13 @@ public final class ProjectTool {
     }
 
     private record SymbolMatch(String kind, String name) {
+    }
+
+    /** Java AST 内部按行累积同一符号出现次数，保持 project.references 的既有响应语义。 */
+    private record AstReferenceLine(int line, int column, int occurrences) {
+        private AstReferenceLine withOccurrences(int value) {
+            return new AstReferenceLine(line, column, value);
+        }
     }
 
     private record SymbolDeclaration(String path, int line, String language, String kind, String name, String declaration) {

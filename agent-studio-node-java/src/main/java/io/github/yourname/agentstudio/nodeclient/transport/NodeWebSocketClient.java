@@ -9,6 +9,7 @@ import io.github.yourname.agentstudio.nodeclient.protocol.NodeInvocationJournal;
 import io.github.yourname.agentstudio.nodeclient.protocol.NodeJournalEntry;
 import io.github.yourname.agentstudio.nodeclient.protocol.NodeProtocolEnvelope;
 import io.github.yourname.agentstudio.nodeclient.runtime.ToolRegistry;
+import io.github.yourname.agentstudio.nodeclient.runtime.ToolExecutionResult;
 import io.github.yourname.agentstudio.nodeclient.runtime.ToolResultBudget;
 import io.github.yourname.agentstudio.nodeclient.skill.DockerSkillRuntime;
 import io.github.yourname.agentstudio.nodeclient.skill.SkillBundleCache;
@@ -48,6 +49,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public class NodeWebSocketClient implements WebSocket.Listener {
 
     // 协议顺序：node.accepted -> capabilities + heartbeat；tool.invoke -> accepted/progress/result。
+    private static final String NODE_PROTOCOL_SUBPROTOCOL = "agent-studio-node-v1.1";
 
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
@@ -133,6 +135,8 @@ public class NodeWebSocketClient implements WebSocket.Listener {
                 this.webSocket = httpClient.newWebSocketBuilder()
                         .header("X-Agent-Studio-Node-Id", config.nodeId())
                         .header("Authorization", "Bearer " + config.nodeSecret())
+                        // 子协议是显式版本协商，不能依赖 User-Agent 或能力字段猜测服务端消息格式。
+                        .subprotocols(NODE_PROTOCOL_SUBPROTOCOL)
                         .buildAsync(uri, this)
                         .join();
                 retrySeconds = 1;
@@ -324,13 +328,41 @@ public class NodeWebSocketClient implements WebSocket.Listener {
             String executionSessionId,
             String traceId) throws Exception {
         NodeJournalEntry started = journal.start(invocationId);
+        if ("CANCEL_REQUESTED".equals(started.status())) {
+            // 取消在本地工具开始之前已经被持久化。这里必须先写入确定的终态再返回，
+            // 不能仅回复 cancel.ack，否则服务端重连时会把一次根本没有开始的调用误判为 UNKNOWN。
+            NodeJournalEntry cancelled = journal.finish(
+                    invocationId,
+                    "CANCELLED",
+                    null,
+                    "Invocation was cancelled before local execution began.");
+            sendJournalStatus("tool.result", cancelled, traceId);
+            return;
+        }
         sendJournalStatus("tool.progress", started, traceId);
         try {
             // 原样带回 invocationId，服务端才能完成正确的 Future。
-            var localExecution = toolRegistry.execute(
+            ToolExecutionResult localExecution = toolRegistry.execute(
                     toolName,
                     arguments == null ? Collections.emptyMap() : arguments,
                     executionSessionId);
+            if (localExecution == null) {
+                localExecution = ToolExecutionResult.failure(
+                        "Node tool returned no execution result.");
+            }
+            // A cancellation can interrupt a tool implementation that reports a normal
+            // failure result instead of throwing. Resolve the journal state after the
+            // implementation returns so a cancelled command cannot be recorded as FAILED.
+            NodeJournalEntry afterExecution = journal.find(invocationId);
+            if (afterExecution != null && "CANCEL_REQUESTED".equals(afterExecution.status())) {
+                NodeJournalEntry cancelled = journal.finish(
+                        invocationId,
+                        "CANCELLED",
+                        null,
+                        "Invocation was cancelled while local execution was in progress.");
+                sendJournalStatus("tool.result", cancelled, traceId);
+                return;
+            }
             // 截图、Trace 等大对象先通过 HTTP 上传；WebSocket 只发送小型 Artifact 引用。
             var execution = resultBudget.apply(artifactUploader.uploadIfPresent(executionSessionId, localExecution));
             NodeJournalEntry finished = journal.finish(
@@ -339,7 +371,18 @@ public class NodeWebSocketClient implements WebSocket.Listener {
                     execution.result(), execution.errorMessage());
             sendJournalStatus("tool.result", finished, traceId);
         } catch (Exception ex) {
-            NodeJournalEntry finished = journal.finish(invocationId, "FAILED", null, safeException(ex));
+            // cancel(true) 导致的中断不是普通工具失败。仅当 Journal 已记录取消请求时，
+            // 才能把该异常归类为 CANCELLED；否则仍保留 FAILED，避免掩盖真实错误。
+            NodeJournalEntry current = journal.find(invocationId);
+            boolean cancellationRequested = current != null
+                    && "CANCEL_REQUESTED".equals(current.status());
+            NodeJournalEntry finished = journal.finish(
+                    invocationId,
+                    cancellationRequested ? "CANCELLED" : "FAILED",
+                    null,
+                    cancellationRequested
+                            ? "Invocation was cancelled while local execution was in progress."
+                            : safeException(ex));
             sendJournalStatus("tool.result", finished, traceId);
         }
         System.out.println("Sent tool.result: invocationId=" + safeLogToken(invocationId)

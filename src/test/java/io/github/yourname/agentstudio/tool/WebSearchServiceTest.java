@@ -19,6 +19,16 @@ import org.junit.jupiter.api.Test;
 class WebSearchServiceTest {
 
     @Test
+    void honorsContainerSearxngEndpointWhenOnlyTheLocalDefaultWasConfigured() {
+        AppProperties.WebSearch configured = new AppProperties.WebSearch(true, 5, "http://localhost:8888");
+
+        assertThat(WebSearchService.effectiveConfig(configured, "http://searxng:8080").endpoint())
+                .isEqualTo("http://searxng:8080");
+        assertThat(WebSearchService.effectiveConfig(configured, "").endpoint())
+                .isEqualTo("http://localhost:8888");
+    }
+
+    @Test
     void usesSearxngJsonPreservesQueryAndReadsVerifiedEvidence() throws Exception {
         AtomicReference<String> requestedQuery = new AtomicReference<>();
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);

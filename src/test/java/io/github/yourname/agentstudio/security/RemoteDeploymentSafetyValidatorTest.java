@@ -42,6 +42,19 @@ class RemoteDeploymentSafetyValidatorTest {
         assertThatCode(validator::afterPropertiesSet).doesNotThrowAnyException();
     }
 
+    @Test
+    void acceptsAnExplicitlyDeclaredLocalDockerProxyOnly() {
+        SecurityProperties properties = new SecurityProperties(SecurityProperties.Mode.LOCAL, "", "tenant", "user");
+        MockEnvironment environment = new MockEnvironment()
+                .withProperty("server.address", "0.0.0.0")
+                .withProperty("app.security.allow-local-proxy", "true")
+                .withProperty("server.ssl.enabled", "false")
+                .withProperty("spring.h2.console.enabled", "true");
+
+        assertThatCode(new RemoteDeploymentSafetyValidator(properties, environment)::afterPropertiesSet)
+                .doesNotThrowAnyException();
+    }
+
     private static RemoteDeploymentSafetyValidator validator(
             SecurityProperties.Mode mode,
             String token,

@@ -3,6 +3,10 @@ plugins {
     application
 }
 
+tasks.withType<JavaCompile>().configureEach {
+    options.encoding = "UTF-8"
+}
+
 group = "io.github.yourname"
 version = "0.0.1-SNAPSHOT"
 
@@ -30,4 +34,5 @@ application {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+    systemProperty("file.encoding", "UTF-8")
 }

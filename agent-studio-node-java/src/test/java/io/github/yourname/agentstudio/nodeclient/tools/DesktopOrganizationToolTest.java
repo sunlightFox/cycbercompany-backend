@@ -23,7 +23,9 @@ class DesktopOrganizationToolTest {
         var moved = tool.move(Map.of("source", "inbox.txt", "category", "Documents"));
 
         assertTrue(listed.success());
+        assertEquals(desktop.toRealPath().toString(), listed.result().get("desktopPath"));
         assertEquals(1, listed.result().get("sortableFiles"));
+        assertEquals(java.util.List.of("Existing"), listed.result().get("visibleDirectories"));
         assertTrue(category.success());
         assertTrue(moved.success());
         assertFalse(Files.exists(desktop.resolve("inbox.txt")));

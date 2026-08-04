@@ -246,11 +246,16 @@ public class McpConnectionService {
 
     public McpConnectionView refreshTools(String connectionId) {
         StoredMcpConnection current = load(connectionId);
-        ensureExecutable(current);
-        List<UpsertMcpToolCommand> discovered = stdioClient.listTools(toRuntimeConnection(current));
-        StoredMcpConnection updated = current.withTools(mergeTools(current.id(), current.tools(), discovered));
-        save(updated);
-        return toView(updated);
+        try {
+            ensureExecutable(current);
+            List<UpsertMcpToolCommand> discovered = stdioClient.listTools(toRuntimeConnection(current));
+            StoredMcpConnection updated = current.withTools(mergeTools(current.id(), current.tools(), discovered));
+            save(updated);
+            return toView(updated);
+        } catch (RuntimeException ex) {
+            save(current.withLastError(discoveryError(ex)));
+            throw ex;
+        }
     }
 
     @Transactional(noRollbackFor = Exception.class)
@@ -412,9 +417,13 @@ public class McpConnectionService {
     }
 
     private McpConnectionView toView(StoredMcpConnection stored) {
-        McpConnectionStatus status = stored.enabled()
-                ? (stored.tools().isEmpty() ? McpConnectionStatus.NEEDS_DISCOVERY : McpConnectionStatus.CONFIGURED)
-                : McpConnectionStatus.DISABLED;
+        McpConnectionStatus status = !stored.enabled()
+                ? McpConnectionStatus.DISABLED
+                : !stored.lastError().isBlank()
+                        ? McpConnectionStatus.ERROR
+                        : stored.tools().isEmpty()
+                                ? McpConnectionStatus.NEEDS_DISCOVERY
+                                : McpConnectionStatus.CONFIGURED;
         return new McpConnectionView(
                 stored.id(),
                 stored.name(),
@@ -432,7 +441,8 @@ public class McpConnectionService {
                         .sorted(Comparator.comparing(McpToolView::name, String.CASE_INSENSITIVE_ORDER))
                         .toList(),
                 stored.createdAt(),
-                stored.updatedAt());
+                stored.updatedAt(),
+                stored.lastError());
     }
 
     private McpToolView toView(StoredMcpTool tool) {
@@ -614,6 +624,15 @@ public class McpConnectionService {
         return value == null ? "" : value.trim();
     }
 
+    private static String discoveryError(RuntimeException ex) {
+        String message = ex.getMessage();
+        if (message == null || message.isBlank()) {
+            return "MCP tool discovery failed.";
+        }
+        String compact = message.replaceAll("[\\r\\n]+", " ").trim();
+        return compact.length() <= 320 ? compact : compact.substring(0, 317) + "...";
+    }
+
     private String sha256(Map<String, Object> arguments) {
         try {
             String json = objectMapper.writeValueAsString(arguments == null ? Map.of() : arguments);
@@ -649,7 +668,13 @@ public class McpConnectionService {
         StoredMcpConnection withTools(List<StoredMcpTool> tools) {
             return new StoredMcpConnection(
                     id, name, description, transportType, enabled, command, args, endpoint, env,
-                    metadata, tools, createdAt, Instant.now(), lastError);
+                    metadata, tools, createdAt, Instant.now(), "");
+        }
+
+        StoredMcpConnection withLastError(String error) {
+            return new StoredMcpConnection(
+                    id, name, description, transportType, enabled, command, args, endpoint, env,
+                    metadata, tools, createdAt, Instant.now(), error);
         }
     }
 

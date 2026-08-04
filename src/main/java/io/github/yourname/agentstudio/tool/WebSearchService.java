@@ -216,9 +216,11 @@ public class WebSearchService {
                     sourceId, "SUCCESS", providerQuery, results.size(), elapsedMillis(startedAt), ""));
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
-            return failedAttempt(sourceId, providerQuery, startedAt, "SearXNG request was interrupted");
+            return failedAttempt(sourceId, providerQuery, startedAt,
+                    "endpoint=" + safeEndpoint(config.endpoint()) + ": SearXNG request was interrupted");
         } catch (Exception ex) {
-            return failedAttempt(sourceId, providerQuery, startedAt, safeMessage(ex));
+            return failedAttempt(sourceId, providerQuery, startedAt,
+                    "endpoint=" + safeEndpoint(config.endpoint()) + ": " + safeMessage(ex));
         }
     }
 
@@ -619,9 +621,44 @@ public class WebSearchService {
     }
 
     private static AppProperties.WebSearch effectiveConfig(AppProperties.WebSearch configured) {
-        return configured == null
-                ? new AppProperties.WebSearch(true, 5, "http://localhost:8888", 2, 3, "zh-CN", 1, AppProperties.PageReader.defaults())
-                : configured;
+        return effectiveConfig(configured, System.getenv("SEARXNG_ENDPOINT"));
+    }
+
+    static AppProperties.WebSearch effectiveConfig(AppProperties.WebSearch configured, String searxngEndpoint) {
+        AppProperties.WebSearch defaults = new AppProperties.WebSearch(
+                true, 5, "http://localhost:8888", 2, 3, "zh-CN", 1, AppProperties.PageReader.defaults());
+        AppProperties.WebSearch resolved = configured == null ? defaults : configured;
+        if (searxngEndpoint == null || searxngEndpoint.isBlank()
+                || !"http://localhost:8888".equalsIgnoreCase(resolved.endpoint().trim())) {
+            return resolved;
+        }
+        return new AppProperties.WebSearch(
+                resolved.enabled(),
+                resolved.maxResults(),
+                searxngEndpoint.trim(),
+                resolved.perDomainLimit(),
+                resolved.minUniqueDomains(),
+                resolved.language(),
+                resolved.safeSearch(),
+                resolved.pageReader(),
+                resolved.newsSources(),
+                resolved.planning(),
+                resolved.generalEngines(),
+                resolved.newsEngines());
+    }
+
+    private static String safeEndpoint(String endpoint) {
+        if (endpoint == null || endpoint.isBlank()) {
+            return "<empty>";
+        }
+        try {
+            URI uri = URI.create(endpoint);
+            String host = uri.getHost();
+            String authority = host == null ? "<invalid>" : host + (uri.getPort() > 0 ? ":" + uri.getPort() : "");
+            return uri.getScheme() + "://" + authority;
+        } catch (Exception ignored) {
+            return "<invalid>";
+        }
     }
 
     private static AppProperties.NewsSources effectiveNewsSources(AppProperties.NewsSources configured) {

@@ -1,6 +1,7 @@
 package io.github.yourname.agentstudio.orchestration;
 
 import io.github.yourname.agentstudio.security.ActorContext;
+import java.util.List;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,5 +24,14 @@ public class RunQueryService {
                         run,
                         queue.position(new ConversationRunQueue.QueueKey(actor.tenantId(), run.conversationId()), run.id())))
                 .orElseThrow(() -> new IllegalArgumentException("Run not found: " + runId));
+    }
+
+    @Transactional(readOnly = true)
+    public List<RunView> listConversationRuns(String conversationId, ActorContext actor) {
+        return runs.findByConversationIdAndTenantIdOrderByCreatedAtAsc(conversationId, actor.tenantId()).stream()
+                .map(run -> RunView.from(
+                        run,
+                        queue.position(new ConversationRunQueue.QueueKey(actor.tenantId(), run.conversationId()), run.id())))
+                .toList();
     }
 }

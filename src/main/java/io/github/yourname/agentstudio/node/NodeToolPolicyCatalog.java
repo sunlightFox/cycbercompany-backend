@@ -79,6 +79,7 @@ public final class NodeToolPolicyCatalog {
             Map.entry("system.shell.run", SYSTEM_RISK),
             Map.entry("system.desktop.set_wallpaper", SYSTEM_RISK),
             Map.entry("system.desktop.session.snapshot", SYSTEM_RISK),
+            Map.entry("system.desktop.application.start", SYSTEM_RISK),
             Map.entry("system.desktop.screenshot", SYSTEM_RISK),
             Map.entry("system.desktop.window.activate", SYSTEM_RISK),
             Map.entry("system.desktop.ui.snapshot", SYSTEM_RISK),

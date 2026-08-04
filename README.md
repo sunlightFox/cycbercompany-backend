@@ -65,7 +65,7 @@ only the management API can assign `SANDBOX` and its labels.
 - Desktop UI Automation also exposes an approval-protected read-only verification action for confirming a target control still exists and is enabled after interaction.
 - The delivery gate requires `system.desktop.ui.verify` or an approved `system.desktop.ui.read_value` after the final approved UI Automation click or type. Evidence recorded before a later click/type cannot prove the resulting Windows UI state.
 - For approved desktop form checks, `system.desktop.ui.read_value` confirms one bounded non-password `ValuePattern` value after typing. It rejects password controls locally and remains approval-protected because ordinary field values may still be sensitive.
-- Coding navigation includes bounded `project.symbols` declaration indexing and `project.references` candidate-usage lookup for common source languages; both are read-only lexical aids and require `fs.read` review before edits.
+- Coding navigation includes bounded `project.symbols` declaration indexing and `project.references` candidate-usage lookup for common source languages. Complete Java files use the JDK compiler AST to exclude comments and string literals; incomplete Java and other languages use a bounded lexical fallback. Every result still requires `fs.read` review before edits.
 - `fs.write` and `fs.apply_patch` stage complete replacement content beside the target file before moving it into place; a replacement failure therefore preserves the original source instead of truncating it.
 - Build feedback includes read-only `project.diagnose` parsing for common compiler/test formats, plus `process.logs` for bounded stdout/stderr tails from a managed development process.
 - `process.wait_http` provides bounded readiness evidence for a node-managed local development server. It performs only a redirect-disabled GET to literal `localhost`, `127.0.0.1`, or `::1`, discards the response body, and rejects credentials, query parameters, fragments, and remote addresses.
@@ -131,7 +131,7 @@ and management; the default personal-local UI does not expose node terminology.
 ## Frontend Repository
 
 The matching frontend lives in a separate repository named
-`spring-agent-studio-frontend`. It is adapted from the MIT-licensed
+`spring-agent-studio-web`. It is adapted from the MIT-licensed
 [assistant-ui/assistant-ui](https://github.com/assistant-ui/assistant-ui)
 minimal template and connects to this backend through:
 
@@ -153,6 +153,7 @@ POST /api/v1/conversations/{id}/attachments
 
 GET  /api/v1/models
 POST /api/v1/models
+GET  /api/v1/approval-modes
 
 GET  /api/v1/agents
 GET  /api/v1/tools
@@ -171,8 +172,40 @@ GET  /api/v1/runs/{id}
 POST /api/v1/runs/{id}/reconcile
 GET  /api/v1/runs/{id}/workflow
 GET  /api/v1/runs/{id}/events
+GET  /api/v1/runs/{id}/coding-evidence
+GET  /api/v1/runs/{id}/coding-quality
+GET  /api/v1/runs/{id}/coding-evaluation?scenario=minimal-full-stack
 GET  /api/v1/conversations/{id}/queue
 ```
+
+`coding-evaluation` is a read-only, scenario-specific report generated from
+persisted Run state, node invocation audit records, and lifecycle events. The
+five supported scenario values are documented in `docs/coding-evaluation.md`.
+It measures delivery evidence, not business correctness, and never returns raw
+commands, terminal output, source code, or node absolute paths.
+
+## Run Approval Mode
+
+The run composer can render its approval selector from `GET /api/v1/approval-modes` and send
+the selected `approvalMode` with `POST /api/v1/runs`:
+
+```json
+{
+  "conversationId": "conversation-id",
+  "text": "Inspect the project and run its tests.",
+  "approvalMode": "full-access"
+}
+```
+
+The accepted stable values are:
+
+- `on-request` (default): each approval-protected tool pauses for a decision.
+- `auto-approve`: low- and medium-risk tools run automatically; high-risk tools still pause.
+- `full-access`: no human approval pause for tools in this Run.
+
+The selected mode is persisted in the immutable Run snapshot and is retained when an
+approval-paused run is resumed. `full-access` does not disable the enabled-tool allow list,
+workspace policy, server-side authorization, or the tool invocation audit trail.
 
 ## Chat Queue
 

@@ -2,6 +2,7 @@ package io.github.yourname.agentstudio.execution;
 
 import io.github.yourname.agentstudio.security.ActorContext;
 import java.time.Instant;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -10,9 +11,13 @@ import org.springframework.transaction.annotation.Transactional;
 public class ExecutionSettingsService {
 
     private final ExecutionSettingsRepository settings;
+    private final boolean allowNodesOnly;
 
-    public ExecutionSettingsService(ExecutionSettingsRepository settings) {
+    public ExecutionSettingsService(
+            ExecutionSettingsRepository settings,
+            @Value("${app.execution.allow-nodes-only:false}") boolean allowNodesOnly) {
         this.settings = settings;
+        this.allowNodesOnly = allowNodesOnly;
     }
 
     @Transactional(readOnly = true)
@@ -35,6 +40,11 @@ public class ExecutionSettingsService {
         ExecutionMode mode = command == null || command.mode() == null
                 ? ExecutionMode.PERSONAL_LOCAL
                 : command.mode();
+        if (mode == ExecutionMode.NODES_ONLY && !allowNodesOnly) {
+            throw new ExecutionModeChangeNotAllowedException(
+                    "NODES_ONLY execution mode is disabled for this backend. "
+                    + "Use an isolated evaluation backend with APP_EXECUTION_ALLOW_NODES_ONLY=true.");
+        }
         Instant now = Instant.now();
         ExecutionSettingsEntity value = settings.findById(actor.tenantId())
                 .orElseGet(() -> new ExecutionSettingsEntity(actor.tenantId(), mode, now));

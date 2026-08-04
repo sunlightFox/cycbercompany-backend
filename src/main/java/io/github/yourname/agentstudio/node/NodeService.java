@@ -23,12 +23,15 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -45,6 +48,7 @@ public class NodeService {
     private static final int MAX_TOKEN_TTL_SECONDS = 24 * 60 * 60;
     private static final int TOOL_APPROVAL_TTL_SECONDS = 5 * 60;
     private static final String TOOL_APPROVER_ROLE = "NODE_TOOL_APPROVER";
+    private static final Duration NODE_RECONNECT_GRACE = Duration.ofSeconds(8);
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final NodeConnectionRepository nodes;
@@ -462,6 +466,21 @@ public class NodeService {
         return NodeToolView.from(tools.save(tool));
     }
 
+    @Transactional
+    public void setSystemAccess(String nodeId, boolean enabled, ActorContext actor) {
+        NodeConnectionEntity node = requireNode(nodeId, actor);
+        if (!node.features().contains("system-access.v1")) {
+            throw new IllegalArgumentException("This node does not support system access.");
+        }
+        Instant now = Instant.now();
+        tools.findByTenantIdAndNodeIdOrderByNameAsc(actor.tenantId(), nodeId).stream()
+                .filter(tool -> tool.name().startsWith("system."))
+                .forEach(tool -> {
+                    tool.updatePolicy(enabled, !enabled, now);
+                    tools.save(tool);
+                });
+    }
+
     @Transactional(noRollbackFor = Exception.class)
     public NodeToolCallResult callTool(String nodeId, String toolName, CallNodeToolCommand command, ActorContext actor) {
         return executeAuditedTool(
@@ -470,7 +489,8 @@ public class NodeService {
                 nodeId,
                 toolName,
                 prepareCommand(toolName, command),
-                actor);
+                actor,
+                false);
     }
 
     @Transactional(noRollbackFor = Exception.class)
@@ -481,13 +501,27 @@ public class NodeService {
             String toolName,
             CallNodeToolCommand command,
             ActorContext actor) {
+        return callToolForRun(runId, toolCallId, nodeId, toolName, command, actor, false);
+    }
+
+    /** Executes a Run-bound tool after its selected approval mode has bypassed the pause gate. */
+    @Transactional(noRollbackFor = Exception.class)
+    public NodeToolCallResult callToolForRun(
+            String runId,
+            String toolCallId,
+            String nodeId,
+            String toolName,
+            CallNodeToolCommand command,
+            ActorContext actor,
+            boolean bypassApproval) {
         return executeAuditedTool(
                 runId,
                 toolCallId,
                 nodeId,
                 toolName,
                 prepareCommand(toolName, command),
-                actor);
+                actor,
+                bypassApproval);
     }
 
     private NodeToolCallResult executeAuditedTool(
@@ -496,7 +530,8 @@ public class NodeService {
             String nodeId,
             String toolName,
             CallNodeToolCommand preparedCommand,
-            ActorContext actor) {
+            ActorContext actor,
+            boolean bypassApproval) {
         Instant now = Instant.now();
         NodeToolInvocationEntity invocation = invocations.save(new NodeToolInvocationEntity(
                 "nodeinv_" + UUID.randomUUID(),
@@ -509,7 +544,7 @@ public class NodeService {
                 now));
         try {
             NodeToolCallResult result = executeTool(
-                    nodeId, toolName, preparedCommand, actor, false, runId, invocation);
+                    nodeId, toolName, preparedCommand, actor, bypassApproval, runId, invocation);
             if ("SUCCEEDED".equalsIgnoreCase(result.status())) {
                 // 通道收到 tool.result 时已先做会话/摘要校验并落库；这里保留同步路径的兜底。
                 if (!invocation.terminal()) {
@@ -705,11 +740,7 @@ public class NodeService {
                 .flatMap(java.util.Optional::stream)
                 .distinct()
                 .toList();
-        List<String> failedTools = history.stream()
-                .filter(invocation -> invocation.status() == NodeToolInvocationStatus.FAILED)
-                .map(NodeToolInvocationEntity::toolName)
-                .distinct()
-                .toList();
+        List<String> failedTools = unresolvedFailedTools(history);
         // Trace 的绝对路径仅保留在受控审计调用记录中。交付摘要只显示经过格式校验的文件名，
         // 既能证明可回放证据存在，也不会暴露节点用户目录或临时目录结构。
         List<String> browserTraceArtifacts = history.stream()
@@ -724,6 +755,9 @@ public class NodeService {
         // 只有任务明确要求前后端联调时，交付门禁才会强制后者；普通静态网页任务仍可只做可见状态断言。
         boolean browserApiVerified = browserApiVerifiedAfterLastInteraction(history);
         boolean desktopUiVerified = desktopUiVerifiedAfterLastControlAction(history);
+        boolean desktopApplicationVerified = desktopApplicationVerifiedAfterStart(history);
+        boolean managedProcessReady = managedProcessReadyAfterStart(history);
+        boolean managedProcessReadyAfterLastProjectChange = managedProcessReadyAfterLastProjectChange(history);
         return new CodingRunEvidenceView(
                 runId,
                 history.size(),
@@ -738,7 +772,55 @@ public class NodeService {
                 browserVerified,
                 desktopUiVerified,
                 failedTools,
-                browserApiVerified);
+                browserApiVerified,
+                desktopApplicationVerified,
+                managedProcessReady,
+                managedProcessReadyAfterLastProjectChange);
+    }
+
+    /**
+     * A model may correct a malformed tool call after reading the structured
+     * failure (for example, by wrapping a quoted PowerShell script with
+     * {@code cmd /c}). A failed read of a not-yet-created file is also resolved
+     * when the same file is successfully written later in the run. Only failures
+     * with no such recovery remain evidence for the delivery gate.
+     */
+    private List<String> unresolvedFailedTools(List<NodeToolInvocationEntity> history) {
+        LinkedHashSet<String> unresolved = new LinkedHashSet<>();
+        for (int index = 0; index < history.size(); index++) {
+            NodeToolInvocationEntity failed = history.get(index);
+            if (failed.status() != NodeToolInvocationStatus.FAILED) {
+                continue;
+            }
+            boolean recovered = history.subList(index + 1, history.size()).stream()
+                    .anyMatch(later -> later.status() == NodeToolInvocationStatus.SUCCEEDED
+                            && (later.toolName().equals(failed.toolName())
+                            || successfulWriteRecoversFailedRead(failed, later)));
+            if (!recovered) {
+                unresolved.add(failed.toolName());
+            }
+        }
+        return List.copyOf(unresolved);
+    }
+
+    /**
+     * A read-before-create probe is expected while scaffolding a new project.
+     * Match the exact audited path, rather than merely accepting any later write,
+     * so an unrelated successful edit cannot hide a failed read elsewhere.
+     */
+    private boolean successfulWriteRecoversFailedRead(
+            NodeToolInvocationEntity failed,
+            NodeToolInvocationEntity later) {
+        if (!"fs.read".equals(failed.toolName())
+                || !("fs.write".equals(later.toolName()) || "fs.apply_patch".equals(later.toolName()))) {
+            return false;
+        }
+        Object failedPath = readJsonMap(failed.argumentsJson()).get("path");
+        Object writtenPath = readJsonMap(later.argumentsJson()).get("path");
+        return failedPath instanceof String failedText
+                && writtenPath instanceof String writtenText
+                && !failedText.isBlank()
+                && failedText.equals(writtenText);
     }
 
     /**
@@ -923,6 +1005,129 @@ public class NodeService {
         return "system.desktop.ui.click".equals(toolName) || "system.desktop.ui.type".equals(toolName);
     }
 
+    /**
+     * 证明开发服务就绪时，必须把本次 Run 创建的受管进程和后续 HTTP 探测严格关联起来。
+     *
+     * <p>单独的 {@code process.start} 只表示进程已被创建，单独的 {@code process.wait_http}
+     * 也可能是在检查其他 Run 遗留的服务。只有等待调用引用了此前同一 Run 返回的进程句柄，
+     * 才能作为当前项目启动并就绪的交付证据。
+     */
+    private boolean managedProcessReadyAfterStart(List<NodeToolInvocationEntity> history) {
+        return managedProcessReadyAfter(history, -1);
+    }
+
+    /**
+     * 与普通“本 Run 曾就绪”不同，该证据从最后一次成功项目修改之后重新开始建立进程关联。
+     *
+     * <p>源代码改变后，即使旧开发进程还在运行，也不能假定它完成了热更新或加载了最新后端；
+     * 因此前一个 process.start/process.wait_http 对不再能证明当前交付。模型必须重新启动受管服务，
+     * 再用返回的同一 processId 执行 loopback 探测。
+     */
+    private boolean managedProcessReadyAfterLastProjectChange(List<NodeToolInvocationEntity> history) {
+        int lastProjectChange = -1;
+        for (int index = 0; index < history.size(); index++) {
+            NodeToolInvocationEntity invocation = history.get(index);
+            if (invocation.status() == NodeToolInvocationStatus.SUCCEEDED && changesProjectFiles(invocation)) {
+                lastProjectChange = index;
+            }
+        }
+        return managedProcessReadyAfter(history, lastProjectChange);
+    }
+
+    private boolean managedProcessReadyAfter(List<NodeToolInvocationEntity> history, int afterIndex) {
+        Set<String> startedProcessIds = new LinkedHashSet<>();
+        for (int index = Math.max(0, afterIndex + 1); index < history.size(); index++) {
+            NodeToolInvocationEntity invocation = history.get(index);
+            if (invocation.status() != NodeToolInvocationStatus.SUCCEEDED) {
+                continue;
+            }
+            if ("process.start".equals(invocation.toolName())) {
+                String processId = opaqueProcessId(readJsonMap(invocation.resultJson()).get("processId"));
+                if (processId != null) {
+                    startedProcessIds.add(processId);
+                }
+                continue;
+            }
+            if ("process.wait_http".equals(invocation.toolName())) {
+                String processId = opaqueProcessId(readJsonMap(invocation.argumentsJson()).get("processId"));
+                if (processId != null && startedProcessIds.contains(processId)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** 受管进程 ID 是节点生成的不透明标识，只接受有界的非空字符串，避免损坏审计记录扩大证据范围。 */
+    private static String opaqueProcessId(Object value) {
+        String processId = value == null ? null : value.toString().trim();
+        return processId == null || processId.isEmpty() || processId.length() > 200 ? null : processId;
+    }
+
+    /**
+     * 将“启动了进程”和“桌面上真的出现了可交互窗口”区分开。
+     *
+     * <p>应用启动工具只返回 Windows 创建的 PID。窗口创建是异步的，甚至可能因为
+     * 单实例应用、权限或启动失败而根本不出现。因此每个成功启动所返回的 PID，都必须在
+     * 后续一次成功的桌面会话快照中作为顶层可见窗口出现。这里仅信任服务端保存的调用
+     * 历史和节点结果中的数值字段，不使用模型文本或进程名猜测。
+     */
+    private boolean desktopApplicationVerifiedAfterStart(List<NodeToolInvocationEntity> history) {
+        Set<Long> pendingProcessIds = new LinkedHashSet<>();
+        boolean startedApplication = false;
+        for (NodeToolInvocationEntity invocation : history) {
+            if (invocation.status() != NodeToolInvocationStatus.SUCCEEDED) {
+                continue;
+            }
+            if ("system.desktop.application.start".equals(invocation.toolName())) {
+                startedApplication = true;
+                Long processId = positiveLong(readJsonMap(invocation.resultJson()).get("processId"));
+                // 旧记录损坏或不符合协议时，也绝不能把它当成已经验证过的窗口。
+                if (processId == null) {
+                    return false;
+                }
+                pendingProcessIds.add(processId);
+                continue;
+            }
+            if ("system.desktop.session.snapshot".equals(invocation.toolName())) {
+                pendingProcessIds.removeAll(visibleWindowProcessIds(invocation));
+            }
+        }
+        return !startedApplication || pendingProcessIds.isEmpty();
+    }
+
+    /** 读取快照中的窗口 PID；格式异常的旧审计记录只能提供空证据，不能导致交付判断异常。 */
+    private Set<Long> visibleWindowProcessIds(NodeToolInvocationEntity invocation) {
+        Object rawWindows = readJsonMap(invocation.resultJson()).get("windows");
+        if (!(rawWindows instanceof List<?> windows)) {
+            return Set.of();
+        }
+        Set<Long> processIds = new LinkedHashSet<>();
+        for (Object rawWindow : windows) {
+            if (rawWindow instanceof Map<?, ?> window) {
+                Long processId = positiveLong(window.get("processId"));
+                if (processId != null) {
+                    processIds.add(processId);
+                }
+            }
+        }
+        return processIds;
+    }
+
+    /** JSON 既可能还原为 Number，也可能来自历史记录中的数字字符串。 */
+    private static Long positiveLong(Object value) {
+        String text = value instanceof Number number ? number.toString() : value instanceof String string ? string : null;
+        if (text == null || !text.matches("[1-9][0-9]*")) {
+            return null;
+        }
+        try {
+            return Long.parseLong(text);
+        } catch (NumberFormatException ignored) {
+            // 超过 long 范围的恶意或损坏记录不能证明 PID 已被验证。
+        }
+        return null;
+    }
+
     private record PostChangeReviewEvidence(boolean gitReviewed, List<String> reviewedChangedFiles) {
     }
 
@@ -986,6 +1191,14 @@ public class NodeService {
                     evidence.desktopUiVerified(),
                     "执行 Windows UI Automation 点击或输入后，应成功执行 system.desktop.ui.verify。"));
         }
+        boolean startedDesktopApplication = evidence.succeededTools().contains("system.desktop.application.start");
+        if (startedDesktopApplication) {
+            checks.add(qualityCheck(
+                    "desktop-application-window-verification",
+                    10,
+                    evidence.desktopApplicationVerified(),
+                    "启动桌面应用后，应在后续 system.desktop.session.snapshot 中确认相同 PID 的可见窗口。"));
+        }
         int maximum = checks.stream().mapToInt(CodingRunQualityView.CodingQualityCheckView::maximumPoints).sum();
         int earned = checks.stream().mapToInt(CodingRunQualityView.CodingQualityCheckView::earnedPoints).sum();
         int score = maximum == 0 ? 0 : Math.round(earned * 100.0f / maximum);
@@ -1007,6 +1220,12 @@ public class NodeService {
         }
         String normalized = command.toLowerCase(Locale.ROOT).replace('\\', '/');
         if (normalized.matches("(?s).*\\b(gradlew|mvn|npm|pnpm|yarn|bun|pytest|cargo|go|dotnet|vitest|jest).*\\b(test|tests|verify|check)\\b.*")) {
+            return java.util.Optional.of("test");
+        }
+        // Plain Java fixture projects commonly use a self-contained main-method
+        // test instead of a build tool. Require the conventional Test/Tests
+        // suffix so arbitrary `java SomeProgram` commands never become evidence.
+        if (normalized.matches("(?s).*\\bjava(?:\\.exe)?\\s+(?:[a-z_$][a-z0-9_$]*\\.)*[a-z_$][a-z0-9_$]*(?:test|tests)\\b.*")) {
             return java.util.Optional.of("test");
         }
         if (normalized.matches("(?s).*\\b(gradlew|mvn|npm|pnpm|yarn|bun|cargo|go|dotnet).*\\b(build|package|compile|assemble)\\b.*")) {
@@ -1074,6 +1293,12 @@ public class NodeService {
     private java.util.Optional<String> traceArtifactName(NodeToolInvocationEntity invocation) {
         Map<String, Object> result = readJsonMap(invocation.resultJson());
         Object rawPath = result.containsKey("artifactPath") ? result.get("artifactPath") : result.get("path");
+        if (!(rawPath instanceof String path) || path.isBlank()) {
+            Object artifact = result.get("artifact");
+            if (artifact instanceof Map<?, ?> artifactMap) {
+                rawPath = artifactMap.get("filename");
+            }
+        }
         if (!(rawPath instanceof String path) || path.isBlank()) {
             return java.util.Optional.empty();
         }
@@ -1187,7 +1412,11 @@ public class NodeService {
      * Executes exactly one previously persisted request after a human decision.
      * A second decision is rejected by the entity transition check (and database versioning).
      */
-    @Transactional(noRollbackFor = Exception.class)
+    // Persist the approval decision before invoking a node. Keeping the database transaction
+    // open while a shell/desktop command runs blocks cancellation and can make H2 time out on
+    // the same approval row. Repository calls below commit the state transition before the
+    // potentially long-running node invocation.
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public NodeToolApprovalDecisionView decideToolApproval(
             String approvalId,
             DecideNodeToolApprovalCommand command,
@@ -1227,11 +1456,6 @@ public class NodeService {
                     true,
                     approval.runId(),
                     invocation);
-            approval.recordExecution(
-                    execution.status(),
-                    toJson(execution.result()),
-                    execution.errorMessage(),
-                    Instant.now());
             recordApprovalExecution(approval, execution);
         } catch (Exception ex) {
             execution = new NodeToolCallResult(
@@ -1241,11 +1465,56 @@ public class NodeService {
                     "FAILED",
                     null,
                     ex.getMessage());
-            approval.recordExecution("FAILED", null, ex.getMessage(), Instant.now());
             recordApprovalExecution(approval, execution);
         }
-        approvals.save(approval);
-        return new NodeToolApprovalDecisionView(NodeToolApprovalView.from(approval), execution);
+        NodeToolApprovalEntity persisted = persistApprovalExecution(approval, execution);
+        return new NodeToolApprovalDecisionView(NodeToolApprovalView.from(persisted), execution);
+    }
+
+    /**
+     * The run cancellation path may expire the same approval while the node is
+     * returning its result. Refresh once after an optimistic-lock conflict so
+     * cancellation wins without turning a completed stop into a REST error.
+     */
+    private NodeToolApprovalEntity persistApprovalExecution(
+            NodeToolApprovalEntity approval,
+            NodeToolCallResult execution) {
+        String resultJson = toJson(execution.result());
+        Instant now = Instant.now();
+        int updated = approvals.recordExecution(
+                approval.id(),
+                approval.tenantId(),
+                execution.status(),
+                resultJson,
+                execution.errorMessage(),
+                now);
+        if (updated > 0) {
+            return approvals.findByIdAndTenantId(approval.id(), approval.tenantId()).orElse(approval);
+        }
+        // The decision was deliberately committed before the node call. The
+        // entity instance loaded for that decision is therefore detached (and
+        // can carry the pre-decision @Version). Reload the row before recording
+        // the result so a normal successful execution is not lost as a stale
+        // merge after the long-running node call.
+        NodeToolApprovalEntity target = approvals.findByIdAndTenantId(
+                approval.id(), approval.tenantId()).orElse(approval);
+        target.recordExecution(execution.status(), resultJson, execution.errorMessage(), now);
+        try {
+            return approvals.saveAndFlush(target);
+        } catch (OptimisticLockingFailureException conflict) {
+            NodeToolApprovalEntity latest = approvals.findByIdAndTenantId(
+                    approval.id(),
+                    approval.tenantId()).orElse(approval);
+            latest.recordExecution(execution.status(), resultJson, execution.errorMessage(), Instant.now());
+            try {
+                return approvals.saveAndFlush(latest);
+            } catch (OptimisticLockingFailureException ignored) {
+                // The cancellation transaction has already committed its
+                // terminal state; the invocation ledger still contains the
+                // authoritative execution result.
+                return latest;
+            }
+        }
     }
 
     /** 支持单文件写入和跨文件 batch patch，同时只输出安全的工作区相对路径。 */
@@ -1276,8 +1545,15 @@ public class NodeService {
             return java.util.Optional.empty();
         }
         try {
-            String normalized = Path.of(path.trim()).normalize().toString().replace('\\', '/');
-            if (Path.of(path.trim()).isAbsolute()
+            String trimmed = path.trim();
+            String normalized = Path.of(trimmed).normalize().toString().replace('\\', '/');
+            // Path.isAbsolute() follows the host OS. A Windows audit record can
+            // therefore look relative when the backend runs on Linux; reject
+            // drive-letter and UNC forms explicitly before exposing the path.
+            boolean machineLocalPath = normalized.matches("^[A-Za-z]:($|/.*)")
+                    || normalized.startsWith("//");
+            if (Path.of(trimmed).isAbsolute()
+                    || machineLocalPath
                     || normalized.isBlank()
                     || ".".equals(normalized)
                     || "..".equals(normalized)
@@ -1349,9 +1625,7 @@ public class NodeService {
                     Map.of("approvalId", approval.id(), "status", approval.status().name()),
                     "Node tool requires approval before it can execute.");
         }
-        if (!node.enabled() || node.status() != NodeStatus.ONLINE || !sessions.isConnected(nodeId)) {
-            throw new IllegalArgumentException("Node is not online or enabled: " + nodeId);
-        }
+        node = requireReadyNode(nodeId, actor, node);
         int timeoutSeconds = timeoutSeconds(command);
         if (invocation != null) {
             Instant now = Instant.now();
@@ -1404,6 +1678,22 @@ public class NodeService {
                 toolName,
                 command == null ? null : command.arguments());
         return new CallNodeToolCommand(arguments, command == null ? null : command.timeoutSeconds());
+    }
+
+    private NodeConnectionEntity requireReadyNode(String nodeId, ActorContext actor, NodeConnectionEntity current) {
+        if (readyForDispatch(nodeId, current)) {
+            return current;
+        }
+        sessions.awaitConnected(nodeId, NODE_RECONNECT_GRACE);
+        NodeConnectionEntity refreshed = requireNode(nodeId, actor);
+        if (readyForDispatch(nodeId, refreshed)) {
+            return refreshed;
+        }
+        throw new IllegalArgumentException("Node is not online or enabled: " + nodeId);
+    }
+
+    private boolean readyForDispatch(String nodeId, NodeConnectionEntity node) {
+        return node.enabled() && node.status() == NodeStatus.ONLINE && sessions.isConnected(nodeId);
     }
 
     private static void requireApprovalRole(ActorContext actor, String requiredRole) {
@@ -1575,10 +1865,16 @@ public class NodeService {
         });
     }
 
-    /** 节点已经把调用写入本地 journal，但还不能据此宣称副作用执行成功。 */
+    /**
+     * 节点已经把调用写入本地 journal，但还不能据此宣称副作用执行成功。
+     *
+     * <p>中间态同样必须绑定调度时的工具、参数摘要和 attempt。只按 invocationId 更新会让
+     * 迟到或伪造的状态帧推进错误调用，破坏断线后的对账边界。
+     */
     @Transactional
-    public void acceptInvocation(String nodeId, String invocationId) {
-        invocations.findByIdAndNodeId(invocationId, nodeId).ifPresent(invocation -> {
+    public void acceptInvocation(
+            String nodeId, String invocationId, String toolName, String argumentsDigest, int attempt) {
+        findMatchingInvocation(nodeId, invocationId, toolName, argumentsDigest, attempt).ifPresent(invocation -> {
             invocation.accept(Instant.now());
             invocations.save(invocation);
         });
@@ -1586,11 +1882,20 @@ public class NodeService {
 
     /** 进度消息只推进服务端状态，不把节点日志原文保存进控制面审计字段。 */
     @Transactional
-    public void startInvocation(String nodeId, String invocationId) {
-        invocations.findByIdAndNodeId(invocationId, nodeId).ifPresent(invocation -> {
+    public void startInvocation(
+            String nodeId, String invocationId, String toolName, String argumentsDigest, int attempt) {
+        findMatchingInvocation(nodeId, invocationId, toolName, argumentsDigest, attempt).ifPresent(invocation -> {
             invocation.start(Instant.now());
             invocations.save(invocation);
         });
+    }
+
+    private Optional<NodeToolInvocationEntity> findMatchingInvocation(
+            String nodeId, String invocationId, String toolName, String argumentsDigest, int attempt) {
+        return invocations.findByIdAndNodeId(invocationId, nodeId)
+                .filter(invocation -> java.util.Objects.equals(invocation.toolName(), toolName))
+                .filter(invocation -> java.util.Objects.equals(invocation.argumentsDigest(), argumentsDigest))
+                .filter(invocation -> invocation.dispatchAttempt() == attempt);
     }
 
     /**

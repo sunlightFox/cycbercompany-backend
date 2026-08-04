@@ -64,4 +64,20 @@ class NodeInvocationJournalTest {
         assertEquals("CANCEL_REQUESTED", entry.status());
         assertFalse(entry.terminal());
     }
+
+    @Test
+    void cancellationBeforeExecutionPreventsTheJournalFromEnteringRunning() {
+        NodeInvocationJournal journal = new NodeInvocationJournal(new ObjectMapper(), tempDir);
+        journal.accept("nodeinv-1", "fs.write", "sha256:args", 1);
+        journal.cancelRequested("nodeinv-1");
+
+        NodeJournalEntry startAttempt = journal.start("nodeinv-1");
+        NodeJournalEntry cancelled = journal.finish(
+                "nodeinv-1", "CANCELLED", null, "Cancelled before tool execution.");
+
+        assertEquals("CANCEL_REQUESTED", startAttempt.status());
+        assertEquals("CANCELLED", cancelled.status());
+        assertTrue(cancelled.terminal());
+        assertEquals(null, cancelled.startedAt());
+    }
 }

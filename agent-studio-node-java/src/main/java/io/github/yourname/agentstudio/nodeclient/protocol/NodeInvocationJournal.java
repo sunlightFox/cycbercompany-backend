@@ -72,6 +72,12 @@ public final class NodeInvocationJournal {
         if (current.terminal()) {
             return current;
         }
+        // 取消帧可能恰好落在“已接受”与工作线程真正开始之间。此时尚未执行本机工具，
+        // 因而绝不能把 CANCEL_REQUESTED 覆盖为 RUNNING 后继续产生副作用。调用方会将
+        // 该状态收敛为 CANCELLED，并把结果如实回传给服务端。
+        if ("CANCEL_REQUESTED".equals(current.status())) {
+            return current;
+        }
         Instant now = Instant.now();
         NodeJournalEntry started = new NodeJournalEntry(
                 current.invocationId(), current.toolName(), current.argumentsDigest(), current.attempt(), "RUNNING",

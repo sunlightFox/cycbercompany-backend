@@ -86,4 +86,38 @@ class ConversationAttachmentServiceTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("Attachment does not belong to this conversation.");
     }
+
+    @Test
+    void boundsTextAcrossMultipleAttachmentsButKeepsTheirMetadataAndAnExplicitNotice() throws Exception {
+        ConversationAttachmentRepository attachments = mock(ConversationAttachmentRepository.class);
+        Path storage = tempDir.resolve("attachments");
+        Files.createDirectories(storage);
+        List<String> ids = List.of("attachment-1", "attachment-2", "attachment-3");
+        for (int index = 0; index < ids.size(); index++) {
+            String id = ids.get(index);
+            String storageKey = id + ".bin";
+            Files.writeString(storage.resolve(storageKey), String.valueOf((char) ('A' + index)).repeat(12_000));
+            ConversationAttachmentEntity entity = new ConversationAttachmentEntity(
+                    id,
+                    ACTOR.tenantId(),
+                    "conversation-1",
+                    "notes-" + (index + 1) + ".txt",
+                    "text/plain",
+                    12_000,
+                    storageKey,
+                    Instant.now());
+            when(attachments.findByIdAndTenantId(id, ACTOR.tenantId())).thenReturn(Optional.of(entity));
+        }
+        ConversationAttachmentService service = new ConversationAttachmentService(
+                new AppProperties(tempDir, null, null, null, null, null, null),
+                mock(ConversationRepository.class),
+                attachments);
+
+        String context = service.modelContext("conversation-1", ids, ACTOR);
+
+        assertThat(context)
+                .contains("name: notes-1.txt", "name: notes-2.txt", "name: notes-3.txt")
+                .contains("total attachment context budget was exhausted")
+                .hasSizeLessThan(35_000);
+    }
 }

@@ -10,7 +10,9 @@ import io.github.yourname.agentstudio.knowledge.CreateKnowledgeBaseCommand;
 import io.github.yourname.agentstudio.knowledge.IngestDocumentCommand;
 import io.github.yourname.agentstudio.knowledge.KnowledgeCommandService;
 import io.github.yourname.agentstudio.knowledge.KnowledgeQueryService;
+import io.github.yourname.agentstudio.knowledge.KnowledgeSettingsService;
 import io.github.yourname.agentstudio.knowledge.KnowledgeSearchCommand;
+import io.github.yourname.agentstudio.knowledge.UpdateKnowledgeSettingsCommand;
 import io.github.yourname.agentstudio.knowledge.UpdateKnowledgeBaseCommand;
 import io.github.yourname.agentstudio.model.ModelCatalog;
 import io.github.yourname.agentstudio.model.SetDefaultModelCommand;
@@ -24,6 +26,7 @@ import io.github.yourname.agentstudio.node.DecideNodeToolApprovalCommand;
 import io.github.yourname.agentstudio.node.NodeService;
 import io.github.yourname.agentstudio.node.RegisterNodeCommand;
 import io.github.yourname.agentstudio.node.UpdateNodeCommand;
+import io.github.yourname.agentstudio.node.UpdateNodeSystemAccessCommand;
 import io.github.yourname.agentstudio.node.UpdateNodeToolCommand;
 import io.github.yourname.agentstudio.execution.ExecutionSettingsService;
 import io.github.yourname.agentstudio.execution.UpdateExecutionSettingsCommand;
@@ -58,6 +61,7 @@ import io.github.yourname.agentstudio.skill.UpdateSkillCommand;
 import io.github.yourname.agentstudio.tool.ToolCatalog;
 import io.github.yourname.agentstudio.tool.ToolRouter;
 import io.github.yourname.agentstudio.tool.DecideToolApprovalCommand;
+import io.github.yourname.agentstudio.tool.ApprovalMode;
 import io.github.yourname.agentstudio.tool.WebSearchCommand;
 import io.github.yourname.agentstudio.tool.WebSearchService;
 import jakarta.servlet.http.HttpServletRequest;
@@ -66,6 +70,8 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.util.List;
 import java.util.stream.Stream;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.http.HttpStatus;
@@ -82,10 +88,14 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @RestController
 @RequestMapping("/api/v1")
 class AgentStudioController {
+
+    private static final Logger log = LoggerFactory.getLogger(AgentStudioController.class);
 
     private final CurrentActorProvider actors;
     private final ConversationService conversations;
@@ -105,6 +115,7 @@ class AgentStudioController {
     private final ExecutionSettingsService executionSettings;
     private final KnowledgeCommandService knowledgeCommands;
     private final KnowledgeQueryService knowledgeQueries;
+    private final KnowledgeSettingsService knowledgeSettings;
     private final RunCommandService runCommands;
     private final RunQueryService runQueries;
     private final RunWorkflowCheckpointService workflowCheckpoints;
@@ -138,6 +149,7 @@ class AgentStudioController {
             ExecutionSettingsService executionSettings,
             KnowledgeCommandService knowledgeCommands,
             KnowledgeQueryService knowledgeQueries,
+            KnowledgeSettingsService knowledgeSettings,
             RunCommandService runCommands,
             RunQueryService runQueries,
             RunWorkflowCheckpointService workflowCheckpoints,
@@ -161,6 +173,7 @@ class AgentStudioController {
         this.executionSettings = executionSettings;
         this.knowledgeCommands = knowledgeCommands;
         this.knowledgeQueries = knowledgeQueries;
+        this.knowledgeSettings = knowledgeSettings;
         this.runCommands = runCommands;
         this.runQueries = runQueries;
         this.workflowCheckpoints = workflowCheckpoints;
@@ -188,9 +201,43 @@ class AgentStudioController {
         return attachments.upload(id, files, actors.current(request));
     }
 
+    @GetMapping("/conversations/{id}/attachments")
+    Object listConversationAttachments(@PathVariable String id, HttpServletRequest request) {
+        return attachments.list(id, actors.current(request));
+    }
+
+    @GetMapping("/conversations/{id}/attachments/{attachmentId}/download")
+    ResponseEntity<byte[]> downloadConversationAttachment(
+            @PathVariable String id, @PathVariable String attachmentId, HttpServletRequest request) {
+        var download = attachments.download(id, attachmentId, actors.current(request));
+        MediaType contentType;
+        try {
+            contentType = MediaType.parseMediaType(download.contentType());
+        } catch (IllegalArgumentException ignored) {
+            contentType = MediaType.APPLICATION_OCTET_STREAM;
+        }
+        return ResponseEntity.ok()
+                .contentType(contentType)
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        ContentDisposition.attachment().filename(download.fileName()).build().toString())
+                .body(download.bytes());
+    }
+
+    @DeleteMapping("/conversations/{id}/attachments/{attachmentId}")
+    ResponseEntity<Void> deleteConversationAttachment(
+            @PathVariable String id, @PathVariable String attachmentId, HttpServletRequest request) {
+        attachments.delete(id, attachmentId, actors.current(request));
+        return ResponseEntity.noContent().build();
+    }
+
     @GetMapping("/models")
     Object listModels() {
         return models.list();
+    }
+
+    @GetMapping("/approval-modes")
+    Object listApprovalModes() {
+        return ApprovalMode.options();
     }
 
     @GetMapping("/execution-settings")
@@ -202,7 +249,22 @@ class AgentStudioController {
     Object updateExecutionSettings(
             @Valid @RequestBody UpdateExecutionSettingsCommand command,
             HttpServletRequest request) {
-        return executionSettings.update(command, actors.current(request));
+        var actor = actors.current(request);
+        var previous = executionSettings.get(actor);
+        var updated = executionSettings.update(command, actor);
+        log.info(
+                "Execution environment changed: tenant={}, user={}, source={}, requestId={}, oldMode={}, newMode={}",
+                actor.tenantId(),
+                actor.userId(),
+                request.getRemoteAddr(),
+                sanitizeLogValue(request.getHeader("X-Request-Id")),
+                previous.mode(),
+                updated.mode());
+        return updated;
+    }
+
+    private static String sanitizeLogValue(String value) {
+        return value == null ? "" : value.replaceAll("[\\r\\n]", "").trim();
     }
 
     @PostMapping("/local-executor/bootstrap")
@@ -518,6 +580,15 @@ class AgentStudioController {
         return nodes.listTools(id, actors.current(request));
     }
 
+    @PatchMapping("/nodes/{id}/system-access")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void updateNodeSystemAccess(
+            @PathVariable String id,
+            @RequestBody UpdateNodeSystemAccessCommand command,
+            HttpServletRequest request) {
+        nodes.setSystemAccess(id, command.enabled(), actors.current(request));
+    }
+
     @PatchMapping("/nodes/{id}/tools/{toolName}")
     Object updateNodeTool(
             @PathVariable String id,
@@ -587,6 +658,11 @@ class AgentStudioController {
     @GetMapping("/knowledge-settings")
     Object getKnowledgeSettings() {
         return knowledgeQueries.settings();
+    }
+
+    @PatchMapping("/knowledge-settings")
+    Object updateKnowledgeSettings(@Valid @RequestBody UpdateKnowledgeSettingsCommand command) {
+        return knowledgeSettings.update(command);
     }
 
     @GetMapping("/knowledge-bases")
@@ -698,9 +774,20 @@ class AgentStudioController {
         return conversationQueues.get(id, actors.current(request));
     }
 
+    @GetMapping("/conversations/{id}/runs")
+    Object listConversationRuns(@PathVariable String id, HttpServletRequest request) {
+        return runQueries.listConversationRuns(id, actors.current(request));
+    }
+
     @PostMapping("/runs/{id}/cancel")
     Object cancelRun(@PathVariable String id, HttpServletRequest request) {
         return runCommands.cancel(id, actors.current(request));
+    }
+
+    @PostMapping("/runs/{id}/retry")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    Object retryRun(@PathVariable String id, HttpServletRequest request) {
+        return runCommands.retry(id, actors.current(request));
     }
 
     @PostMapping("/runs/{id}/reconcile")

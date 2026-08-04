@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.Map;
 import org.springframework.stereotype.Service;
 
-/** Lets an Agent prepare a disabled local Skill only after the user approves the exact content. */
+/** Lets an Agent prepare a disabled local Skill after the host applies the Run approval policy. */
 @Service
 public class SkillAuthoringToolProvider implements ToolProvider {
 
@@ -36,7 +36,8 @@ public class SkillAuthoringToolProvider implements ToolProvider {
                 PROVIDER_ID,
                 "create-draft",
                 "Create a disabled local Skill draft from supplied SKILL.md content. Use only when the user explicitly "
-                        + "asks to create a Skill. The exact ID and content require approval before saving.",
+                        + "asks to create a Skill. The host applies the current Run approval mode to the exact ID and "
+                        + "content; report a saved draft only after a SUCCEEDED result.",
                 RiskLevel.MEDIUM,
                 true,
                 objectSchema(Map.of(

@@ -23,6 +23,7 @@ public class ConversationAttachmentService {
 
     private static final long MAX_FILE_SIZE = 20L * 1024 * 1024;
     private static final int MAX_TEXT_CONTEXT_CHARS = 12_000;
+    private static final int MAX_TOTAL_TEXT_CONTEXT_CHARS = 32_000;
 
     private final AppProperties properties;
     private final ConversationRepository conversations;
@@ -85,6 +86,45 @@ public class ConversationAttachmentService {
     }
 
     @Transactional(readOnly = true)
+    public List<ConversationAttachmentView> list(String conversationId, ActorContext actor) {
+        requireConversation(conversationId, actor);
+        return attachments.findAllByConversationIdAndTenantIdOrderByCreatedAtAsc(
+                        conversationId, actor.tenantId())
+                .stream()
+                .map(ConversationAttachmentView::from)
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public AttachmentDownload download(String conversationId, String attachmentId, ActorContext actor) {
+        ConversationAttachmentEntity attachment = requireAttachment(conversationId, attachmentId, actor);
+        Path source = storageRoot().resolve(attachment.storageKey()).normalize();
+        if (!source.startsWith(storageRoot())) {
+            throw new IllegalArgumentException("Invalid attachment path.");
+        }
+        try {
+            return new AttachmentDownload(attachment.fileName(), attachment.contentType(), Files.readAllBytes(source));
+        } catch (IOException ex) {
+            throw new IllegalStateException("Attachment content is unavailable.", ex);
+        }
+    }
+
+    @Transactional
+    public void delete(String conversationId, String attachmentId, ActorContext actor) {
+        ConversationAttachmentEntity attachment = requireAttachment(conversationId, attachmentId, actor);
+        attachments.delete(attachment);
+        Path source = storageRoot().resolve(attachment.storageKey()).normalize();
+        if (!source.startsWith(storageRoot())) {
+            throw new IllegalArgumentException("Invalid attachment path.");
+        }
+        try {
+            Files.deleteIfExists(source);
+        } catch (IOException ex) {
+            throw new IllegalStateException("Unable to remove attachment content.", ex);
+        }
+    }
+
+    @Transactional(readOnly = true)
     public String modelContext(String conversationId, List<String> attachmentIds, ActorContext actor) {
         if (attachmentIds == null || attachmentIds.isEmpty()) {
             return "";
@@ -104,6 +144,7 @@ public class ConversationAttachmentService {
                   that limitation when it affects the answer.
                 <attachments>
                 """);
+        int remainingTextCharacters = MAX_TOTAL_TEXT_CONTEXT_CHARS;
         for (int index = 0; index < attachmentIds.size(); index++) {
             String attachmentId = attachmentIds.get(index);
             var attachment = attachments.findByIdAndTenantId(attachmentId, actor.tenantId())
@@ -117,9 +158,19 @@ public class ConversationAttachmentService {
                     .append("media-type: ").append(escapeXml(attachment.contentType())).append('\n')
                     .append("size-bytes: ").append(attachment.byteSize()).append('\n');
             if (isTextual(attachment.contentType())) {
-                context.append("<content quoted=\"true\">\n")
-                        .append(quoteUntrustedText(readTextExcerpt(attachment)))
-                        .append("\n</content>\n");
+                String quoted = quoteUntrustedText(readTextExcerpt(attachment));
+                if (remainingTextCharacters <= 0) {
+                    context.append("notice: Text excerpt omitted because the attachment context budget was exhausted.\n");
+                } else {
+                    int includedCharacters = safePrefixLength(quoted, remainingTextCharacters);
+                    context.append("<content quoted=\"true\">\n")
+                            .append(quoted, 0, includedCharacters)
+                            .append("\n</content>\n");
+                    remainingTextCharacters -= includedCharacters;
+                    if (includedCharacters < quoted.length()) {
+                        context.append("notice: Text excerpt truncated because the total attachment context budget was exhausted.\n");
+                    }
+                }
             } else if (attachment.contentType().startsWith("image/")) {
                 context.append("notice: Image bytes are not included in this text-only model request.\n");
             } else {
@@ -129,6 +180,14 @@ public class ConversationAttachmentService {
         }
         context.append("</attachments>\n");
         return context.toString();
+    }
+
+    private static int safePrefixLength(String value, int maximumCharacters) {
+        int end = Math.min(Math.max(0, maximumCharacters), value.length());
+        if (end > 0 && end < value.length() && Character.isHighSurrogate(value.charAt(end - 1))) {
+            return end - 1;
+        }
+        return end;
     }
 
     private static String quoteUntrustedText(String text) {
@@ -147,6 +206,24 @@ public class ConversationAttachmentService {
     private Path storageRoot() {
         Path dataDir = properties.dataDir() == null ? Path.of("data") : properties.dataDir();
         return dataDir.toAbsolutePath().normalize().resolve("attachments");
+    }
+
+    private void requireConversation(String conversationId, ActorContext actor) {
+        conversations.findByIdAndTenantId(conversationId, actor.tenantId())
+                .orElseThrow(() -> new IllegalArgumentException("Conversation not found: " + conversationId));
+    }
+
+    private ConversationAttachmentEntity requireAttachment(
+            String conversationId, String attachmentId, ActorContext actor) {
+        ConversationAttachmentEntity attachment = attachments.findByIdAndTenantId(attachmentId, actor.tenantId())
+                .orElseThrow(() -> new IllegalArgumentException("Attachment not found: " + attachmentId));
+        if (!conversationId.equals(attachment.conversationId())) {
+            throw new IllegalArgumentException("Attachment does not belong to this conversation.");
+        }
+        return attachment;
+    }
+
+    public record AttachmentDownload(String fileName, String contentType, byte[] bytes) {
     }
 
     private String readTextExcerpt(ConversationAttachmentEntity attachment) {

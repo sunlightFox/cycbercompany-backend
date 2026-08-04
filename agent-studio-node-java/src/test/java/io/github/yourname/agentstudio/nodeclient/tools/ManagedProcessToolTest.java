@@ -23,7 +23,10 @@ class ManagedProcessToolTest {
             assertTrue(started.success());
             String processId = started.result().get("processId").toString();
             assertTrue(Boolean.TRUE.equals(started.result().get("active")));
-            assertTrue(started.result().get("stdoutPath").toString().startsWith(workspace.toRealPath().toString()));
+            assertEquals(".", started.result().get("workingDirectory"));
+            assertFalse(started.result().containsKey("command"));
+            assertFalse(started.result().containsKey("rootPid"));
+            assertFalse(started.result().containsKey("stdoutPath"));
 
             var status = tool.status(Map.of("processId", processId));
             assertTrue(status.success());
@@ -66,6 +69,8 @@ class ManagedProcessToolTest {
             assertTrue(stderr.success());
             assertTrue(stderr.result().get("content").toString().contains("stderr-message"));
             assertEquals("stderr", stderr.result().get("stream"));
+            assertFalse(stdout.result().containsKey("path"));
+            assertFalse(stderr.result().containsKey("path"));
             assertFalse(stdout.result().get("content").toString().contains("stderr-message"));
             assertFalse(tool.logs(Map.of("processId", processId, "stream", "stdin")).success());
             assertFalse(tool.logs(Map.of("processId", processId, "maxChars", 32_001)).success());

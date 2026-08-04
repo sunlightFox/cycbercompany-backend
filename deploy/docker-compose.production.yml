@@ -1,0 +1,73 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: ../Dockerfile.backend
+    image: agent-studio/backend:latest
+    restart: unless-stopped
+    environment:
+      SERVER_ADDRESS: 127.0.0.1
+      PORT: 8080
+      APP_DATA_DIR: /data
+      APP_SECURITY_MODE: LOCAL
+      H2_CONSOLE_ENABLED: "false"
+      EDGEFN_API_KEY: ${A6API_API_KEY}
+      EDGEFN_BASE_URL: ${A6API_BASE_URL:-https://a6api.com/v1}
+      EDGEFN_MODEL: ${A6API_MODEL:-gpt-5.6-luna}
+      SEARXNG_ENDPOINT: http://searxng:8080
+      SEARXNG_LANGUAGE: zh-CN
+      SEARXNG_SAFESEARCH: "1"
+    volumes:
+      - backend-data:/data
+    ports:
+      - "5173:5173"
+    networks:
+      - studio
+    depends_on:
+      - searxng
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../Dockerfile.vite-web
+    image: agent-studio/frontend:latest
+    restart: unless-stopped
+    network_mode: service:backend
+    depends_on:
+      - backend
+
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    networks:
+      - studio
+
+  workspace-node:
+    build:
+      context: ./backend
+      dockerfile: ../Dockerfile.workspace-node
+    image: agent-studio/workspace-node:latest
+    restart: unless-stopped
+    command: ["start-local", "--server", "http://127.0.0.1:8080", "--workspace", "/workspace", "--name", "server-workspace"]
+    network_mode: service:backend
+    user: "0:0"
+    environment:
+      AGENT_STUDIO_SKILL_RUNTIME: docker
+    volumes:
+      - /opt/spring-agent-studio/workspace:/workspace
+      - node-config:/root/.agent-studio-node
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - backend
+
+volumes:
+  backend-data:
+    name: spring-agent-studio_backend-data
+  node-config:
+    name: spring-agent-studio_node-config
+
+networks:
+  studio:
+    name: spring-agent-studio_studio

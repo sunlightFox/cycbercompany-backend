@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.microsoft.playwright.CLI;
 import io.github.yourname.agentstudio.nodeclient.config.NodeConfigStore;
+import io.github.yourname.agentstudio.nodeclient.config.NodeProcessLock;
 import io.github.yourname.agentstudio.nodeclient.protocol.NodeRegistrar;
 import io.github.yourname.agentstudio.nodeclient.transport.NodeWebSocketClient;
 import java.net.http.HttpClient;
@@ -22,7 +23,11 @@ public class AgentStudioNodeApplication {
     public static void main(String[] args) throws Exception {
         // 节点客户端不使用 Spring 容器，依赖在入口显式组装，便于观察完整运行依赖。
         ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
-        HttpClient httpClient = HttpClient.newHttpClient();
+        // The local development entry point is commonly a Vite proxy. Pin the node transport to
+        // HTTP/1.1 because its HTTP/2 upgrade path can be closed by that proxy before a response.
+        HttpClient httpClient = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .build();
 
         if (args.length == 0 || "--help".equals(args[0]) || "-h".equals(args[0])) {
             printUsage();
@@ -87,13 +92,15 @@ public class AgentStudioNodeApplication {
             ObjectMapper objectMapper,
             HttpClient httpClient) throws Exception {
         NodeConfig config = configStore.load();
-        NodeWebSocketClient client = new NodeWebSocketClient(
-                objectMapper,
-                httpClient,
-                config,
-                SystemInfo.current(),
-                optionalDesktopRoot(options.get("desktop-root")));
-        client.startBlocking();
+        try (NodeProcessLock ignored = NodeProcessLock.acquire(configStore.path())) {
+            NodeWebSocketClient client = new NodeWebSocketClient(
+                    objectMapper,
+                    httpClient,
+                    config,
+                    SystemInfo.current(),
+                    optionalDesktopRoot(options.get("desktop-root")));
+            client.startBlocking();
+        }
     }
 
     private static void startLocal(

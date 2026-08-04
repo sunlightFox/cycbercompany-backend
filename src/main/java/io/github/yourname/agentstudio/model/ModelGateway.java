@@ -2,10 +2,31 @@ package io.github.yourname.agentstudio.model;
 
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 public interface ModelGateway {
 
     ModelAnswer complete(ModelCompletionRequest request);
+
+    /** Whether this gateway can emit text before the model turn completes. */
+    default boolean supportsStreaming() {
+        return false;
+    }
+
+    /**
+     * Streams text deltas as the provider emits them, then returns the assembled answer.
+     *
+     * <p>The default keeps alternate gateways and test doubles source-compatible. Providers
+     * that support streaming should override it; callers can still safely fall back to a
+     * completed answer when they cannot.
+     */
+    default ModelAnswer stream(ModelCompletionRequest request, Consumer<String> onToken) {
+        ModelAnswer answer = complete(request);
+        if (answer.content() != null && !answer.content().isEmpty()) {
+            onToken.accept(answer.content());
+        }
+        return answer;
+    }
 
     record ModelCompletionRequest(
             String modelProfileId,

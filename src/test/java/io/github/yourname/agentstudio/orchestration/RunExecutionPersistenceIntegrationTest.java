@@ -2,8 +2,10 @@ package io.github.yourname.agentstudio.orchestration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import io.github.yourname.agentstudio.node.CodingRunEvidenceView;
 import io.github.yourname.agentstudio.security.ActorContext;
 import java.time.Instant;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -103,5 +105,33 @@ class RunExecutionPersistenceIntegrationTest {
                 .doesNotContain("leaseId", "lastError");
 
         assertThat(tasks.view(runId, new ActorContext("other-tenant", "user", Set.of(), Set.of()))).isEmpty();
+    }
+
+    @Test
+    void persistsStructuredCodingStepsAndRestoresThemThroughTheSafeWorkflowView() {
+        String runId = "run-structured-workflow-" + UUID.randomUUID();
+        ActorContext actor = new ActorContext("tenant-structured", "user-structured", Set.of(), Set.of());
+        workflowCheckpoints.initialize(runId, "Implement a small endpoint", "workspace", actor);
+
+        workflowCheckpoints.toolFinished(runId, actor, "project.map", true, null);
+        workflowCheckpoints.toolFinished(runId, actor, "fs.write", true, null);
+        workflowCheckpoints.toolFinished(runId, actor, "shell.run", true, null);
+        workflowCheckpoints.toolFinished(runId, actor, "git.review", true, null);
+        List<String> blockers = workflowCheckpoints.finalizeCodingDelivery(
+                runId,
+                actor,
+                new CodingRunEvidenceView(
+                        runId, 4, List.of("project.map", "fs.write", "shell.run", "git.review"), -1,
+                        List.of("src/Example.java"), true, List.of("src/Example.java"), List.of("shell.run"),
+                        List.of("test"), List.of(), false, false, List.of()),
+                true);
+
+        RunWorkflowCheckpointView workflow = workflowCheckpoints.get(runId, actor);
+        assertThat(blockers).isEmpty();
+        assertThat(workflow.plan()).isNotNull();
+        assertThat(workflow.plan().projectFilesChanged()).isTrue();
+        assertThat(workflow.plan().state(CodingWorkflowStep.DELIVER).status())
+                .isEqualTo(CodingWorkflowStepStatus.COMPLETED);
+        assertThat(workflow.planJson()).doesNotContain("Example.java", "shell.run");
     }
 }

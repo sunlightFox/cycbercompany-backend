@@ -22,10 +22,15 @@ public class KnowledgeEmbeddingService {
     private static final double DEFAULT_VECTOR_WEIGHT = 1.0;
 
     private final AppProperties properties;
+    private final KnowledgeSettingsService settings;
     private final EmbeddingGateway embeddingGateway;
 
-    public KnowledgeEmbeddingService(AppProperties properties, EmbeddingGateway embeddingGateway) {
+    public KnowledgeEmbeddingService(
+            AppProperties properties,
+            KnowledgeSettingsService settings,
+            EmbeddingGateway embeddingGateway) {
         this.properties = properties;
+        this.settings = settings;
         this.embeddingGateway = embeddingGateway;
     }
 
@@ -94,20 +99,19 @@ public class KnowledgeEmbeddingService {
     }
 
     private boolean enabled() {
-        return properties.rag() != null && properties.rag().embeddingEnabled();
+        return settings.embeddingEnabled();
     }
 
     private String embeddingModelProfileId() {
-        return properties.rag() == null || properties.rag().embeddingModelProfileId() == null
-                ? ""
-                : properties.rag().embeddingModelProfileId().trim();
+        return settings.embeddingModelProfileId();
     }
 
     private String trimForEmbedding(String text) {
         String value = text == null ? "" : text;
-        int maxChars = properties.rag() == null || properties.rag().maxEmbeddingChars() <= 0
-                ? DEFAULT_MAX_EMBEDDING_CHARS
-                : properties.rag().maxEmbeddingChars();
+        int maxChars = settings.chunkSize();
+        if (maxChars <= 0) {
+            maxChars = DEFAULT_MAX_EMBEDDING_CHARS;
+        }
         return value.length() <= maxChars ? value : value.substring(0, maxChars);
     }
 

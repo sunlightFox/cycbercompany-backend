@@ -100,7 +100,9 @@ public final class ManagedProcessTool implements AutoCloseable {
             processes.put(processId, managed);
             return ToolExecutionResult.success(snapshot(managed));
         } catch (Exception ex) {
-            return ToolExecutionResult.failure("process.start failed: " + message(ex));
+            // 启动异常可能拼接了本机目录、可执行文件或命令行；调用方只需知道本次未启动，
+            // 详细错误由节点本地日志和受权限保护的调用记录保留。
+            return ToolExecutionResult.failure("process.start failed.");
         }
     }
 
@@ -140,13 +142,14 @@ public final class ManagedProcessTool implements AutoCloseable {
             TailLog tailLog = readTail(logPath, maxChars);
             Map<String, Object> result = snapshot(managed);
             result.put("stream", stream.toLowerCase(Locale.ROOT));
-            result.put("path", logPath.toString());
+            // 日志路径仅供节点本地打开文件。模型已持有 processId 和 stream，返回绝对路径会暴露
+            // 节点磁盘布局，也不能帮助下一次 process.logs 调用，因此刻意不向上游返回。
             result.put("content", tailLog.content());
             result.put("truncated", tailLog.truncated());
             result.put("maxChars", maxChars);
             return ToolExecutionResult.success(result);
         } catch (IOException ex) {
-            return ToolExecutionResult.failure("process.logs failed: " + message(ex));
+            return ToolExecutionResult.failure("process.logs failed to read the managed stream.");
         }
     }
 
@@ -278,18 +281,30 @@ public final class ManagedProcessTool implements AutoCloseable {
         Process process = managed.process();
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("processId", managed.id());
-        result.put("rootPid", process.pid());
         result.put("active", process.isAlive());
-        result.put("childPids", process.toHandle().descendants().map(ProcessHandle::pid).toList());
-        result.put("command", managed.command());
-        result.put("cwd", managed.cwd().toString());
-        result.put("stdoutPath", managed.stdout().toString());
-        result.put("stderrPath", managed.stderr().toString());
+        // processId 是节点创建的不可猜测句柄，足以作为 status/logs/stop/wait_http 的后续参数。
+        // 不返回系统 PID、命令和绝对路径，避免模型上下文、运行审计摘要或最终回答泄露本机环境细节。
+        result.put("workingDirectory", workspaceRelative(managed.cwd()));
         result.put("startedAt", managed.startedAt().toString());
         if (!process.isAlive()) {
             result.put("exitCode", process.exitValue());
         }
         return result;
+    }
+
+    /**
+     * 所有对外目录字段统一为工作区相对路径。
+     *
+     * <p>ManagedProcess 的目录来自 {@link #resolveDirectory(String)}，已验证在工作区内；这里仍然
+     * 再做一次 normalize 和 startsWith 检查，避免未来调用方修改内部对象后意外把绝对路径带出节点。
+     */
+    private String workspaceRelative(Path path) {
+        Path normalized = path.toAbsolutePath().normalize();
+        if (!normalized.startsWith(workspaceRoot)) {
+            throw new IllegalStateException("Managed process path escaped the configured workspace.");
+        }
+        String relative = workspaceRoot.relativize(normalized).toString().replace('\\', '/');
+        return relative.isBlank() ? "." : relative;
     }
 
     private Path resolveDirectory(String requested) throws IOException {

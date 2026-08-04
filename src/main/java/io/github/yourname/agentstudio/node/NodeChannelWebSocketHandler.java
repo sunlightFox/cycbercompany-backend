@@ -52,6 +52,11 @@ public class NodeChannelWebSocketHandler extends TextWebSocketHandler {
                     "fencingToken", node.fencingToken()));
             // 连接确认后只查询节点本地 journal 的既有记录，严禁把未知副作用重新变成 tool.invoke。
             for (NodeService.NodeInvocationReconciliation request : nodes.reconciliationRequests(node.id(), 100)) {
+                if (request.toolName() == null || request.toolName().isBlank()
+                        || request.argumentsDigest() == null || request.argumentsDigest().isBlank()
+                        || request.attempt() < 1) {
+                    continue;
+                }
                 sessions.sendControl(node.id(), "tool.status", request.invocationId(), Map.of(
                         "invocationId", request.invocationId(),
                         "toolName", request.toolName(),
@@ -142,10 +147,12 @@ public class NodeChannelWebSocketHandler extends TextWebSocketHandler {
                     textOrNull(payload, "errorMessage"));
             // status 对账可能返回 ACCEPTED/RUNNING。它们说明节点仍在处理，不是失败也不是终态。
             if (!terminalStatus(callResult.status())) {
+                String argumentsDigest = textOrNull(payload, "argumentsDigest");
+                int attempt = payload.path("attempt").asInt(1);
                 if ("RUNNING".equalsIgnoreCase(callResult.status())) {
-                    nodes.startInvocation(nodeId, callResult.invocationId());
+                    nodes.startInvocation(nodeId, callResult.invocationId(), callResult.toolName(), argumentsDigest, attempt);
                 } else {
-                    nodes.acceptInvocation(nodeId, callResult.invocationId());
+                    nodes.acceptInvocation(nodeId, callResult.invocationId(), callResult.toolName(), argumentsDigest, attempt);
                 }
                 return;
             }

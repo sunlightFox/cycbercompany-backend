@@ -4,6 +4,7 @@ import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.skill.SkillRunBinding;
 import io.github.yourname.agentstudio.skill.SkillAnalysis;
 import io.github.yourname.agentstudio.skill.CompatibilityReport;
+import io.github.yourname.agentstudio.tool.ApprovalMode;
 import io.github.yourname.agentstudio.tool.ResolvedToolBinding;
 import java.util.List;
 import java.util.Set;
@@ -34,6 +35,7 @@ public record RunSpec(
         List<String> requestedToolNames,
         List<ResolvedToolBinding> toolBindings,
         String nodeId,
+        RunExecutionMode executionMode,
         String workingDirectory,
         List<String> attachmentIds,
         String attachmentContext,
@@ -45,6 +47,7 @@ public record RunSpec(
         Set<String> actorRoles,
         Set<String> actorScopes) {
 
+    // executionMode is optional on the wire so existing version-1 RunSpecs remain readable.
     public static final int CURRENT_VERSION = 1;
 
     public RunSpec {
@@ -59,6 +62,10 @@ public record RunSpec(
         actorScopes = actorScopes == null ? Set.of() : Set.copyOf(actorScopes);
         attachmentContext = attachmentContext == null ? "" : attachmentContext;
         agentToolAllowList = agentToolAllowList == null ? "" : agentToolAllowList;
+        approvalMode = ApprovalMode.from(approvalMode).wireValue();
+        executionMode = executionMode == null
+                ? RunExecutionMode.fromPersisted(nodeId, userText, workingDirectory, requestedToolNames)
+                : executionMode;
     }
 
     public ActorContext actor() {
@@ -77,7 +84,9 @@ public record RunSpec(
                 requestedToolNames,
                 nodeId,
                 workingDirectory,
-                attachmentIds);
+                attachmentIds,
+                List.of(),
+                approvalMode);
     }
 
     private static <T> List<T> copy(List<T> values) {

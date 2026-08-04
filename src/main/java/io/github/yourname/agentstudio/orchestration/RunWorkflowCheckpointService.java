@@ -1,10 +1,10 @@
 package io.github.yourname.agentstudio.orchestration;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.yourname.agentstudio.node.CodingRunEvidenceView;
 import io.github.yourname.agentstudio.security.ActorContext;
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,7 +37,7 @@ public class RunWorkflowCheckpointService {
                 actor.tenantId(),
                 goal,
                 workspaceScope,
-                defaultPlan(workspaceScope),
+                serialize(CodingWorkflowPlan.initial()),
                 Instant.now())));
     }
 
@@ -52,9 +52,43 @@ public class RunWorkflowCheckpointService {
     @Transactional
     public void toolFinished(String runId, ActorContext actor, String toolName, boolean succeeded, String error) {
         checkpoints.findByRunIdAndTenantId(runId, actor.tenantId()).ifPresent(checkpoint -> {
-            checkpoint.toolFinished(toolName, succeeded, error, Instant.now());
+            Instant now = Instant.now();
+            checkpoint.toolFinished(toolName, succeeded, error, now);
+            checkpoint.planJson(serialize(
+                    restorePlan(checkpoint.planJson()).afterToolResult(toolName, succeeded, now)), now);
             checkpoints.save(checkpoint);
         });
+    }
+
+    /**
+     * 让交付门禁的最终结论同步回工作流，并返回因步骤证据缺失导致的额外阻塞原因。
+     *
+     * <p>调用方已经先完成 CodingDeliveryGate 的审计判断；这里不是第二套节点证据系统，
+     * 而是确保"已通过门禁"和"计划每一步都完成"不会互相矛盾。
+     */
+    @Transactional
+    public List<String> finalizeCodingDelivery(
+            String runId,
+            ActorContext actor,
+            CodingRunEvidenceView evidence,
+            boolean deliveryGatePassed) {
+        return checkpoints.findByRunIdAndTenantId(runId, actor.tenantId()).map(checkpoint -> {
+            Instant now = Instant.now();
+            boolean changedFiles = evidence != null && evidence.changedFiles() != null && !evidence.changedFiles().isEmpty();
+            CodingWorkflowPlan plan = restorePlan(checkpoint.planJson())
+                    .afterDeliveryEvidence(changedFiles, deliveryGatePassed, now);
+            checkpoint.planJson(serialize(plan), now);
+            checkpoints.save(checkpoint);
+            return plan.deliveryBlockers();
+        }).orElse(List.of());
+    }
+
+    /** 给工具循环下一轮模型调用的恢复摘要。 */
+    @Transactional(readOnly = true)
+    public String resumeGuidance(String runId, ActorContext actor) {
+        return checkpoints.findByRunIdAndTenantId(runId, actor.tenantId())
+                .map(checkpoint -> restorePlan(checkpoint.planJson()).resumeGuidance())
+                .orElse("Host workflow checkpoint is unavailable; inspect current state before making changes.");
     }
 
     @Transactional
@@ -73,17 +107,29 @@ public class RunWorkflowCheckpointService {
         return checkpoints.findByRunIdAndTenantId(runId, actor.tenantId())
                 .map(checkpoint -> RunWorkflowCheckpointView.from(
                         checkpoint,
+                        restorePlan(checkpoint.planJson()),
                         executionTasks == null ? null : executionTasks.view(runId, actor).orElse(null)))
                 .orElseThrow(() -> new IllegalArgumentException("Workflow checkpoint not found: " + runId));
     }
 
-    private String defaultPlan(String workspaceScope) {
+    /** 兼容旧版数组 JSON 或人工损坏数据；恢复时宁可从安全的待检查状态重新开始。 */
+    private CodingWorkflowPlan restorePlan(String planJson) {
         try {
-            return objectMapper.writeValueAsString(List.of(
-                    Map.of("step", "inspect", "status", "pending"),
-                    Map.of("step", "implement", "status", "pending"),
-                    Map.of("step", "verify", "status", "pending"),
-                    Map.of("workspaceScope", workspaceScope == null ? "." : workspaceScope)));
+            if (planJson == null || planJson.isBlank() || !planJson.strip().startsWith("{")) {
+                return CodingWorkflowPlan.initial();
+            }
+            CodingWorkflowPlan plan = objectMapper.readValue(planJson, CodingWorkflowPlan.class);
+            return plan.schemaVersion() == CodingWorkflowPlan.CURRENT_SCHEMA_VERSION
+                    ? plan
+                    : CodingWorkflowPlan.initial();
+        } catch (Exception ex) {
+            return CodingWorkflowPlan.initial();
+        }
+    }
+
+    private String serialize(CodingWorkflowPlan plan) {
+        try {
+            return objectMapper.writeValueAsString(plan);
         } catch (Exception ex) {
             throw new IllegalStateException("Unable to serialize workflow plan.", ex);
         }

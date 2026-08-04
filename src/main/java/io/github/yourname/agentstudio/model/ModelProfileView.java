@@ -19,13 +19,20 @@ public record ModelProfileView(
     }
 
     public static ModelProfileView from(ModelProfileEntity entity, boolean defaultProfile) {
+        return from(entity, defaultProfile, entity.apiKey() != null && !entity.apiKey().isBlank());
+    }
+
+    public static ModelProfileView from(
+            ModelProfileEntity entity,
+            boolean defaultProfile,
+            boolean apiKeyConfigured) {
         return new ModelProfileView(
                 entity.id(),
                 entity.providerType(),
                 entity.baseUrl(),
                 entity.modelName(),
                 entity.credentialRef(),
-                entity.apiKey() != null && !entity.apiKey().isBlank(),
+                apiKeyConfigured,
                 maskKey(entity.apiKey()),
                 entity.capabilities(),
                 entity.enabled(),

@@ -18,6 +18,7 @@ import java.util.regex.Pattern;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.jsoup.Jsoup;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,28 +36,41 @@ public class KnowledgeCommandService {
     /**
      * 单块最大字符数。这里先用字符长度实现，后续接 tokenizer 后可以改成 token 数。
      */
-    private static final int CHUNK_SIZE = 4_000;
+    private static final int DEFAULT_CHUNK_SIZE = 4_000;
 
     /**
      * 相邻 chunk 的重叠字符数。重叠能减少“答案刚好跨两个 chunk 边界”导致召回失败的问题。
      */
-    private static final int CHUNK_OVERLAP = 1_500;
+    private static final int DEFAULT_CHUNK_OVERLAP = 1_500;
     private static final Pattern OPENXML_TEXT_NODE = Pattern.compile("<(?:[A-Za-z0-9]+:)?t[^>]*>(.*?)</(?:[A-Za-z0-9]+:)?t>");
 
     private final KnowledgeBaseRepository bases;
     private final KnowledgeDocumentRepository documents;
     private final KnowledgeChunkRepository chunks;
     private final KnowledgeEmbeddingService embeddings;
+    private final KnowledgeSettingsService settings;
 
+    @Autowired
     public KnowledgeCommandService(
             KnowledgeBaseRepository bases,
             KnowledgeDocumentRepository documents,
             KnowledgeChunkRepository chunks,
-            KnowledgeEmbeddingService embeddings) {
+            KnowledgeEmbeddingService embeddings,
+            KnowledgeSettingsService settings) {
         this.bases = bases;
         this.documents = documents;
         this.chunks = chunks;
         this.embeddings = embeddings;
+        this.settings = settings;
+    }
+
+    /** Retained for focused unit tests that do not need runtime settings. */
+    KnowledgeCommandService(
+            KnowledgeBaseRepository bases,
+            KnowledgeDocumentRepository documents,
+            KnowledgeChunkRepository chunks,
+            KnowledgeEmbeddingService embeddings) {
+        this(bases, documents, chunks, embeddings, null);
     }
 
     @Transactional
@@ -203,7 +217,7 @@ public class KnowledgeCommandService {
         }
 
         String documentId = UUID.randomUUID().toString();
-        List<String> split = splitIntoChunks(content);
+        List<String> split = splitIntoChunks(content, configuredChunkSize(), configuredChunkOverlap());
         Instant now = Instant.now();
         documents.save(new KnowledgeDocumentEntity(
                 documentId,
@@ -238,7 +252,8 @@ public class KnowledgeCommandService {
 
     private int rebuildChunks(KnowledgeDocumentEntity document, ActorContext actor) {
         chunks.deleteByTenantIdAndKnowledgeBaseIdAndDocumentId(actor.tenantId(), document.knowledgeBaseId(), document.id());
-        List<String> split = splitIntoChunks(document.extractedText());
+        List<String> split = splitIntoChunks(
+                document.extractedText(), configuredChunkSize(), configuredChunkOverlap());
         Instant now = Instant.now();
         for (int i = 0; i < split.size(); i++) {
             String chunkContent = split.get(i);
@@ -374,27 +389,34 @@ public class KnowledgeCommandService {
     }
 
     static List<String> splitIntoChunks(String content) {
+        return splitIntoChunks(content, DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP);
+    }
+
+    static List<String> splitIntoChunks(String content, int chunkSize, int chunkOverlap) {
+        if (chunkSize <= 0 || chunkOverlap < 0 || chunkOverlap >= chunkSize) {
+            throw new IllegalArgumentException("Chunk overlap must be smaller than chunk size.");
+        }
         List<String> result = new ArrayList<>();
         String normalized = normalizeText(content);
         for (int start = 0; start < normalized.length();) {
-            int end = preferredChunkEnd(normalized, start);
+            int end = preferredChunkEnd(normalized, start, chunkSize);
             result.add(normalized.substring(start, end).trim());
             if (end == normalized.length()) {
                 break;
             }
-            start = Math.max(start + 1, end - CHUNK_OVERLAP);
+            start = Math.max(start + 1, end - chunkOverlap);
         }
         return result;
     }
 
-    private static int preferredChunkEnd(String content, int start) {
-        int target = Math.min(start + CHUNK_SIZE, content.length());
+    private static int preferredChunkEnd(String content, int start, int chunkSize) {
+        int target = Math.min(start + chunkSize, content.length());
         if (target == content.length()) {
             return target;
         }
         // Prefer a nearby paragraph, line, or sentence boundary. The lower bound keeps a
         // short trailing sentence from turning a 1,200-character chunk into a tiny fragment.
-        int lowerBound = Math.min(target - 1, Math.max(start + CHUNK_SIZE / 2, target - 2500));
+        int lowerBound = Math.min(target - 1, Math.max(start + chunkSize / 2, target - 2500));
         for (int index = target; index > lowerBound; index--) {
             char current = content.charAt(index - 1);
             if (current == '\n') {
@@ -406,6 +428,14 @@ public class KnowledgeCommandService {
             }
         }
         return target;
+    }
+
+    private int configuredChunkSize() {
+        return settings == null ? DEFAULT_CHUNK_SIZE : settings.chunkSize();
+    }
+
+    private int configuredChunkOverlap() {
+        return settings == null ? DEFAULT_CHUNK_OVERLAP : settings.chunkOverlap();
     }
 
     private static String normalizeText(String content) {

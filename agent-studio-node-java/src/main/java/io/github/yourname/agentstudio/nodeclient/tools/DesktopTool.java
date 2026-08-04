@@ -43,6 +43,16 @@ public class DesktopTool {
     private static final int MAX_UI_WAIT_MS = 30_000;
     private static final int UI_WAIT_POLL_MS = 250;
     private static final ObjectMapper JSON = new ObjectMapper();
+    /**
+     * 只允许启动少量 Windows 内置、无网络副作用的交互应用。
+     *
+     * <p>这里绝不能接受调用方传入的 exe 路径、工作目录或参数。需要任意命令的场景必须
+     * 走已有的 {@code system.shell.run}，并由审批页面展示完整命令。
+     */
+    private static final Map<String, String> APPROVED_APPLICATIONS = Map.of(
+            "notepad", "notepad.exe",
+            "paint", "mspaint.exe",
+            "calculator", "calc.exe");
 
     private final CommandExecutor commandExecutor;
     private final String osName;
@@ -150,6 +160,51 @@ public class DesktopTool {
                     "note", "Use processId plus snapshotRevision from this latest snapshot before window activation or keyboard input."));
         } catch (Exception ex) {
             return ToolExecutionResult.failure("Unable to inspect desktop windows: " + message(ex));
+        }
+    }
+
+    /**
+     * 在本机交互桌面上启动一个固定白名单应用。
+     *
+     * <p>启动成功只代表 Windows 创建了进程，不代表窗口已经出现或已处于前台。调用方必须
+     * 再执行 {@link #sessionSnapshot(Map)}，使用返回的最新快照确认窗口和进程 ID，才可执行
+     * 激活、键盘或 UI Automation 操作。
+     */
+    public ToolExecutionResult startApprovedApplication(Map<String, Object> arguments) {
+        if (!isWindows()) {
+            return ToolExecutionResult.failure("system.desktop.application.start is supported only on Windows nodes.");
+        }
+        String application = stringValue(arguments, "application");
+        String normalized = application == null ? "" : application.trim().toLowerCase(Locale.ROOT);
+        String executable = APPROVED_APPLICATIONS.get(normalized);
+        if (executable == null) {
+            return ToolExecutionResult.failure("Unsupported desktop application. Use one of: "
+                    + String.join(", ", APPROVED_APPLICATIONS.keySet()) + ".");
+        }
+        try {
+            // executable 来自不可变白名单，不拼接模型输入，避免此入口退化为任意命令执行。
+            CommandResult result = commandExecutor.execute(encodedPowerShellCommand("""
+                    $process = Start-Process -FilePath '%s' -PassThru
+                    [pscustomobject]@{ Id = $process.Id; ProcessName = $process.ProcessName } | ConvertTo-Json -Compress
+                    """.formatted(executable)));
+            if (result.exitCode() != 0) {
+                return ToolExecutionResult.failure("Unable to start approved desktop application: " + preview(result.output()));
+            }
+            Map<String, Object> process = JSON.readValue(result.output(), new TypeReference<LinkedHashMap<String, Object>>() { });
+            String rawProcessId = stringValue(process, "Id");
+            Long processId = rawProcessId != null && rawProcessId.matches("[1-9][0-9]*")
+                    ? Long.parseLong(rawProcessId)
+                    : null;
+            if (processId == null || processId <= 0) {
+                return ToolExecutionResult.failure("Windows did not return a valid process ID for the approved application.");
+            }
+            return ToolExecutionResult.success(Map.of(
+                    "application", normalized,
+                    "processId", processId,
+                    "processName", preview(stringValue(process, "ProcessName")),
+                    "nextStep", "Call system.desktop.session.snapshot and confirm this process before interacting."));
+        } catch (Exception ex) {
+            return ToolExecutionResult.failure("Unable to start approved desktop application: " + message(ex));
         }
     }
 

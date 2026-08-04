@@ -170,6 +170,14 @@ class ToolRegistryTest {
 
         assertEquals(java.util.List.of("source", "destination"), move.inputSchema().get("required"));
         assertEquals(java.util.List.of("command"), shell.inputSchema().get("required"));
+        assertTrue(shell.description().contains(
+                io.github.yourname.agentstudio.nodeclient.tools.ShellTool.commandDialectDescription()));
+        @SuppressWarnings("unchecked")
+        var shellProperties = (java.util.Map<String, Object>) shell.inputSchema().get("properties");
+        @SuppressWarnings("unchecked")
+        var commandSchema = (java.util.Map<String, Object>) shellProperties.get("command");
+        assertTrue(commandSchema.get("description").toString().contains(
+                io.github.yourname.agentstudio.nodeclient.tools.ShellTool.commandDialectDescription()));
         assertEquals(java.util.List.of(), scopedList.inputSchema().getOrDefault("required", java.util.List.of()));
         assertEquals(java.util.List.of("filename", "content"), scopedWrite.inputSchema().get("required"));
         assertEquals(java.util.List.of("source", "category"), scopedMove.inputSchema().get("required"));

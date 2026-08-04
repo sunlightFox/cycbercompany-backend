@@ -165,6 +165,43 @@ class ProjectToolTest {
     }
 
     @Test
+    void usesJavaAstForMultilineDeclarationsAndIgnoresCommentsAndStringLiterals() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-java-ast");
+        Path source = Files.createDirectories(workspace.resolve("src/main/java/demo"));
+        Files.writeString(source.resolve("TaskService.java"), """
+                package demo;
+                public class TaskService {
+                    // TaskService in a comment is not a source reference.
+                    private final String label = "TaskService in a string is not a source reference";
+
+                    public
+                    String createTask(
+                            String title) {
+                        return new TaskService().toString() + title;
+                    }
+                }
+                """);
+
+        ProjectTool tool = new ProjectTool(workspace);
+        var symbols = tool.symbols(Map.of("query", "createTask"));
+        var references = tool.references(Map.of("symbol", "TaskService"));
+
+        assertTrue(symbols.success());
+        assertEquals("bounded-java-ast-and-lexical-declaration-index", symbols.result().get("parser"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> declarations = (List<Map<String, Object>>) symbols.result().get("symbols");
+        assertTrue(declarations.stream().anyMatch(symbol -> "createTask".equals(symbol.get("name"))));
+
+        assertTrue(references.success());
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> occurrences = (List<Map<String, Object>>) references.result().get("references");
+        assertTrue(occurrences.stream().anyMatch(reference -> "declaration".equals(reference.get("kind"))));
+        assertTrue(occurrences.stream().anyMatch(reference -> "candidate-reference".equals(reference.get("kind"))));
+        assertFalse(occurrences.stream().anyMatch(reference -> reference.get("preview").toString().contains("comment")));
+        assertFalse(occurrences.stream().anyMatch(reference -> reference.get("preview").toString().contains("string is not")));
+    }
+
+    @Test
     void normalizesMavenTypeScriptGradleAndCompilerDiagnosticsWithoutExecutingAnything() throws Exception {
         Path workspace = Files.createTempDirectory("agent-studio-diagnostics");
         Path java = Files.createDirectories(workspace.resolve("backend/src/main/java/demo")).resolve("TaskService.java");
@@ -213,5 +250,20 @@ class ProjectToolTest {
         assertEquals(120, result.result().get("errorCount"));
         assertEquals(true, result.result().get("inputTruncated"));
         assertEquals("src/Example.ts", diagnostics.getFirst().get("path"));
+    }
+
+    @Test
+    void omitsDiagnosticLocationsOutsideTheConfiguredWorkspace() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-diagnostics");
+        Path outside = Files.createTempFile("agent-studio-private", ".java");
+
+        var result = new ProjectTool(workspace).diagnose(Map.of(
+                "output", outside + ":12:3: cannot access private source"));
+
+        assertTrue(result.success());
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> diagnostics = (List<Map<String, Object>>) result.result().get("diagnostics");
+        assertEquals("[outside-workspace path omitted]", diagnostics.getFirst().get("path"));
+        assertFalse(result.result().toString().contains(outside.toString()));
     }
 }

@@ -102,4 +102,26 @@ class McpConnectionServiceAuditTest {
         assertThat(refreshed.requiresApproval()).isTrue();
         assertThat(refreshed.enabled()).isFalse();
     }
+
+    @Test
+    void refreshFailureIsPersistedAsConnectionDiagnostic() throws Exception {
+        AppProperties properties = mock(AppProperties.class);
+        AppProperties.McpStore store = new AppProperties.McpStore(Files.createTempDirectory("mcp-discovery-error-test"));
+        when(properties.mcp()).thenReturn(store);
+        McpStdioClient stdio = mock(McpStdioClient.class);
+        McpConnectionService service = new McpConnectionService(
+                properties, new ObjectMapper().registerModule(new JavaTimeModule()), stdio, mock(McpToolInvocationRepository.class));
+        service.ensureConfigDirectoryExists();
+        service.create(new CreateMcpConnectionCommand(
+                "broken", "Broken MCP", "", McpTransportType.STDIO, true,
+                "test-command", List.of(), null, Map.of(), Map.of(), List.of()));
+        when(stdio.listTools(any())).thenThrow(new IllegalStateException("server did not answer tools/list"));
+
+        assertThatThrownBy(() -> service.refreshTools("broken"))
+                .hasMessageContaining("server did not answer tools/list");
+
+        McpConnectionView connection = service.getConnection("broken");
+        assertThat(connection.status()).isEqualTo(McpConnectionStatus.ERROR);
+        assertThat(connection.lastError()).contains("tools/list");
+    }
 }

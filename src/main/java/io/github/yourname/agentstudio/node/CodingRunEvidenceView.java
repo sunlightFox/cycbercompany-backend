@@ -42,7 +42,137 @@ public record CodingRunEvidenceView(
          *
          * <p>普通可见文本或 URL 断言足以证明网页流程；但前后端联调任务还必须证明真实响应状态或路径检查通过。
          */
-        boolean browserApiVerified) {
+        boolean browserApiVerified,
+        /**
+         * 是否观察到所有成功启动的桌面应用窗口。启动进程本身不代表窗口已经出现，
+         * 必须在后续 session.snapshot 中看到相同的 processId 才算通过。
+         */
+        boolean desktopApplicationVerified,
+        /**
+         * 本次 Run 启动的受管本地进程是否已通过同一进程句柄的 loopback HTTP 就绪探测。
+         * 这比单独的 process.start 或浏览器页面断言更强，适用于前后端联调交付。
+         */
+        boolean managedProcessReady,
+        /**
+         * 最后一次项目文件修改之后，是否重新启动并通过受管 loopback HTTP 就绪探测。
+         *
+         * <p>旧进程在修改前的健康检查不能证明新代码已经被加载，因此全栈评测必须使用此字段，
+         * 而不能只使用 {@link #managedProcessReady()}。
+         */
+        boolean managedProcessReadyAfterLastProjectChange) {
+
+    /**
+     * 保留引入“修改后就绪”前的完整构造形状。旧调用方没有时序证据，默认不得被当成新代码已联调。
+     */
+    public CodingRunEvidenceView(
+            String runId,
+            int toolCalls,
+            List<String> succeededTools,
+            int desktopSortableFiles,
+            List<String> changedFiles,
+            boolean gitReviewed,
+            List<String> reviewedChangedFiles,
+            List<String> verificationTools,
+            List<String> commandVerifications,
+            List<String> browserTraceArtifacts,
+            boolean browserVerified,
+            boolean desktopUiVerified,
+            List<String> failedTools,
+            boolean browserApiVerified,
+            boolean desktopApplicationVerified,
+            boolean managedProcessReady) {
+        this(
+                runId,
+                toolCalls,
+                succeededTools,
+                desktopSortableFiles,
+                changedFiles,
+                gitReviewed,
+                reviewedChangedFiles,
+                verificationTools,
+                commandVerifications,
+                browserTraceArtifacts,
+                browserVerified,
+                desktopUiVerified,
+                failedTools,
+                browserApiVerified,
+                desktopApplicationVerified,
+                managedProcessReady,
+                false);
+    }
+
+    /**
+     * 保留桌面应用窗口证据引入后的构造函数形状。旧调用方不能因为没有受管服务证据而误判为已就绪。
+     */
+    public CodingRunEvidenceView(
+            String runId,
+            int toolCalls,
+            List<String> succeededTools,
+            int desktopSortableFiles,
+            List<String> changedFiles,
+            boolean gitReviewed,
+            List<String> reviewedChangedFiles,
+            List<String> verificationTools,
+            List<String> commandVerifications,
+            List<String> browserTraceArtifacts,
+            boolean browserVerified,
+            boolean desktopUiVerified,
+            List<String> failedTools,
+            boolean browserApiVerified,
+            boolean desktopApplicationVerified) {
+        this(
+                runId,
+                toolCalls,
+                succeededTools,
+                desktopSortableFiles,
+                changedFiles,
+                gitReviewed,
+                reviewedChangedFiles,
+                verificationTools,
+                commandVerifications,
+                browserTraceArtifacts,
+                browserVerified,
+                desktopUiVerified,
+                failedTools,
+                browserApiVerified,
+                desktopApplicationVerified,
+                false);
+    }
+
+    /** 保留当前版本的完整构造函数，旧调用方默认没有桌面应用启动证据。 */
+    public CodingRunEvidenceView(
+            String runId,
+            int toolCalls,
+            List<String> succeededTools,
+            int desktopSortableFiles,
+            List<String> changedFiles,
+            boolean gitReviewed,
+            List<String> reviewedChangedFiles,
+            List<String> verificationTools,
+            List<String> commandVerifications,
+            List<String> browserTraceArtifacts,
+            boolean browserVerified,
+            boolean desktopUiVerified,
+            List<String> failedTools,
+            boolean browserApiVerified) {
+        this(
+                runId,
+                toolCalls,
+                succeededTools,
+                desktopSortableFiles,
+                changedFiles,
+                gitReviewed,
+                reviewedChangedFiles,
+                verificationTools,
+                commandVerifications,
+                browserTraceArtifacts,
+                browserVerified,
+                desktopUiVerified,
+                failedTools,
+                browserApiVerified,
+                false,
+                false);
+    }
 
     /** 保留旧的完整构造形状，旧调用方不能把页面验证误认成 API 验证。 */
     public CodingRunEvidenceView(

@@ -120,6 +120,65 @@ class RunCommandServiceApprovalResumeTest {
     }
 
     @Test
+    void approvedNodeToolRecordsItsActualExecutionOutcomeInWorkflowCheckpoints() throws Exception {
+        AgentRunRepository runs = mock(AgentRunRepository.class);
+        CodingRunContinuationRepository continuations = mock(CodingRunContinuationRepository.class);
+        ConversationService conversations = mock(ConversationService.class);
+        CodingAgentLoop codingLoop = mock(CodingAgentLoop.class);
+        RunEventPublisher events = mock(RunEventPublisher.class);
+        NodeService nodes = mock(NodeService.class);
+        ObjectMapper mapper = new ObjectMapper();
+        RunCommandService service = service(runs, continuations, conversations, codingLoop, nodes, events, mapper);
+        RunWorkflowCheckpointService checkpoints = mock(RunWorkflowCheckpointService.class);
+        service.configureWorkflowCheckpoints(checkpoints);
+
+        AgentRunEntity run = new AgentRunEntity(
+                "run-checkpoint", ACTOR.tenantId(), ACTOR.userId(), "conversation-1", "model-1", "agent-1", Instant.now());
+        bindRunSpec(run, mapper);
+        run.start();
+        run.waitForApproval();
+        CodingRunContinuationEntity continuation = new CodingRunContinuationEntity(
+                run.id(), ACTOR.tenantId(), "node-1", "task-board", "approval-1", "call-1", "[]", Instant.now());
+        when(continuations.findByRunIdAndTenantId(run.id(), ACTOR.tenantId())).thenReturn(Optional.of(continuation));
+        when(runs.findByIdAndTenantId(run.id(), ACTOR.tenantId())).thenReturn(Optional.of(run));
+
+        service.resumeAfterToolApproval(approvedDecision(run), ACTOR);
+
+        verify(checkpoints).toolFinished(run.id(), ACTOR, "fs.write", true, null);
+    }
+
+    @Test
+    void failedApprovedNodeToolRecordsFailureInWorkflowCheckpoints() throws Exception {
+        AgentRunRepository runs = mock(AgentRunRepository.class);
+        CodingRunContinuationRepository continuations = mock(CodingRunContinuationRepository.class);
+        ConversationService conversations = mock(ConversationService.class);
+        CodingAgentLoop codingLoop = mock(CodingAgentLoop.class);
+        RunEventPublisher events = mock(RunEventPublisher.class);
+        NodeService nodes = mock(NodeService.class);
+        ObjectMapper mapper = new ObjectMapper();
+        RunCommandService service = service(runs, continuations, conversations, codingLoop, nodes, events, mapper);
+        RunWorkflowCheckpointService checkpoints = mock(RunWorkflowCheckpointService.class);
+        service.configureWorkflowCheckpoints(checkpoints);
+
+        AgentRunEntity run = new AgentRunEntity(
+                "run-failed-checkpoint", ACTOR.tenantId(), ACTOR.userId(), "conversation-1", "model-1", "agent-1", Instant.now());
+        bindRunSpec(run, mapper);
+        run.start();
+        run.waitForApproval();
+        CodingRunContinuationEntity continuation = new CodingRunContinuationEntity(
+                run.id(), ACTOR.tenantId(), "node-1", "task-board", "approval-1", "call-1", "[]", Instant.now());
+        when(continuations.findByRunIdAndTenantId(run.id(), ACTOR.tenantId())).thenReturn(Optional.of(continuation));
+        when(runs.findByIdAndTenantId(run.id(), ACTOR.tenantId())).thenReturn(Optional.of(run));
+        NodeToolApprovalDecisionView decision = new NodeToolApprovalDecisionView(
+                approvedDecision(run).approval(),
+                new NodeToolCallResult("nodeinv-1", "node-1", "fs.write", "FAILED", Map.of(), "permission denied"));
+
+        service.resumeAfterToolApproval(decision, ACTOR);
+
+        verify(checkpoints).toolFinished(run.id(), ACTOR, "fs.write", false, "permission denied");
+    }
+
+    @Test
     void resumedCodingCannotReportSuccessWhenTheServerFindsMissingVerification() throws Exception {
         AgentRunRepository runs = mock(AgentRunRepository.class);
         CodingRunContinuationRepository continuations = mock(CodingRunContinuationRepository.class);
@@ -154,6 +213,43 @@ class RunCommandServiceApprovalResumeTest {
         assertThat(run.errorMessage()).contains("没有成功的构建、测试或命令验证证据");
         verify(events, timeout(2_000)).publish(
                 eq(run.id()), eq(RunEventType.RUN_NEEDS_VERIFICATION), org.mockito.ArgumentMatchers.contains("交付门禁未通过"), eq(ACTOR));
+    }
+
+    @Test
+    void rejectedNodeApprovalCompletesWithoutCallingTheModel() throws Exception {
+        AgentRunRepository runs = mock(AgentRunRepository.class);
+        CodingRunContinuationRepository continuations = mock(CodingRunContinuationRepository.class);
+        ConversationService conversations = mock(ConversationService.class);
+        CodingAgentLoop codingLoop = mock(CodingAgentLoop.class);
+        RunEventPublisher events = mock(RunEventPublisher.class);
+        ObjectMapper mapper = new ObjectMapper();
+        RunCommandService service = service(
+                runs, continuations, conversations, codingLoop, mock(NodeService.class), events, mapper);
+        AgentRunEntity run = new AgentRunEntity(
+                "run-rejected", ACTOR.tenantId(), ACTOR.userId(), "conversation-1", "model-1", "agent-1", Instant.now());
+        bindRunSpec(run, mapper);
+        run.start();
+        run.waitForApproval();
+        CodingRunContinuationEntity continuation = new CodingRunContinuationEntity(
+                run.id(), ACTOR.tenantId(), "node-1", "", "approval-rejected", "call-rejected", "[]", Instant.now());
+        when(continuations.findByRunIdAndTenantId(run.id(), ACTOR.tenantId())).thenReturn(Optional.of(continuation));
+        when(runs.findByIdAndTenantId(run.id(), ACTOR.tenantId())).thenReturn(Optional.of(run));
+        NodeToolApprovalView approval = new NodeToolApprovalView(
+                "approval-rejected", "node-1", "system.shell.run", run.id(), "call-rejected", "{}", 30,
+                NodeToolApprovalStatus.REJECTED, "alice", "alice", Instant.now(), Instant.now(), null,
+                null, null, null);
+
+        service.resumeAfterToolApproval(new NodeToolApprovalDecisionView(approval, null), ACTOR);
+
+        assertThat(run.status()).isEqualTo(RunStatus.SUCCEEDED);
+        verify(continuations).delete(continuation);
+        verify(conversations).append(
+                "conversation-1", MessageRole.ASSISTANT,
+                "Tool execution was rejected. The requested command was not run.", run.id(), ACTOR);
+        verify(events).publish(
+                run.id(), RunEventType.FINAL_ANSWER,
+                "Tool execution was rejected. The requested command was not run.", ACTOR);
+        verify(codingLoop, org.mockito.Mockito.never()).resume(any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -247,6 +343,7 @@ class RunCommandServiceApprovalResumeTest {
                 List.of("fs.write"),
                 List.of(binding),
                 "node-1",
+                RunExecutionMode.CODING,
                 "task-board",
                 List.of(),
                 "",

@@ -20,6 +20,7 @@ final class WindowsDpapiNodeConfigProtector implements NodeConfigProtector {
     private static final long TIMEOUT_SECONDS = 15;
     private static final int MAX_RESULT_BYTES = 128 * 1024;
     private static final String ENTROPY = "agent-studio-node-config-v1";
+    private static final String OUTPUT_MARKER = "AGENT_STUDIO_DPAPI:";
 
     @Override
     public String protectionId() {
@@ -73,7 +74,28 @@ final class WindowsDpapiNodeConfigProtector implements NodeConfigProtector {
                 throw new IOException("Windows DPAPI rejected the node config operation.");
             }
             try {
-                return Base64.getDecoder().decode(new String(output, StandardCharsets.UTF_8).trim());
+                String text = new String(output, StandardCharsets.UTF_8);
+                int marker = text.lastIndexOf(OUTPUT_MARKER);
+                if (marker < 0) {
+                    throw new IOException("Windows DPAPI did not return a marked protected payload.");
+                }
+                String suffix = text.substring(marker + OUTPUT_MARKER.length()).trim();
+                int end = 0;
+                while (end < suffix.length()) {
+                    char current = suffix.charAt(end);
+                    if (!((current >= 'A' && current <= 'Z')
+                            || (current >= 'a' && current <= 'z')
+                            || (current >= '0' && current <= '9')
+                            || current == '+' || current == '/' || current == '=')) {
+                        break;
+                    }
+                    end++;
+                }
+                String encoded = suffix.substring(0, end);
+                if (encoded.isBlank()) {
+                    throw new IOException("Windows DPAPI returned an empty protected payload.");
+                }
+                return Base64.getDecoder().decode(encoded);
             } catch (IllegalArgumentException ex) {
                 throw new IOException("Windows DPAPI returned an invalid protected payload.", ex);
             }
@@ -101,6 +123,7 @@ final class WindowsDpapiNodeConfigProtector implements NodeConfigProtector {
     private static String encodedScript(String operation) {
         String script = """
                 $ErrorActionPreference = 'Stop'
+                [void](Add-Type -AssemblyName System.Security)
                 $inputBase64 = [Console]::In.ReadToEnd().Trim()
                 if ([string]::IsNullOrWhiteSpace($inputBase64)) { throw 'Missing input' }
                 $inputBytes = [Convert]::FromBase64String($inputBase64)
@@ -112,8 +135,8 @@ final class WindowsDpapiNodeConfigProtector implements NodeConfigProtector {
                     $result = [Security.Cryptography.ProtectedData]::Unprotect(
                         $inputBytes, $entropy, [Security.Cryptography.DataProtectionScope]::CurrentUser)
                 }
-                [Console]::Out.Write([Convert]::ToBase64String($result))
-                """.formatted(ENTROPY, operation);
+                [Console]::Out.Write('%s' + [Convert]::ToBase64String($result))
+                """.formatted(ENTROPY, operation, OUTPUT_MARKER);
         return Base64.getEncoder().encodeToString(script.getBytes(StandardCharsets.UTF_16LE));
     }
 }

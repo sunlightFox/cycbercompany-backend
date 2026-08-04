@@ -162,7 +162,7 @@ public class ToolRegistry {
                                 "description", "Optional workspace-relative directory whose discovered modules should be mapped.")))),
                 new NodeCapability(
                         "project.symbols",
-                        "Build a bounded lightweight declaration index for common Java, Kotlin, TypeScript, JavaScript, Python, Go, and Rust source files. Returns paths and line numbers, not function bodies; use it to choose a precise fs.read target.",
+                        "Build a bounded declaration index for common source files. Complete Java files use the local JDK AST, while incomplete Java and other languages use a lexical fallback. Returns paths and line numbers, not function bodies; use it to choose a precise fs.read target.",
                         "LOW",
                         projectTool != null,
                         false,
@@ -176,7 +176,7 @@ public class ToolRegistry {
                                         "description", "Maximum declaration rows to return.")))),
                 new NodeCapability(
                         "project.references",
-                        "Find bounded lexical candidate declarations and references for one simple identifier in common source files. It is not a full AST reference graph; inspect returned lines with fs.read before editing.",
+                        "Find bounded candidate declarations and references for one simple identifier. Complete Java files use a local AST to exclude comments and string literals; incomplete Java and other languages use a lexical fallback. It is not a full cross-module semantic graph; inspect returned lines with fs.read before editing.",
                         "LOW",
                         projectTool != null,
                         false,
@@ -286,13 +286,15 @@ public class ToolRegistry {
                                         "items", Map.of("type", "object"))), "changes")),
                 new NodeCapability(
                         "shell.run",
-                        "Run one shell command in the configured workspace and wait for completion. Returns exitCode, stdout, stderr, timeout, and truncation metadata. Requires approval.",
+                        "Run one shell command in the configured workspace and wait for completion. "
+                                + ShellTool.commandDialectDescription()
+                                + " Returns exitCode, stdout, stderr, timeout, and truncation metadata. Requires approval.",
                         "HIGH",
                         false,
                         true,
                         objectSchema(Map.of(
                                 "command", Map.of("type", "string", "minLength", 1, "maxLength", 8_000,
-                                        "description", "Command interpreted by the node's platform shell."),
+                                        "description", ShellTool.commandDialectDescription()),
                                 "cwd", Map.of("type", "string", "description", "Optional workspace-relative working directory; defaults to the workspace root."),
                                 "timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 120, "default", 30,
                                         "description", "Timeout in seconds; defaults to 30 and is capped at 120.")), "command")),
@@ -310,7 +312,7 @@ public class ToolRegistry {
                                 "stderrPath", Map.of("type", "string", "description", "Optional workspace-relative stderr log file.")), "command")),
                 new NodeCapability(
                         "process.status",
-                        "Inspect one node-managed process by processId. Returns active state, process IDs, log file paths, and the exit code when finished; it does not read the log files.",
+                        "Inspect one node-managed process by processId. Returns active state, workspace/system scope, and the exit code when finished; it does not return OS process IDs or log file paths.",
                         "LOW",
                         managedProcessTool != null,
                         false,
@@ -539,7 +541,7 @@ public class ToolRegistry {
                                         "default", 10_000, "description", "Selection timeout in milliseconds.")))),
                 new NodeCapability(
                         "browser.trace.start",
-                        "Start a Playwright trace for the current run's browser session before a non-trivial interaction. Fails if no page is open or tracing is already active.",
+                        "Start a Playwright trace for the current run's browser session before a non-trivial interaction. Initializes an empty page when called before browser.open, so the following navigation is captured; calling it again is idempotent.",
                         "LOW",
                         true,
                         false,
@@ -682,12 +684,14 @@ public class ToolRegistry {
                                 "recursive", Map.of("type", "boolean", "default", false,
                                         "description", "Delete directory descendants only when explicitly true.")), "path")),
                 new NodeCapability("system.shell.run",
-                        "Run one platform-shell command from an explicitly chosen directory anywhere on this computer and wait for completion. Returns exit and bounded output metadata. Requires human approval.",
+                        "Run one command and wait for completion. " + ShellTool.commandDialectDescription()
+                                + " Omit cwd unless the user explicitly provided an existing absolute working directory. "
+                                + "Returns exit and bounded output metadata. Requires human approval.",
                         "HIGH", true, true,
                         objectSchema(Map.of(
                                 "command", Map.of("type", "string", "minLength", 1, "maxLength", 8_000,
-                                        "description", "Command interpreted by the node's platform shell."),
-                                "cwd", Map.of("type", "string", "description", "Optional absolute working directory; defaults to the configured workspace."),
+                                        "description", ShellTool.commandDialectDescription()),
+                                "cwd", Map.of("type", "string", "description", "Optional existing absolute working directory. Use only when the user explicitly requested that directory; otherwise omit and use the configured workspace."),
                                 "timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 120, "default", 30,
                                         "description", "Timeout in seconds.")), "command")),
                 new NodeCapability("system.desktop.set_wallpaper",
@@ -698,6 +702,9 @@ public class ToolRegistry {
                 new NodeCapability("system.desktop.session.snapshot",
                         "List visible top-level Windows windows without interacting with them. Returns a bounded JSON summary used to confirm the target before an action. Requires human approval.",
                         "HIGH", true, true, objectSchema(Map.of())),
+                new NodeCapability("system.desktop.application.start",
+                        "Start one fixed Windows built-in application: notepad, paint, or calculator. Does not accept executable paths, arguments, or a working directory. A later desktop session snapshot must confirm the returned process before interaction. Requires human approval.",
+                        "HIGH", true, true, objectSchema(Map.of("application", Map.of("type", "string", "enum", List.of("notepad", "paint", "calculator"))), "application")),
                 new NodeCapability("system.desktop.screenshot",
                         "Capture the current visible Windows primary display as an approval-protected PNG Artifact. The screenshot contains no local path in the result and is uploaded outside WebSocket messages.",
                         "HIGH", true, true, objectSchema(Map.of())),
@@ -743,14 +750,14 @@ public class ToolRegistry {
         if (desktopOrganizationTool != null) {
             capabilities.add(new NodeCapability(
                     "system.desktop.organize.list",
-                    "Inspect only the configured current user's desktop and return 'sortableFiles' for top-level regular files. Accepts no path and does not read file contents. Call this before other desktop organization tools. Requires human approval.",
+                    "Inspect only the configured current user's desktop and return its absolute desktopPath, 'sortableFiles' count, and visible top-level directory names in 'visibleDirectories'. Accepts no path and does not read file contents. For a requested Desktop directory deletion, use the returned desktopPath and matching visibleDirectories name with system.fs.delete; system.desktop.organize.delete is regular files only. Requires human approval.",
                     "HIGH",
                     true,
                     true,
                     objectSchema(Map.of())));
             capabilities.add(new NodeCapability(
                     "system.desktop.organize.mkdir",
-                    "Create one top-level category directory on the configured current user's desktop. Does not accept a path or create nested categories. Requires human approval.",
+                    "Create one top-level category directory on the configured current user's desktop for desktop organization only. Never use this tool to create a software project, source tree, or application folder. Does not accept a path or create nested categories. Requires human approval.",
                     "HIGH",
                     true,
                     true,
@@ -938,6 +945,9 @@ public class ToolRegistry {
         }
         if ("system.desktop.session.snapshot".equals(toolName)) {
             return desktopTool == null ? unavailable(toolName) : desktopTool.sessionSnapshot(arguments);
+        }
+        if ("system.desktop.application.start".equals(toolName)) {
+            return desktopTool == null ? unavailable(toolName) : desktopTool.startApprovedApplication(arguments);
         }
         if ("system.desktop.screenshot".equals(toolName)) {
             return desktopTool == null ? unavailable(toolName) : desktopTool.screenshot(arguments);

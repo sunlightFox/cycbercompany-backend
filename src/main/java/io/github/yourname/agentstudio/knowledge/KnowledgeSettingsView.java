@@ -7,7 +7,11 @@ package io.github.yourname.agentstudio.knowledge;
  */
 public record KnowledgeSettingsView(
         boolean embeddingEnabled,
-        String embeddingModelProfileId,
-        int maxEmbeddingChars,
-        double vectorWeight) {
+        boolean embeddingCredentialConfigured,
+        String embeddingModel,
+        String embeddingBaseUrl,
+        String embeddingCredentialEnv,
+        String vectorStore,
+        int chunkSize,
+        int chunkOverlap) {
 }

@@ -96,6 +96,11 @@ public class NodeToolInvocationEntity {
     public void succeed(String resultJson, String resultDigest, Instant now) {
         this.status = NodeToolInvocationStatus.SUCCEEDED;
         this.resultJson = resultJson;
+        // An approval-required placeholder is recorded as a failed/intermediate
+        // invocation before the human decision. Once the same invocation
+        // completes successfully, that placeholder must not remain as the
+        // final error attached to a successful result.
+        this.errorMessage = null;
         this.resultDigest = resultDigest;
         this.finishedAt = now;
         this.updatedAt = now;

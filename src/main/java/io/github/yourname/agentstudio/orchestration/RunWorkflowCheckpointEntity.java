@@ -77,6 +77,17 @@ public class RunWorkflowCheckpointEntity {
         this.updatedAt = now;
     }
 
+    /**
+     * 更新结构化计划的 JSON 快照。
+     *
+     * <p>计划仍复用既有 LOB 字段，避免为一次纯状态升级引入数据库迁移；实体不解析 JSON，
+     * 所有序列化和兼容逻辑集中在 service 中，防止 JPA 实体承担业务规则。
+     */
+    public void planJson(String planJson, Instant now) {
+        this.planJson = planJson;
+        this.updatedAt = now;
+    }
+
     public void failure(String error, Instant now) {
         this.phase = RunWorkflowPhase.FAILED;
         this.lastError = bounded(error);

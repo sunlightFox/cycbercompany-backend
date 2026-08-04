@@ -3,6 +3,8 @@ package io.github.yourname.agentstudio.node;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -73,6 +75,44 @@ class NodeServiceCapabilityPolicyTest {
         assertThat(node.capabilityRevision()).isEqualTo("sha256:" + "a".repeat(64));
         assertThat(node.runtimeVersions()).containsEntry("java", "21.0.4");
         assertThat(node.features()).contains("workspace.scope.v1");
+    }
+
+    @Test
+    void grantsSystemToolsFullAccessWithoutApprovalOnlyWhenExplicitlyEnabled() {
+        NodeService service = new NodeService(nodes, tokens, tools, invocations, approvals, sessions, new ObjectMapper());
+        Instant now = Instant.now();
+        NodeConnectionEntity node = new NodeConnectionEntity(
+                "node-1", "tenant-a", "desktop", "host", "Windows", "amd64", "test", "secret", now);
+        node.updateCapabilitySnapshot(null, Map.of(), Set.of("system-access.v1"), now);
+        NodeToolEntity delete = new NodeToolEntity(
+                "tenant-a", "node-1", "system.fs.delete", "Delete a file", RiskLevel.HIGH, true, true, "{}", now);
+        NodeToolEntity shell = new NodeToolEntity(
+                "tenant-a", "node-1", "system.shell.run", "Run a command", RiskLevel.HIGH, true, true, "{}", now);
+        NodeToolEntity workspaceRead = new NodeToolEntity(
+                "tenant-a", "node-1", "fs.read", "Read a workspace file", RiskLevel.LOW, true, false, "{}", now);
+        when(nodes.findByIdAndTenantId("node-1", "tenant-a")).thenReturn(Optional.of(node));
+        when(tools.findByTenantIdAndNodeIdOrderByNameAsc("tenant-a", "node-1"))
+                .thenReturn(List.of(delete, shell, workspaceRead));
+
+        service.setSystemAccess("node-1", true, new ActorContext("tenant-a", "alice", Set.of(), Set.of()));
+
+        assertThat(delete.enabled()).isTrue();
+        assertThat(delete.requiresApproval()).isFalse();
+        assertThat(shell.enabled()).isTrue();
+        assertThat(shell.requiresApproval()).isFalse();
+        assertThat(workspaceRead.enabled()).isTrue();
+        assertThat(workspaceRead.requiresApproval()).isFalse();
+
+        service.setSystemAccess("node-1", false, new ActorContext("tenant-a", "alice", Set.of(), Set.of()));
+
+        assertThat(delete.enabled()).isFalse();
+        assertThat(delete.requiresApproval()).isTrue();
+        assertThat(shell.enabled()).isFalse();
+        assertThat(shell.requiresApproval()).isTrue();
+        assertThat(workspaceRead.enabled()).isTrue();
+        assertThat(workspaceRead.requiresApproval()).isFalse();
+        verify(tools, times(2)).save(delete);
+        verify(tools, times(2)).save(shell);
     }
 
     @Test
@@ -292,5 +332,36 @@ class NodeServiceCapabilityPolicyTest {
         assertThat(reconciled).isTrue();
         assertThat(invocation.status()).isEqualTo(NodeToolInvocationStatus.SUCCEEDED);
         assertThat(rejected).isFalse();
+    }
+
+    @Test
+    void rejectsIntermediateStatusWhenDispatchMetadataDoesNotMatch() {
+        Instant now = Instant.now();
+        NodeToolInvocationEntity invocation = new NodeToolInvocationEntity(
+                "inv-progress", "tenant-a", "run-1", "call-1", "node-1", "fs.write", "{}", now);
+        invocation.dispatch(2, now.plusSeconds(30), "sha256:args", "idem-1", "policy-1", now);
+        when(invocations.findByIdAndNodeId("inv-progress", "node-1")).thenReturn(Optional.of(invocation));
+        NodeService service = new NodeService(nodes, tokens, tools, invocations, approvals, sessions, new ObjectMapper());
+
+        service.startInvocation("node-1", "inv-progress", "fs.write", "sha256:wrong", 2);
+
+        assertThat(invocation.status()).isEqualTo(NodeToolInvocationStatus.DISPATCHED);
+        verify(invocations, never()).save(any(NodeToolInvocationEntity.class));
+    }
+
+    @Test
+    void acceptsIntermediateStatusWhenDispatchMetadataMatches() {
+        Instant now = Instant.now();
+        NodeToolInvocationEntity invocation = new NodeToolInvocationEntity(
+                "inv-progress-ok", "tenant-a", "run-1", "call-1", "node-1", "fs.write", "{}", now);
+        invocation.dispatch(2, now.plusSeconds(30), "sha256:args", "idem-1", "policy-1", now);
+        when(invocations.findByIdAndNodeId("inv-progress-ok", "node-1")).thenReturn(Optional.of(invocation));
+        when(invocations.save(any(NodeToolInvocationEntity.class))).thenAnswer(call -> call.getArgument(0));
+        NodeService service = new NodeService(nodes, tokens, tools, invocations, approvals, sessions, new ObjectMapper());
+
+        service.acceptInvocation("node-1", "inv-progress-ok", "fs.write", "sha256:args", 2);
+
+        assertThat(invocation.status()).isEqualTo(NodeToolInvocationStatus.ACCEPTED);
+        verify(invocations).save(invocation);
     }
 }
