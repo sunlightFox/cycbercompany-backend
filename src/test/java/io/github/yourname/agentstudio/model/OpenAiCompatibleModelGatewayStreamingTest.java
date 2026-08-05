@@ -1,12 +1,15 @@
 package io.github.yourname.agentstudio.model;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -70,6 +73,36 @@ class OpenAiCompatibleModelGatewayStreamingTest {
             });
         } finally {
             server.stop(0);
+        }
+    }
+
+    @Test
+    void classifiesAProviderSocketResetAsRetryableTransportFailure() throws Exception {
+        try (ServerSocket server = new ServerSocket(0)) {
+            Thread acceptor = new Thread(() -> {
+                try (Socket ignored = server.accept()) {
+                    // Close without returning an HTTP response to emulate a provider reset.
+                } catch (Exception ignored) {
+                    // The test server is deliberately short-lived.
+                }
+            });
+            acceptor.setDaemon(true);
+            acceptor.start();
+
+            ModelProfileRepository profiles = Mockito.mock(ModelProfileRepository.class);
+            ModelProfileEntity profile = new ModelProfileEntity(
+                    "mock", ProviderType.OPENAI_COMPATIBLE,
+                    "http://127.0.0.1:" + server.getLocalPort() + "/v1",
+                    "mock", null, "test-key", Set.of(ModelCapability.TEXT), true, Instant.now());
+            when(profiles.findById("mock")).thenReturn(Optional.of(profile));
+            OpenAiCompatibleModelGateway gateway = new OpenAiCompatibleModelGateway(
+                    profiles, RestClient.builder(), new ObjectMapper());
+
+            assertThatThrownBy(() -> gateway.stream(new ModelGateway.ModelCompletionRequest(
+                    "mock", List.of(new ModelGateway.ModelMessage("user", "Continue")),
+                    List.of(), ModelGateway.ToolChoice.AUTO), ignored -> { }))
+                    .isInstanceOf(ModelTransientException.class)
+                    .hasMessageContaining("stream transport failed");
         }
     }
 }

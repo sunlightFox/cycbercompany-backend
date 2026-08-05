@@ -35,10 +35,13 @@ def log_tool_summary(request: dict[str, Any]) -> None:
     """Log only provider-contract metadata, never prompts or tool arguments."""
     tools = request.get("tools") or []
     names = [str((item.get("function") or {}).get("name") or "<missing>") for item in tools]
-    operations = sorted(logical_tools(request))
+    advertised = logical_tools(request)
+    operations = sorted(advertised)
+    messages = request.get("messages") or []
+    completed = called_operations(messages, advertised)
     sys.stderr.write(
-        "chat request: stream=%s tools=%d names=%s logical_operations=%s\n"
-        % (bool(request.get("stream")), len(tools), ",".join(names), ",".join(operations))
+        "chat request: stream=%s tools=%d scenario=%s roles=%s completed=%s names=%s logical_operations=%s\n"
+        % (bool(request.get("stream")), len(tools), scenario(messages), ",".join(str(message.get("role")) for message in messages), ",".join(completed), ",".join(names), ",".join(operations))
     )
 
 
@@ -54,13 +57,19 @@ def tool_summary(request: dict[str, Any]) -> dict[str, Any]:
 
 def scenario(messages: list[dict[str, Any]]) -> str:
     text = "\n".join(str(message.get("content") or "") for message in messages)
-    if "TaxCalculator" in text:
+    folded = text.casefold()
+    if "taxcalculator" in folded:
         return "minimal-fix"
-    if "TaskRepository" in text:
+    if "taskrepository" in folded:
         return "existing-feature"
-    if "Long task recovery" in text or "recovered workflow" in text:
+    if "long task recovery" in folded or "recovered workflow" in folded:
         return "recovery"
-    if "Split frontend/backend" in text or "displayName and role" in text:
+    if (
+        "split frontend/backend" in folded
+        or "split-frontend-backend" in folded
+        or ("frontend" in folded and "backend" in folded)
+        or ("displayname" in folded and "role" in folded)
+    ):
         return "split"
     return "full-stack"
 
@@ -113,9 +122,21 @@ def next_operation(kind: str, calls: list[str]) -> tuple[str | None, dict[str, A
         "recovery": [
             ("fs.read", {"path": "SCENARIO.md"}),
             ("fs.write", {"path": "App.java", "content": "public final class App {\n    public static void main(String[] args) {\n        System.out.println(\"Recovered workflow complete\");\n    }\n}\n"}),
-            ("shell.run", {"command": "javac App.java && java App"}),
+            ("fs.write", {"path": "AppTest.java", "content": "public final class AppTest {\n    public static void main(String[] args) {\n        App.main(new String[0]);\n        System.out.println(\"AppTest passed\");\n    }\n}\n"}),
+            ("shell.run", {"command": "javac App.java AppTest.java && java AppTest"}),
             ("git.review", {}),
             ("git.diff", {}),
+        ],
+        "split": [
+            ("project.map", {"cwd": "."}),
+            ("fs.read", {"path": "SCENARIO.md"}),
+            ("fs.write", {"path": "backend/server.py", "content": "from http.server import BaseHTTPRequestHandler, HTTPServer\nfrom pathlib import Path\nimport json\n\nROOT = Path(__file__).resolve().parent.parent\n\nclass App(BaseHTTPRequestHandler):\n    def do_GET(self):\n        if self.path == '/api/profile':\n            body = json.dumps({'displayName': 'Ada', 'role': 'Engineer'}).encode()\n            self.send_response(200)\n            self.send_header('Content-Type', 'application/json')\n            self.end_headers()\n            self.wfile.write(body)\n            return\n        body = (ROOT / 'frontend' / 'index.html').read_bytes()\n        self.send_response(200)\n        self.send_header('Content-Type', 'text/html; charset=utf-8')\n        self.end_headers()\n        self.wfile.write(body)\n\nHTTPServer(('127.0.0.1', 18092), App).serve_forever()\n"}),
+            ("fs.write", {"path": "frontend/index.html", "content": "<!doctype html>\n<html><body><button id=\"load\" onclick=\"loadProfile()\">Load profile</button><p id=\"result\">Ready</p><script>async function loadProfile(){const response=await fetch('/api/profile');const profile=await response.json();document.getElementById('result').textContent=profile.displayName+' '+profile.role;}</script></body></html>\n"}),
+            ("fs.write", {"path": "package.json", "content": "{\n  \"scripts\": {\n    \"build\": \"py -3 -m py_compile backend/server.py\",\n    \"test\": \"py -3 -m unittest backend/test_profile.py\"\n  }\n}\n"}),
+            ("fs.write", {"path": "backend/test_profile.py", "content": "from pathlib import Path\nimport unittest\n\nROOT = Path(__file__).resolve().parent.parent\n\nclass ProfileContractTest(unittest.TestCase):\n    def test_profile_contract_is_present(self):\n        self.assertIn(\"/api/profile\", (ROOT / \"backend\" / \"server.py\").read_text())\n        page = (ROOT / \"frontend\" / \"index.html\").read_text()\n        self.assertIn(\"displayName\", page)\n        self.assertIn(\"role\", page)\n\nif __name__ == \"__main__\":\n    unittest.main()\n"}),
+            ("shell.run", {"command": "npm run build"}),
+            ("shell.run", {"command": "npm test"}),
+            ("process.start", {"command": "py -3 backend/server.py"}),
         ],
     }
     sequence = sequences.get(kind)
@@ -129,23 +150,26 @@ def next_operation(kind: str, calls: list[str]) -> tuple[str | None, dict[str, A
             ("fs.read", {"path": "SCENARIO.md"}),
             ("fs.write", {"path": "server.py", "content": server}),
             ("fs.write", {"path": "README.md", "content": "Evaluation full-stack implementation: local profile API and browser client.\n"}),
-            ("shell.run", {"command": "python -m py_compile server.py && echo build passed && python -c \"import ast; ast.parse(open('server.py', encoding='utf-8').read()); print('test passed')\""}),
-            ("process.start", {"command": "python server.py"}),
+            ("shell.run", {"command": "py -3 -m py_compile server.py && echo build passed"}),
+            ("process.start", {"command": "py -3 server.py"}),
         ]
-        # process.wait_http and browser steps are filled below because the opaque
-        # processId only appears in the preceding tool result.
-        if any(name.endswith("process_start") or name == "process.start" for name in calls):
-            if not any(name.endswith("process_wait_http") or name == "process.wait_http" for name in calls):
-                return "process.wait_http", {"processId": "__PROCESS_ID__", "url": "http://127.0.0.1:18091/", "expectedStatus": 200}
-            sequence.extend([
-                ("browser.trace.start", {}),
-                ("browser.open", {"url": "http://127.0.0.1:18091/"}),
-                ("browser.click", {"selector": "#load"}),
-                ("browser.verify", {"checks": [{"type": "textContains", "value": "Ada Engineer"}, {"type": "responseStatus", "value": 200, "urlContains": "/api/profile"}]}),
-                ("browser.trace.stop", {}),
-                ("git.review", {}),
-                ("git.diff", {}),
-            ])
+    # process.wait_http and browser steps are filled below because the opaque
+    # processId only appears in the preceding tool result.
+    if kind in {"full-stack", "split"} and any(
+        name.endswith("process_start") or name == "process.start" for name in calls
+    ):
+        port = 18092 if kind == "split" else 18091
+        url = f"http://127.0.0.1:{port}/"
+        sequence.extend([
+            ("process.wait_http", {"processId": "__PROCESS_ID__", "url": url, "expectedStatus": 200}),
+            ("browser.trace.start", {}),
+            ("browser.open", {"url": url}),
+            ("browser.click", {"selector": "#load"}),
+            ("browser.verify", {"checks": [{"type": "textContains", "value": "Ada Engineer"}, {"type": "responseStatus", "value": 200, "urlContains": "/api/profile"}]}),
+            ("browser.trace.stop", {}),
+            ("git.review", {}),
+            ("git.diff", {}),
+        ])
     # Calls such as shell.run and fs.read intentionally occur more than once:
     # first to reproduce/inspect, then to verify. Advance by the completed
     # sequence position instead of treating an operation name as a set.

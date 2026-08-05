@@ -34,6 +34,8 @@ dependencies {
 	implementation("com.fasterxml.jackson.dataformat:jackson-dataformat-yaml")
 	implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
 	implementation("org.apache.pdfbox:pdfbox:3.0.5")
+	implementation("org.apache.poi:poi-ooxml:5.4.1")
+	implementation("org.apache.poi:poi-scratchpad:5.4.1")
 	implementation("org.jsoup:jsoup:1.18.3")
 	runtimeOnly("com.h2database:h2")
 	testImplementation("org.springframework.boot:spring-boot-starter-actuator-test")

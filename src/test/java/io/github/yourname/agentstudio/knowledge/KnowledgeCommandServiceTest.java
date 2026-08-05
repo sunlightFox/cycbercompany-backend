@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 
 import io.github.yourname.agentstudio.security.ActorContext;
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -16,6 +17,7 @@ import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts.FontName;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.mock.web.MockMultipartFile;
@@ -56,6 +58,35 @@ class KnowledgeCommandServiceTest {
         ArgumentCaptor<KnowledgeDocumentEntity> document = ArgumentCaptor.forClass(KnowledgeDocumentEntity.class);
         verify(fixture.documents).save(document.capture());
         assertThat(document.getValue().extractedText()).contains("PDF source text");
+    }
+
+    @Test
+    void extractsSheetNamesAndValuesFromXlsxUploads() throws Exception {
+        Fixture fixture = fixture();
+        var upload = new MockMultipartFile(
+                "file",
+                "sales.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                xlsx());
+
+        fixture.service.ingestFile("knowledge-1", upload, ACTOR);
+
+        ArgumentCaptor<KnowledgeDocumentEntity> document = ArgumentCaptor.forClass(KnowledgeDocumentEntity.class);
+        verify(fixture.documents).save(document.capture());
+        assertThat(document.getValue().extractedText())
+                .contains("[Sheet: Sales]", "Revenue", "1200", "400");
+    }
+
+    @Test
+    void extractsTextFromLegacyDocUploads() throws Exception {
+        Fixture fixture = fixture();
+        var upload = new MockMultipartFile("file", "legacy-sample.doc", "application/msword", legacyDoc());
+
+        fixture.service.ingestFile("knowledge-1", upload, ACTOR);
+
+        ArgumentCaptor<KnowledgeDocumentEntity> document = ArgumentCaptor.forClass(KnowledgeDocumentEntity.class);
+        verify(fixture.documents).save(document.capture());
+        assertThat(document.getValue().extractedText()).contains("This is page 1");
     }
 
     @Test
@@ -107,6 +138,26 @@ class KnowledgeCommandServiceTest {
             }
             document.save(output);
             return output.toByteArray();
+        }
+    }
+
+    private static byte[] xlsx() throws Exception {
+        try (var workbook = new XSSFWorkbook(); var output = new ByteArrayOutputStream()) {
+            var sheet = workbook.createSheet("Sales");
+            sheet.createRow(0).createCell(0).setCellValue("Revenue");
+            sheet.createRow(1).createCell(0).setCellValue(1200);
+            sheet.getRow(1).createCell(1).setCellValue(800);
+            sheet.getRow(1).createCell(2).setCellFormula("A2-B2");
+            workbook.getCreationHelper().createFormulaEvaluator().evaluateAll();
+            workbook.write(output);
+            return output.toByteArray();
+        }
+    }
+
+    private static byte[] legacyDoc() throws Exception {
+        try (InputStream input = KnowledgeCommandServiceTest.class.getResourceAsStream("/legacy-sample.doc")) {
+            assertThat(input).as("legacy DOC fixture").isNotNull();
+            return input.readAllBytes();
         }
     }
 

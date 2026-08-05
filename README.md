@@ -123,10 +123,12 @@ the local companion is registered automatically and can act on the signed-in use
 .\scripts\start-personal-local.ps1 -Workspace D:\work\my-project
 ```
 
-The companion remains a separate process and connects to the backend through the normal node
-protocol. Do not add it to Docker Compose: a container would operate on the container filesystem,
-not the user's desktop. Switching the execution mode in the UI exposes registered-node selection
-and management; the default personal-local UI does not expose node terminology.
+This launches the compose stack and the local companion together in the background. Use
+`.\scripts\stop-personal-local.ps1` to shut both down manually. The companion remains a separate
+process and connects to the backend through the normal node protocol. Do not add it to Docker
+Compose: a container would operate on the container filesystem, not the user's desktop.
+Switching the execution mode in the UI exposes registered-node selection and management; the
+default personal-local UI does not expose node terminology.
 
 ## Frontend Repository
 

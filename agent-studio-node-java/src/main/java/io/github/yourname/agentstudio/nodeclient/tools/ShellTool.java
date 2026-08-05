@@ -134,6 +134,9 @@ public final class ShellTool {
     }
 
     private Path resolveCwd(String requestedCwd) {
+        if (requestedCwd != null && !requestedCwd.isBlank()) {
+            rejectPlaceholderPath(requestedCwd, "cwd");
+        }
         Path candidate = requestedCwd == null || requestedCwd.isBlank()
                 ? workspaceRoot
                 : Path.of(requestedCwd);
@@ -152,6 +155,26 @@ public final class ShellTool {
             return realPath;
         } catch (IOException ex) {
             throw new IllegalArgumentException("Cannot resolve working directory.", ex);
+        }
+    }
+
+    private static void rejectPlaceholderPath(String requested, String argumentName) {
+        String normalized = requested.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
+        List<String> placeholders = List.of(
+                "<path>",
+                "<absolute path>",
+                "<folder>",
+                "<directory>",
+                "<dir>",
+                "<cwd>",
+                "<workspace>",
+                "<project root>",
+                "<desktop>",
+                "<desktoppath>",
+                "<desktop path>");
+        if (placeholders.stream().anyMatch(normalized::contains)) {
+            throw new IllegalArgumentException(argumentName
+                    + " contains an unreplaced placeholder. Use a concrete working directory returned by an inspection tool or provided by the user, or omit cwd.");
         }
     }
 

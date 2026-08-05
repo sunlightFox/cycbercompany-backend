@@ -258,7 +258,9 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
             Thread.currentThread().interrupt();
             throw new ModelGatewayException("Model provider stream was interrupted.", ex);
         } catch (IOException ex) {
-            throw new ModelGatewayException("Model provider stream failed: " + ex.getMessage(), ex);
+            // Connect/read timeouts and socket resets are transport failures. Keep them
+            // retryable so the bounded coding loop can recover from provider hiccups.
+            throw new ModelTransientException("Model provider stream transport failed: " + ex.getMessage(), null, ex);
         }
     }
 

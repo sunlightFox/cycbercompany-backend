@@ -1435,8 +1435,8 @@ public class RunCommandService {
                   only for an explicit desktop-organization request. Do not create temporary files in the desktop root,
                   and do not use a write-then-delete sequence to compensate for choosing the wrong tool.
                 - For system.shell.run, only the command is required. Omit cwd unless the user's current request
-                  explicitly names an existing absolute working directory. Do not invent placeholders such as
-                  /home/user/projects, project roots, or sample paths; an invalid cwd makes an otherwise valid
+                  explicitly names an existing absolute working directory. Do not invent placeholder path strings,
+                  project roots, sample paths, or angle-bracket labels; an invalid cwd makes an otherwise valid
                   command fail. If no working directory is requested, leave cwd absent and let the node use its
                   configured default.
                 - After a side effect, use an advertised verification or status capability when available. Report

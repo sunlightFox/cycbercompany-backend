@@ -87,11 +87,88 @@ function Get-FixtureNodeLabel {
     return "evaluation-fixture-$($hex.Substring(0, 16))"
 }
 
+function Assert-FixtureFileContains {
+    param(
+        [Parameter(Mandatory = $true)][string]$Workspace,
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][string]$Expected
+    )
+
+    $path = Join-Path $Workspace $RelativePath
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        Stop-Preflight "Fixture baseline is missing $RelativePath. Create a fresh fixture."
+    }
+    $content = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+    if (-not $content.Contains($Expected)) {
+        Stop-Preflight "Fixture baseline for $RelativePath no longer matches $Scenario. Create a fresh fixture."
+    }
+}
+
+function Assert-FixturePathMissing {
+    param(
+        [Parameter(Mandatory = $true)][string]$Workspace,
+        [Parameter(Mandatory = $true)][string]$RelativePath
+    )
+
+    if (Test-Path -LiteralPath (Join-Path $Workspace $RelativePath)) {
+        Stop-Preflight "Fixture baseline already contains $RelativePath. Create a fresh fixture."
+    }
+}
+
+function Test-FixtureBaseline {
+    param(
+        [Parameter(Mandatory = $true)][string]$Workspace,
+        [Parameter(Mandatory = $true)][string]$ScenarioName
+    )
+
+    $status = @(& git -C $Workspace status --porcelain 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        Stop-Preflight "Cannot inspect fixture Git baseline. Create a fresh fixture. $($status -join ' ')"
+    }
+    if ($status.Count -gt 0) {
+        Stop-Preflight "Fixture has uncommitted changes and cannot be reused. Create a fresh fixture."
+    }
+    $commitCount = @(& git -C $Workspace rev-list --count HEAD 2>&1)
+    if ($LASTEXITCODE -ne 0 -or $commitCount.Count -ne 1 -or $commitCount[0].Trim() -ne "1") {
+        Stop-Preflight "Fixture no longer has its one-commit baseline and cannot be reused. Create a fresh fixture."
+    }
+
+    switch ($ScenarioName) {
+        "failed-test-minimal-fix" {
+            Assert-FixtureFileContains -Workspace $Workspace -RelativePath "TaxCalculator.java" -Expected "return amount / 100;"
+        }
+        "existing-repository-feature" {
+            Assert-FixtureFileContains -Workspace $Workspace -RelativePath "TaskRepository.java" -Expected "public List<Task> all() { return tasks; }"
+            $repository = Get-Content -LiteralPath (Join-Path $Workspace "TaskRepository.java") -Raw -Encoding UTF8
+            if ($repository -match 'completed\s*\(') {
+                Stop-Preflight "Fixture baseline already contains TaskRepository.completed(). Create a fresh fixture."
+            }
+            Assert-FixturePathMissing -Workspace $Workspace -RelativePath "TaskRepositoryCompletedTest.java"
+        }
+        "split-frontend-backend" {
+            Assert-FixtureFileContains -Workspace $Workspace -RelativePath "backend/README.md" -Expected "Create the Java backend here."
+            Assert-FixtureFileContains -Workspace $Workspace -RelativePath "frontend/README.md" -Expected "Create the browser client here."
+            Assert-FixturePathMissing -Workspace $Workspace -RelativePath "backend/server.py"
+            Assert-FixturePathMissing -Workspace $Workspace -RelativePath "frontend/index.html"
+            Assert-FixturePathMissing -Workspace $Workspace -RelativePath "frontend/package.json"
+        }
+        "long-task-recovery" {
+            Assert-FixtureFileContains -Workspace $Workspace -RelativePath "App.java" -Expected "replace this starter with the requested recovered workflow"
+            Assert-FixturePathMissing -Workspace $Workspace -RelativePath "AppTest.java"
+        }
+        "minimal-full-stack" {
+            Assert-FixturePathMissing -Workspace $Workspace -RelativePath "package.json"
+            Assert-FixturePathMissing -Workspace $Workspace -RelativePath "index.html"
+            Assert-FixturePathMissing -Workspace $Workspace -RelativePath "src"
+        }
+    }
+}
+
 function Test-NodeTools {
     param([object]$NodeDetail, [string[]]$Patterns)
 
-    # 显式两层循环避免嵌套 Where-Object 的 $_ 变量互相遮蔽。
-    $availableNames = @($NodeDetail.tools | ForEach-Object { $_.name })
+    # 只把当前启用的工具视为可用；节点 capability snapshot 可能包含已禁用条目。
+    $availableNames = @($NodeDetail.tools | Where-Object { $_.enabled -eq $true } | ForEach-Object { $_.name })
     foreach ($requiredPattern in @($Patterns)) {
         $matched = $false
         foreach ($availableName in $availableNames) {
@@ -155,6 +232,9 @@ if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
     if ($marker -notmatch $expectedMarkerPattern) {
         Stop-Preflight "Fixture marker scenario does not match the requested scenario."
     }
+}
+if ($RequireFixtureMarker) {
+    Test-FixtureBaseline -Workspace $safeWorkingDirectory -ScenarioName $Scenario
 }
 $fixtureNodeLabel = if ($RequireFixtureMarker) { Get-FixtureNodeLabel $safeWorkingDirectory } else { $null }
 $requiredNodeLabels = @($NodeLabels)

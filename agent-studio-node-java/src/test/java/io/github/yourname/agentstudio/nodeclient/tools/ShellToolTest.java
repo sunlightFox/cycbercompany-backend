@@ -39,6 +39,17 @@ class ShellToolTest {
     }
 
     @Test
+    void rejectsUnreplacedCwdPlaceholdersBeforeStartingShell() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-node-shell-placeholder");
+        ShellTool tool = new ShellTool(workspace, true);
+
+        var result = tool.run(Map.of("command", "echo should-not-run", "cwd", "<path>"));
+
+        assertFalse(result.success());
+        assertTrue(result.errorMessage().contains("unreplaced placeholder"));
+    }
+
+    @Test
     void systemAccessAcceptsAWorkingDirectoryOutsideTheWorkspace() throws Exception {
         Path workspace = Files.createTempDirectory("agent-studio-node-shell");
         Path outside = Files.createTempDirectory("agent-studio-node-system-shell");

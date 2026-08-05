@@ -109,6 +109,13 @@ public final class DesktopOrganizationTool {
         try {
             String source = requiredSegment(arguments, "source");
             Path sourcePath = desktopRoot.resolve(source).normalize();
+            if (Files.isDirectory(sourcePath) && !Files.isSymbolicLink(sourcePath)) {
+                return ToolExecutionResult.failure(
+                        "desktop.organize.delete does not delete directories. Stop retrying this tool; "
+                                + "inspect the Desktop with system.desktop.organize.list, then after confirming "
+                                + "the exact directory target use system.fs.delete with its desktopPath and "
+                                + "recursive=true only when deleting its contents was explicitly requested.");
+            }
             if (Files.isSymbolicLink(sourcePath) || !Files.isRegularFile(sourcePath)) {
                 throw new IllegalArgumentException("source must name a top-level regular desktop file.");
             }

@@ -1,8 +1,9 @@
 package io.github.yourname.agentstudio.knowledge;
 
 import io.github.yourname.agentstudio.security.ActorContext;
+import io.github.yourname.agentstudio.document.OfficeDocumentTextExtractor;
+import io.github.yourname.agentstudio.document.PdfDocumentTextExtractor;
 import java.nio.charset.StandardCharsets;
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -11,13 +12,6 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import org.apache.pdfbox.Loader;
-import org.apache.pdfbox.pdmodel.PDDocument;
-import org.apache.pdfbox.text.PDFTextStripper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.jsoup.Jsoup;
 import org.springframework.stereotype.Service;
@@ -42,7 +36,6 @@ public class KnowledgeCommandService {
      * 相邻 chunk 的重叠字符数。重叠能减少“答案刚好跨两个 chunk 边界”导致召回失败的问题。
      */
     private static final int DEFAULT_CHUNK_OVERLAP = 1_500;
-    private static final Pattern OPENXML_TEXT_NODE = Pattern.compile("<(?:[A-Za-z0-9]+:)?t[^>]*>(.*?)</(?:[A-Za-z0-9]+:)?t>");
 
     private final KnowledgeBaseRepository bases;
     private final KnowledgeDocumentRepository documents;
@@ -294,17 +287,20 @@ public class KnowledgeCommandService {
         if (isLikelyPlainText(lowerName, contentType)) {
             return new String(bytes, StandardCharsets.UTF_8);
         }
+        if (OfficeDocumentTextExtractor.supports(sourceName)) {
+            return OfficeDocumentTextExtractor.extract(sourceName, bytes);
+        }
         if (lowerName.endsWith(".docx")) {
-            return extractOfficeOpenXml(bytes, "word/");
+            return OfficeDocumentTextExtractor.extract(sourceName, bytes);
         }
         if (lowerName.endsWith(".xlsx")) {
-            return extractOfficeOpenXml(bytes, "xl/");
+            return OfficeDocumentTextExtractor.extract(sourceName, bytes);
         }
         if (lowerName.endsWith(".pptx")) {
-            return extractOfficeOpenXml(bytes, "ppt/");
+            return OfficeDocumentTextExtractor.extract(sourceName, bytes);
         }
         if (lowerName.endsWith(".pdf")) {
-            return extractPdf(bytes);
+            return PdfDocumentTextExtractor.extract(bytes);
         }
         throw new IllegalArgumentException("Unsupported file type: " + sourceName);
     }
@@ -323,14 +319,6 @@ public class KnowledgeCommandService {
                 || lowerName.endsWith(".log");
     }
 
-    private static String extractPdf(byte[] bytes) {
-        try (PDDocument document = Loader.loadPDF(bytes)) {
-            return new PDFTextStripper().getText(document);
-        } catch (IOException ex) {
-            throw new IllegalArgumentException("Failed to extract text from PDF: " + ex.getMessage(), ex);
-        }
-    }
-
     private static String sourceName(MultipartFile file) {
         if (file == null || file.getOriginalFilename() == null || file.getOriginalFilename().isBlank()) {
             return "uploaded-file";
@@ -344,48 +332,6 @@ public class KnowledgeCommandService {
             cause = cause.getCause();
         }
         return cause.getMessage() == null ? "Failed to ingest file." : cause.getMessage();
-    }
-
-    private static String extractOfficeOpenXml(byte[] bytes, String requiredPrefix) {
-        StringBuilder text = new StringBuilder();
-        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes))) {
-            ZipEntry entry;
-            while ((entry = zip.getNextEntry()) != null) {
-                if (entry.isDirectory()) {
-                    continue;
-                }
-                String name = entry.getName().replace('\\', '/');
-                if ((!name.startsWith(requiredPrefix) && !name.contains("/" + requiredPrefix)) || !name.endsWith(".xml")) {
-                    continue;
-                }
-                byte[] xmlBytes = zip.readNBytes(512_000);
-                String xml = new String(xmlBytes, StandardCharsets.UTF_8);
-                String extracted = extractTextFromOpenXml(xml);
-                if (!extracted.isBlank()) {
-                    text.append(extracted).append('\n');
-                }
-            }
-        } catch (IOException ex) {
-            throw new IllegalArgumentException("Failed to read Office OpenXML file: " + ex.getMessage(), ex);
-        }
-        return text.toString();
-    }
-
-    private static String extractTextFromOpenXml(String xml) {
-        StringBuilder text = new StringBuilder();
-        Matcher matcher = OPENXML_TEXT_NODE.matcher(xml);
-        while (matcher.find()) {
-            text.append(matcher.group(1)).append(' ');
-        }
-        String extracted = text.isEmpty() ? xml.replaceAll("<[^>]+>", " ") : text.toString();
-        return extracted
-                .replace("&amp;", "&")
-                .replace("&lt;", "<")
-                .replace("&gt;", ">")
-                .replace("&quot;", "\"")
-                .replace("&apos;", "'")
-                .replaceAll("\\s+", " ")
-                .trim();
     }
 
     static List<String> splitIntoChunks(String content) {

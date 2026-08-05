@@ -65,6 +65,8 @@ class DesktopOrganizationToolTest {
         assertTrue(deleted.success());
         assertFalse(Files.exists(desktop.resolve("delete-me.txt")));
         assertFalse(directory.success());
+        assertTrue(directory.errorMessage().contains("does not delete directories"));
+        assertTrue(directory.errorMessage().contains("system.fs.delete"));
         assertFalse(traversal.success());
         assertTrue(Files.isDirectory(desktop.resolve("Folder")));
     }

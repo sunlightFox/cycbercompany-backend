@@ -73,6 +73,7 @@ import java.util.stream.Stream;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -121,12 +122,13 @@ class AgentStudioController {
     private final RunWorkflowCheckpointService workflowCheckpoints;
     private final ConversationQueueQueryService conversationQueues;
     private final RunEventPublisher runEvents;
+    private final boolean allowLocalProxy;
 
-    private static boolean isLoopbackRequest(HttpServletRequest request) {
+    static boolean canBootstrapLocalExecutor(HttpServletRequest request, boolean allowLocalProxy) {
         try {
-            return InetAddress.getByName(request.getRemoteAddr()).isLoopbackAddress();
+            return InetAddress.getByName(request.getRemoteAddr()).isLoopbackAddress() || allowLocalProxy;
         } catch (Exception ignored) {
-            return false;
+            return allowLocalProxy;
         }
     }
 
@@ -154,7 +156,8 @@ class AgentStudioController {
             RunQueryService runQueries,
             RunWorkflowCheckpointService workflowCheckpoints,
             ConversationQueueQueryService conversationQueues,
-            RunEventPublisher runEvents) {
+            RunEventPublisher runEvents,
+            @Value("${app.security.allow-local-proxy:false}") boolean allowLocalProxy) {
         this.actors = actors;
         this.conversations = conversations;
         this.attachments = attachments;
@@ -179,6 +182,7 @@ class AgentStudioController {
         this.workflowCheckpoints = workflowCheckpoints;
         this.conversationQueues = conversationQueues;
         this.runEvents = runEvents;
+        this.allowLocalProxy = allowLocalProxy;
     }
 
     @PostMapping("/conversations")
@@ -271,7 +275,7 @@ class AgentStudioController {
     Object bootstrapLocalExecutor(
             @RequestBody(required = false) BootstrapLocalExecutorCommand command,
             HttpServletRequest request) {
-        if (!isLoopbackRequest(request)) {
+        if (!canBootstrapLocalExecutor(request, allowLocalProxy)) {
             throw new IllegalArgumentException("The local executor may only be provisioned from this computer.");
         }
         return nodes.bootstrapLocalExecutor(command, actors.current(request));

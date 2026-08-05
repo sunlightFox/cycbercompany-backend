@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
@@ -589,6 +590,7 @@ public final class FileTool {
         if (requested == null || requested.isBlank()) {
             throw new IllegalArgumentException("Missing required argument: path");
         }
+        rejectPlaceholderPath(requested, "path");
         Path path = Path.of(requested);
         if (!path.isAbsolute()) {
             path = workspaceRoot.resolve(path);
@@ -598,6 +600,29 @@ public final class FileTool {
             throw new IllegalArgumentException("Path must stay inside the configured workspace.");
         }
         return path;
+    }
+
+    private static void rejectPlaceholderPath(String requested, String argumentName) {
+        String normalized = requested.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
+        List<String> placeholders = List.of(
+                "<path>",
+                "<absolute path>",
+                "<file>",
+                "<folder>",
+                "<directory>",
+                "<dir>",
+                "<cwd>",
+                "<workspace>",
+                "<project root>",
+                "<desktop>",
+                "<desktoppath>",
+                "<desktop path>",
+                "<destination>",
+                "<source>");
+        if (placeholders.stream().anyMatch(normalized::contains)) {
+            throw new IllegalArgumentException(argumentName
+                    + " contains an unreplaced placeholder. Use a concrete path returned by an inspection tool or provided by the user.");
+        }
     }
 
     private Map<String, Object> searchMatch(Path file, int lineNumber, String line) {

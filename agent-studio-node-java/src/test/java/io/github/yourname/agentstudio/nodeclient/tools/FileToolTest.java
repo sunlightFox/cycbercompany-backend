@@ -149,6 +149,20 @@ class FileToolTest {
     }
 
     @Test
+    void rejectsUnreplacedPathPlaceholdersBeforeResolvingPaths() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-node-placeholder-path");
+        FileTool tool = new FileTool(workspace, true);
+
+        var mkdir = tool.createDirectory(Map.of("path", "<path>"));
+        var write = tool.write(Map.of("path", "<path>/status.txt", "content", "blocked"));
+
+        assertFalse(mkdir.success());
+        assertFalse(write.success());
+        assertTrue(mkdir.errorMessage().contains("unreplaced placeholder"));
+        assertTrue(write.errorMessage().contains("unreplaced placeholder"));
+    }
+
+    @Test
     void searchesSourceFilesWithRelativePathsAndLineNumbers() throws Exception {
         Path workspace = Files.createTempDirectory("agent-studio-node-search");
         Files.createDirectories(workspace.resolve("src"));
