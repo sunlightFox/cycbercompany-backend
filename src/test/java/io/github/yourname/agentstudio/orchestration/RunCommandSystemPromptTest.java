@@ -247,7 +247,9 @@ class RunCommandSystemPromptTest {
                 .contains("system.fs.mkdir")
                 .contains("system.fs.write with that path")
                 .contains("only for an explicit desktop-organization request")
-                .contains("Do not create temporary files in the desktop root");
+                .contains("Do not create temporary files in the desktop root")
+                .contains("Do not invent placeholder path strings")
+                .contains("angle-bracket labels");
     }
 
     @Test

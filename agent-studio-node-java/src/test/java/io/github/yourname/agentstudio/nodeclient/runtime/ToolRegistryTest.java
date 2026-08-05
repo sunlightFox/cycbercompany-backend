@@ -149,6 +149,7 @@ class ToolRegistryTest {
                 NodeAccessMode.SYSTEM,
                 desktop);
 
+        var mkdir = registry.capabilities().stream().filter(item -> "system.fs.mkdir".equals(item.name())).findFirst().orElseThrow();
         var move = registry.capabilities().stream().filter(item -> "system.fs.move".equals(item.name())).findFirst().orElseThrow();
         var shell = registry.capabilities().stream().filter(item -> "system.shell.run".equals(item.name())).findFirst().orElseThrow();
         var scopedList = registry.capabilities().stream()
@@ -178,6 +179,11 @@ class ToolRegistryTest {
         var commandSchema = (java.util.Map<String, Object>) shellProperties.get("command");
         assertTrue(commandSchema.get("description").toString().contains(
                 io.github.yourname.agentstudio.nodeclient.tools.ShellTool.commandDialectDescription()));
+        @SuppressWarnings("unchecked")
+        var mkdirProperties = (java.util.Map<String, Object>) mkdir.inputSchema().get("properties");
+        @SuppressWarnings("unchecked")
+        var mkdirPathSchema = (java.util.Map<String, Object>) mkdirProperties.get("path");
+        assertTrue(mkdirPathSchema.get("description").toString().contains("Concrete absolute directory path"));
         assertEquals(java.util.List.of(), scopedList.inputSchema().getOrDefault("required", java.util.List.of()));
         assertEquals(java.util.List.of("filename", "content"), scopedWrite.inputSchema().get("required"));
         assertEquals(java.util.List.of("source", "category"), scopedMove.inputSchema().get("required"));
