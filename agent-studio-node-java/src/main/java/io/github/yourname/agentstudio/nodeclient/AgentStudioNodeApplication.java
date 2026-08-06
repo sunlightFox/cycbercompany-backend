@@ -209,7 +209,7 @@ public class AgentStudioNodeApplication {
                 """);
     }
 
-    private static Path workspacePath(Map<String, String> options) {
+    static Path workspacePath(Map<String, String> options) {
         String configured = options.get("workspace");
         Path workspace = configured == null || configured.isBlank()
                 ? Path.of(System.getProperty("user.dir"))

@@ -167,6 +167,25 @@ Switching the execution mode in the UI exposes registered-node selection and man
 default personal-local UI does not expose node terminology.
 The Nodes page also provides a Disconnect action for the managed local executor when you want to
 close the companion from the server side.
+
+### Packaged Windows companion
+
+Build a self-contained companion when the user should not need Gradle or a separately installed
+JDK. On its first launch, the packaged GUI waits for the user to confirm the project directory;
+after that first successful connection it reconnects automatically when opened and preserves the
+configured server and workspace:
+
+```powershell
+$env:JAVA_HOME = 'C:\Program Files\Java\jdk-21'
+.\scripts\package-node-windows.ps1 `
+  -Type app-image `
+  -Server http://127.0.0.1:8080 `
+  -Workspace D:\work\my-project
+```
+
+Use `-Type msi` to create an installer with Start menu and desktop shortcuts. Pass `-ManualStart`
+when the user should explicitly press Start on every launch.
+
 Docker Compose deployment files keep the executor service behind the `local-executor`
 profile; use `docker compose --profile local-executor up -d` only when you explicitly
 want the bundled executor service to start with the server.

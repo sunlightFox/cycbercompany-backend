@@ -452,6 +452,7 @@ public class RunCommandService {
             }
             events.publish(runId, RunEventType.RUN_STARTED, "Run accepted by local coordinator.", actor);
             events.publish(runId, RunEventType.STEP_STARTED, "single-agent", actor);
+            publishProgress(runId, "正在分析请求并准备执行步骤。", actor);
 
             // 运行时只反序列化 Run 中持久化的绑定，再从不可变 Release Store 读取正文。
             // 绝不回头读取当前选择项或用活动安装目录替换旧版本。
@@ -462,6 +463,9 @@ public class RunCommandService {
             // 预检索与模型工具调用使用同一份 RunSpec binding。这样 Agent/Run 没有授权的
             // knowledge_search、web_search 或 MCP 工具，不会因为“自动检索”路径而被绕过。
             boolean webSearchRequested = shouldSearchWeb(command, spec.toolBindings());
+            publishProgress(runId,
+                    webSearchRequested ? "正在检索知识库和网页信息。" : "正在检查可用上下文并准备回答。",
+                    actor);
             EvidenceBundle evidence = suppressAutomaticKnowledgeForCurrentWebRequest(command, webSearchRequested)
                     ? new EvidenceBundle(List.of())
                     : invokeKnowledgeRetrieval(spec.toolBindings(), command.text(), runId, workspaceScope, actor);
@@ -517,6 +521,7 @@ public class RunCommandService {
                             + (webRetrievalTrace.isBlank() ? "" : ", " + webRetrievalTrace)
                             + (webRetrievalNote.isBlank() ? "" : ", note=" + webRetrievalNote),
                     actor);
+            publishProgress(runId, "检索完成，正在根据上下文生成回答。", actor);
             List<ModelGateway.ModelMessage> messages = new ArrayList<>();
             messages.add(new ModelGateway.ModelMessage(
                     "system",
@@ -539,6 +544,7 @@ public class RunCommandService {
                         ? "coding-agent"
                         : "node-interaction";
                 events.publish(runId, RunEventType.STEP_STARTED, agentStep, actor);
+                publishProgress(runId, "正在按步骤调用工具并验证结果。", actor);
                 ApprovalMode approvalMode = ApprovalMode.from(spec.approvalMode());
                 answerContent = sanitizeModelOutput(spec.executionMode() == RunExecutionMode.NODE_INTERACTION
                         ? codingAgentLoop.executeInteraction(
@@ -582,6 +588,7 @@ public class RunCommandService {
                 }
                 answerContent = sanitizeModelOutput(answer.content());
             }
+            publishProgress(runId, "正在整理最终回答。", actor);
             answerContent = finalizeCodingDelivery(run, command, spec.executionMode(), answerContent, actor);
             publishCitedRetrievalSources(runId, evidence, webResults, answerContent, actor);
             if (!streamedDeltas) {
@@ -749,6 +756,7 @@ public class RunCommandService {
                     ? "coding-agent resumed"
                     : "node-interaction resumed";
             events.publish(runId, RunEventType.STEP_STARTED, agentStep, actor);
+            publishProgress(runId, "审批已完成，正在继续工具步骤。", actor);
             ApprovalMode approvalMode = ApprovalMode.from(spec.approvalMode());
             CodingWorkspaceScope workspaceScope = CodingWorkspaceScope.from(spec.workingDirectory());
             String answer = sanitizeModelOutput(spec.executionMode() == RunExecutionMode.NODE_INTERACTION
@@ -777,6 +785,7 @@ public class RunCommandService {
                                     workspaceScope,
                                     approvalMode));
             events.publish(runId, RunEventType.STEP_COMPLETED, agentStep, actor);
+            publishProgress(runId, "正在整理最终回答。", actor);
             answer = finalizeCodingDelivery(run, command, spec.executionMode(), answer, actor);
             for (String part : tokenBatches(answer)) {
                 events.publish(runId, RunEventType.TOKEN_DELTA, part, actor);
@@ -792,6 +801,11 @@ public class RunCommandService {
         } catch (Exception ex) {
             failUnlessCancelled(runId, ex, actor);
         }
+    }
+
+    /** Publishes a user-visible status without exposing hidden model reasoning or raw arguments. */
+    private void publishProgress(String runId, String message, ActorContext actor) {
+        events.publish(runId, RunEventType.PROGRESS_UPDATE, message, actor);
     }
 
     /**

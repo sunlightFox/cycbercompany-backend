@@ -15,6 +15,8 @@ public enum RunEventType {
     RUN_SPEC_RESOLVED,
     /** Run 开始执行。 */
     RUN_STARTED,
+    /** Safe user-facing progress summary; never contains hidden model reasoning. */
+    PROGRESS_UPDATE,
     /** 编排步骤开始。 */
     STEP_STARTED,
     /** 知识库或网页检索完成。 */

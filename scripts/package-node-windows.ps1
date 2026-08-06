@@ -3,11 +3,24 @@ param(
     [ValidateSet('app-image', 'msi')]
     [string]$Type = 'app-image',
     [string]$OutputDirectory = (Join-Path (Get-Location) 'build\windows-node'),
-    [string]$Name = 'AgentStudioNode'
+    [string]$Name = 'AgentStudioNode',
+    [string]$Server = 'http://127.0.0.1:8080',
+    [string]$Workspace = $env:USERPROFILE,
+    [switch]$ManualStart
 )
 
 $ErrorActionPreference = 'Stop'
 $root = (Get-Item (Join-Path $PSScriptRoot '..')).FullName
+$serverUri = $null
+if (-not [Uri]::TryCreate($Server, [UriKind]::Absolute, [ref]$serverUri) `
+        -or $serverUri.Scheme -notin @('http', 'https') `
+        -or -not $serverUri.IsLoopback) {
+    throw 'Server must be a loopback HTTP(S) URL, for example http://127.0.0.1:8080.'
+}
+if (-not (Test-Path -LiteralPath $Workspace -PathType Container)) {
+    throw "Workspace must be an existing directory: $Workspace"
+}
+$Workspace = (Resolve-Path -LiteralPath $Workspace).Path
 $gradle = Join-Path $root 'gradlew.bat'
 if (-not (Test-Path -LiteralPath $gradle -PathType Leaf)) {
     throw "Could not find gradlew.bat under $root"
@@ -42,12 +55,24 @@ try {
         '--main-class', 'io.github.yourname.agentstudio.nodeclient.AgentStudioNodeApplication',
         '--dest', $destination,
         '--app-version', '0.0.1',
-        '--arguments', 'gui'
+        '--arguments', 'gui',
+        '--arguments', '--server',
+        '--arguments', $Server,
+        '--arguments', '--workspace',
+        '--arguments', $Workspace
     )
+    if (-not $ManualStart) {
+        $arguments += @('--arguments', '--auto-start')
+    }
+    if ($Type -eq 'msi') {
+        $arguments += @('--win-menu', '--win-shortcut', '--win-dir-chooser')
+    }
     & $jpackage @arguments
     if ($LASTEXITCODE -ne 0) { throw "jpackage failed with exit code $LASTEXITCODE" }
     Write-Host "Windows node package created under $destination"
-    Write-Host 'The GUI uses http://127.0.0.1:8080 and the loopback local-executor bootstrap endpoint.'
+    Write-Host "Server: $Server"
+    Write-Host "Workspace: $Workspace"
+    Write-Host "Start when the GUI opens: $(-not $ManualStart)"
 }
 finally {
     Pop-Location

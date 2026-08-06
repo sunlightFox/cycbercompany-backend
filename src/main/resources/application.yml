@@ -2,7 +2,10 @@ spring:
   application:
     name: spring-agent-studio
   datasource:
-    url: jdbc:h2:file:${APP_DATA_DIR:./data}/db/agent-studio;AUTO_SERVER=TRUE
+    # A local data directory has one owning backend process. Allowing H2's
+    # AUTO_SERVER mode here makes accidental second launches look supported,
+    # but concurrent writers can corrupt the MVStore file.
+    url: jdbc:h2:file:${APP_DATA_DIR:./data}/db/agent-studio;DB_CLOSE_ON_EXIT=FALSE
     username: sa
     password:
   flyway:

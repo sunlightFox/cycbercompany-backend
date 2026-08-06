@@ -91,7 +91,9 @@ public class McpRepositoryService {
                 String id = text(item, "_id", text(item, "name", ""));
                 String name = text(item, "name", text(item, "alias", id));
                 String description = description(item.path("description"));
-                String url = text(item, "url", MARKET_URL + "/server/" + id);
+                // MCPMarket's `url` field points to the implementation repository (often GitHub).
+                // The management UI must always link back to the selected MCPMarket entry.
+                String url = marketUri("/server/" + id).toString();
                 String endpoint = endpoint(item);
                 results.add(new McpRepositoryView(id, name, description, url, "", item.path("stars").asInt(0),
                         "MCPMARKET", endpoint == null ? "REPOSITORY" : "REMOTE", null,

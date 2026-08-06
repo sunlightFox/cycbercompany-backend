@@ -38,6 +38,7 @@ class SecurityConfig {
         if (security.tokenMode()) {
             http.authorizeHttpRequests(auth -> auth
                     .requestMatchers(HttpMethod.GET, "/actuator/health").permitAll()
+                    .requestMatchers(HttpMethod.GET, "/api/v1/system/status").permitAll()
                     // Swagger UI 和 OpenAPI JSON 是学习/调试入口。TOKEN 模式下允许打开页面，
                     // 真正调用受保护业务 API 时仍需在 Swagger Authorize 中填写 Bearer Token。
                     .requestMatchers(
@@ -54,6 +55,7 @@ class SecurityConfig {
         } else {
             http.authorizeHttpRequests(auth -> auth
                     .requestMatchers(HttpMethod.GET, "/actuator/health").permitAll()
+                    .requestMatchers(HttpMethod.GET, "/api/v1/system/status").permitAll()
                     .requestMatchers("/h2-console/**").permitAll()
                     .anyRequest().permitAll());
         }

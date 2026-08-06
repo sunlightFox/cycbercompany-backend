@@ -43,6 +43,9 @@ class ApiTokenSecurityIntegrationTest {
     void healthEndpointRemainsPublic() throws Exception {
         mvc.perform(get("/actuator/health"))
                 .andExpect(status().isOk());
+
+        mvc.perform(get("/api/v1/system/status"))
+                .andExpect(status().isOk());
     }
 
     @Test

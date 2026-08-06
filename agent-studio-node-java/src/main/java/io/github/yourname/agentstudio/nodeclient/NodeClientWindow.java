@@ -15,11 +15,14 @@ import java.awt.Insets;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.net.http.HttpClient;
+import java.nio.file.Path;
 import java.nio.file.Files;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
+import javax.swing.JComponent;
+import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
@@ -51,19 +54,27 @@ final class NodeClientWindow {
     private final JLabel statusDot = new JLabel("●");
     private final JLabel statusText = new JLabel("等待启动");
     private final JLabel statusDetail = new JLabel("节点尚未连接");
-    private final JLabel serverValue = valueLabel(EMBEDDED_SERVER_URL);
-    private final JLabel deviceValue = valueLabel(EMBEDDED_NODE_NAME);
+    private final JLabel serverValue;
+    private final JLabel deviceValue;
+    private final JLabel workspaceValue;
+    private final JButton workspaceButton = new JButton("选择...");
     private final JButton actionButton = new JButton("启动");
     private volatile NodeWebSocketClient activeClient;
     private volatile Thread worker;
     private volatile boolean stopping;
     private boolean registered;
+    private String selectedWorkspace;
 
     private NodeClientWindow(Map<String, String> options, ObjectMapper objectMapper, HttpClient httpClient) {
         this.baseOptions = Map.copyOf(options);
         this.objectMapper = objectMapper;
         this.httpClient = httpClient;
         this.configStore = new NodeConfigStore(objectMapper, AgentStudioNodeApplication.localConfigPath(options));
+        Map<String, String> resolved = resolvedOptions(options);
+        this.serverValue = valueLabel(resolved.get("server"));
+        this.deviceValue = valueLabel(resolved.get("name"));
+        this.selectedWorkspace = resolved.get("workspace");
+        this.workspaceValue = valueLabel(selectedWorkspace);
         loadRegistration();
         buildWindow();
     }
@@ -71,12 +82,18 @@ final class NodeClientWindow {
     static void show(Map<String, String> options, ObjectMapper objectMapper, HttpClient httpClient) {
         SwingUtilities.invokeLater(() -> {
             installSystemLookAndFeel();
-            new NodeClientWindow(options, objectMapper, httpClient).frame.setVisible(true);
+            NodeClientWindow window = new NodeClientWindow(options, objectMapper, httpClient);
+            window.frame.setVisible(true);
+            if (window.shouldAutoStart()) {
+                window.startNode();
+            }
         });
     }
 
     private void loadRegistration() {
         if (!Files.exists(configStore.path())) {
+            statusText.setText("准备启动");
+            statusDetail.setText("选择项目目录后点击启动，首次连接会自动完成配置。");
             return;
         }
         try {
@@ -84,6 +101,8 @@ final class NodeClientWindow {
             registered = true;
             serverValue.setText(config.serverUrl());
             deviceValue.setText(config.name());
+            selectedWorkspace = config.workspaceRoot();
+            workspaceValue.setText(selectedWorkspace);
             statusText.setText("已注册");
             statusDetail.setText("点击启动连接服务端");
         } catch (Exception ex) {
@@ -158,9 +177,33 @@ final class NodeClientWindow {
         details.setOpaque(false);
         addDetail(details, 0, "服务地址", serverValue);
         addDetail(details, 1, "设备名称", deviceValue);
-        addDetail(details, 2, "访问范围", valueLabel("当前用户目录"));
+        addDetail(details, 2, "项目目录", workspaceSelector());
         card.add(details, BorderLayout.CENTER);
         return card;
+    }
+
+    private JComponent workspaceSelector() {
+        JPanel panel = new JPanel(new BorderLayout(8, 0));
+        panel.setOpaque(false);
+        workspaceValue.setToolTipText(selectedWorkspace);
+        panel.add(workspaceValue, BorderLayout.CENTER);
+        workspaceButton.setFocusPainted(false);
+        workspaceButton.addActionListener(event -> chooseWorkspace());
+        panel.add(workspaceButton, BorderLayout.EAST);
+        return panel;
+    }
+
+    private void chooseWorkspace() {
+        JFileChooser chooser = new JFileChooser(selectedWorkspace);
+        chooser.setDialogTitle("选择项目工作目录");
+        chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+        chooser.setAcceptAllFileFilterUsed(false);
+        if (chooser.showOpenDialog(frame) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+        selectedWorkspace = chooser.getSelectedFile().toPath().toAbsolutePath().normalize().toString();
+        workspaceValue.setText(selectedWorkspace);
+        workspaceValue.setToolTipText(selectedWorkspace);
     }
 
     private JPanel actionPanel() {
@@ -177,7 +220,7 @@ final class NodeClientWindow {
         return panel;
     }
 
-    private static void addDetail(JPanel panel, int row, String name, JLabel value) {
+    private static void addDetail(JPanel panel, int row, String name, JComponent value) {
         GridBagConstraints constraints = new GridBagConstraints();
         constraints.gridy = row;
         constraints.insets = new Insets(5, 0, 5, 12);
@@ -211,6 +254,7 @@ final class NodeClientWindow {
         }
 
         stopping = false;
+        workspaceButton.setEnabled(false);
         actionButton.setText("停止");
         actionButton.setBackground(STOP_BACKGROUND);
         showStatus(registered ? "正在连接" : "正在注册", "请稍候...", BLUE);
@@ -220,6 +264,8 @@ final class NodeClientWindow {
                     AgentStudioNodeApplication.provisionLocal(options, configStore, objectMapper, httpClient);
                     registered = true;
                     SwingUtilities.invokeLater(() -> showStatus("注册成功", "正在连接服务端...", GREEN));
+                } else {
+                    synchronizeSelectedWorkspace(options);
                 }
                 AgentStudioNodeApplication.start(
                         options, configStore, objectMapper, httpClient, client -> {
@@ -268,11 +314,49 @@ final class NodeClientWindow {
 
     private Map<String, String> fixedOptions() {
         Map<String, String> options = new LinkedHashMap<>(baseOptions);
-        options.put("server", EMBEDDED_SERVER_URL);
-        options.put("name", EMBEDDED_NODE_NAME);
-        options.put("workspace", System.getProperty("user.home"));
+        options.put("workspace", selectedWorkspace);
+        return resolvedOptions(options);
+    }
+
+    /** Keeps a user-selected project directory authoritative across future launches. */
+    private void synchronizeSelectedWorkspace(Map<String, String> options) throws Exception {
+        NodeConfig existing = configStore.load();
+        Path workspace = AgentStudioNodeApplication.workspacePath(options);
+        if (workspace.toString().equals(existing.workspaceRoot())) {
+            return;
+        }
+        configStore.save(new NodeConfig(
+                existing.serverUrl(),
+                existing.nodeId(),
+                existing.nodeSecret(),
+                existing.websocketUrl(),
+                existing.name(),
+                workspace.toString(),
+                existing.accessMode()));
+    }
+
+    private boolean shouldAutoStart() {
+        return shouldAutoStart(baseOptions, registered);
+    }
+
+    static boolean shouldAutoStart(Map<String, String> options, boolean registered) {
+        // A generic installer cannot know the user's project. First launch must let the user
+        // confirm the workspace; later launches can reconnect without another prompt.
+        return registered && booleanOption(options, "auto-start");
+    }
+
+    static Map<String, String> resolvedOptions(Map<String, String> configured) {
+        Map<String, String> options = new LinkedHashMap<>(configured);
+        options.computeIfAbsent("server", ignored -> EMBEDDED_SERVER_URL);
+        options.computeIfAbsent("name", ignored -> EMBEDDED_NODE_NAME);
+        options.computeIfAbsent("workspace", ignored -> System.getProperty("user.home"));
         options.put("access", "workspace");
         return options;
+    }
+
+    private static boolean booleanOption(Map<String, String> options, String name) {
+        String value = options.get(name);
+        return value != null && (value.isBlank() || "true".equalsIgnoreCase(value) || "1".equals(value));
     }
 
     private void showStopped() {
@@ -284,6 +368,7 @@ final class NodeClientWindow {
         actionButton.setText("启动");
         actionButton.setBackground(BLUE);
         actionButton.setEnabled(true);
+        workspaceButton.setEnabled(true);
     }
 
     private void showStatus(String title, String detail, Color color) {
