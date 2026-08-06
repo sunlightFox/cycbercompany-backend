@@ -8,15 +8,27 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Lob;
 import java.time.Instant;
 
+/**
+ * 一次用户请求的持久化运行记录。
+ *
+ * <p>它保存生命周期状态、最终答案、错误、RunSpec 和 Skill 快照摘要。注意它不是消息表：
+ * 用户和助手可见文本仍保存在 conversation/message 中，Run 负责执行过程和审计。
+ */
 @Entity(name = "agent_run")
 public class AgentRunEntity {
 
     @Id
+    /** Run ID。 */
     private String id;
+    /** 租户 ID，所有查询必须带它过滤。 */
     private String tenantId;
+    /** 发起用户。 */
     private String userId;
+    /** 所属会话。 */
     private String conversationId;
+    /** 创建时选择的模型 Profile ID。 */
     private String modelProfileId;
+    /** 创建时选择的 Agent ID。 */
     private String agentId;
 
     /**
@@ -40,14 +52,20 @@ public class AgentRunEntity {
     private String runSpecDigest;
 
     @Enumerated(EnumType.STRING)
+    /** 当前生命周期状态。 */
     private RunStatus status;
 
     @Lob
+    /** 最终回答缓存，方便查询 Run 时不必重新扫描消息。 */
     private String finalAnswer;
     @Lob
+    /** 失败原因或门禁说明。 */
     private String errorMessage;
+    /** Run 创建时间。 */
     private Instant createdAt;
+    /** Run 实际开始执行时间。 */
     private Instant startedAt;
+    /** Run 进入终态时间。 */
     private Instant finishedAt;
 
     protected AgentRunEntity() {

@@ -101,6 +101,45 @@ class NodeServiceApprovalTest {
     }
 
     @Test
+    void highestSystemAccessRemovesNullArgumentsBeforeDispatching() {
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+        tool.updatePolicy(true, false, now);
+        when(sessions.isConnected(NODE_ID)).thenReturn(true);
+        when(sessions.invoke(eq(NODE_ID), any(NodeInvocationDispatch.class), eq(Duration.ofSeconds(45))))
+                .thenReturn(new NodeToolCallResult(
+                        "nodeinv-1", NODE_ID, TOOL_NAME, "SUCCEEDED", Map.of("stdout", "alice"), null));
+        Map<String, Object> arguments = new java.util.LinkedHashMap<>();
+        arguments.put("command", "whoami");
+        arguments.put("cwd", null);
+
+        NodeToolCallResult result = service.callTool(
+                NODE_ID, TOOL_NAME, new CallNodeToolCommand(arguments, 45), ACTOR);
+
+        assertEquals("SUCCEEDED", result.status());
+        ArgumentCaptor<NodeInvocationDispatch> dispatch = ArgumentCaptor.forClass(NodeInvocationDispatch.class);
+        verify(sessions).invoke(eq(NODE_ID), dispatch.capture(), eq(Duration.ofSeconds(45)));
+        assertEquals(Map.of("command", "whoami"), dispatch.getValue().arguments());
+    }
+
+    @Test
+    void highestSystemAccessRejectsDetachedProcessCommandsBeforeCreatingApproval() {
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+        NodeToolEntity systemProcess = new NodeToolEntity(
+                TENANT, NODE_ID, "system.process.start", "start a process", RiskLevel.HIGH, true, true, "{}", now);
+        lenient().when(tools.findByTenantIdAndNodeIdAndName(TENANT, NODE_ID, "system.process.start"))
+                .thenReturn(Optional.of(systemProcess));
+
+        assertThrows(IllegalArgumentException.class, () -> service.callTool(
+                NODE_ID,
+                "system.process.start",
+                new CallNodeToolCommand(Map.of("command", "powershell Start-Process npm"), 45),
+                ACTOR));
+
+        verify(approvals, never()).save(any(NodeToolApprovalEntity.class));
+        verifyNoInteractions(sessions);
+    }
+
+    @Test
     void codingRunApprovalIsLinkedToItsRunAndModelToolCall() {
         AtomicReference<NodeToolApprovalEntity> createdApproval = new AtomicReference<>();
         when(approvals.save(any(NodeToolApprovalEntity.class))).thenAnswer(invocation -> {

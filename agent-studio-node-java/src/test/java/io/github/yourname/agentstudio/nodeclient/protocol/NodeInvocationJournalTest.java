@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -79,5 +80,31 @@ class NodeInvocationJournalTest {
         assertEquals("CANCELLED", cancelled.status());
         assertTrue(cancelled.terminal());
         assertEquals(null, cancelled.startedAt());
+    }
+
+    @Test
+    void finishPreservesNullResultFieldsInJournal() {
+        NodeInvocationJournal journal = new NodeInvocationJournal(new ObjectMapper(), tempDir);
+        journal.accept("nodeinv-1", "shell.run", "sha256:args", 1);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("stdout", "partial output");
+        result.put("exitCode", null);
+
+        NodeJournalEntry finished = journal.finish("nodeinv-1", "FAILED", result, "timed out");
+
+        assertEquals("FAILED", finished.status());
+        assertTrue(finished.result().containsKey("exitCode"));
+        assertEquals(null, finished.result().get("exitCode"));
+    }
+
+    @Test
+    void nullFinishStatusFallsBackToFailed() {
+        NodeInvocationJournal journal = new NodeInvocationJournal(new ObjectMapper(), tempDir);
+        journal.accept("nodeinv-1", "shell.run", "sha256:args", 1);
+
+        NodeJournalEntry finished = journal.finish("nodeinv-1", null, Map.of(), "NullPointerException");
+
+        assertEquals("FAILED", finished.status());
+        assertTrue(finished.terminal());
     }
 }

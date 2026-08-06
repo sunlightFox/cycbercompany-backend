@@ -2,6 +2,7 @@ package io.github.yourname.agentstudio.tool;
 
 import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.skill.SkillRunBinding;
+import java.util.ArrayList;
 import java.util.List;
 
 /** Provider 发现工具时可见的、已经过控制面验证的运行范围。 */
@@ -14,9 +15,9 @@ public record ToolDiscoveryRequest(
         ActorContext actor) {
 
     public ToolDiscoveryRequest {
-        knowledgeBaseIds = knowledgeBaseIds == null ? List.of() : List.copyOf(knowledgeBaseIds);
-        mcpConnectionIds = mcpConnectionIds == null ? List.of() : List.copyOf(mcpConnectionIds);
-        skillBindings = skillBindings == null ? List.of() : List.copyOf(skillBindings);
+        knowledgeBaseIds = copyNonNull(knowledgeBaseIds);
+        mcpConnectionIds = copyNonNull(mcpConnectionIds);
+        skillBindings = copyNonNull(skillBindings);
         if (actor == null) {
             throw new IllegalArgumentException("Tool discovery requires a trusted actor.");
         }
@@ -38,5 +39,18 @@ public record ToolDiscoveryRequest(
             List<String> mcpConnectionIds,
             ActorContext actor) {
         this(runId, nodeId, List.of(), mcpConnectionIds, List.of(), actor);
+    }
+
+    private static <T> List<T> copyNonNull(List<T> values) {
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        List<T> sanitized = new ArrayList<>();
+        for (T value : values) {
+            if (value != null) {
+                sanitized.add(value);
+            }
+        }
+        return sanitized.isEmpty() ? List.of() : List.copyOf(sanitized);
     }
 }

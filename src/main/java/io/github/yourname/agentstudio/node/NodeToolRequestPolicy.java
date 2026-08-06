@@ -1,8 +1,10 @@
 package io.github.yourname.agentstudio.node;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 import org.springframework.stereotype.Component;
 
 /**
@@ -16,6 +18,43 @@ public final class NodeToolRequestPolicy {
 
     public static final String BROWSER_POLICY_ARGUMENT = "_agentStudioBrowserPolicy";
     public static final String ALLOWED_PRIVATE_HOSTS = "allowedPrivateHosts";
+    private static final List<String> PATH_PLACEHOLDERS = List.of(
+            "<path>",
+            "<absolute path>",
+            "<file>",
+            "<file path>",
+            "<directory>",
+            "<dir>",
+            "<folder>",
+            "<cwd>",
+            "<workspace>",
+            "<project root>",
+            "<desktop>",
+            "<desktoppath>",
+            "<desktop path>",
+            "<target>",
+            "<destination>",
+            "<source>");
+    private static final List<String> PATH_ARGUMENT_NAMES = List.of(
+            "path",
+            "cwd",
+            "source",
+            "destination",
+            "stdoutPath",
+            "stderrPath");
+    private static final List<Pattern> LIKELY_LONG_RUNNING_SERVER_COMMANDS = List.of(
+            Pattern.compile("\\b(?:npm|pnpm|yarn|bun)(?:\\.cmd|\\.exe)?\\s+(?:run\\s+)?(?:dev|serve|start|preview|watch|storybook)\\b"),
+            Pattern.compile("\\b(?:npm|pnpm|yarn|bun)(?:\\.cmd|\\.exe)?\\s+exec\\s+.*\\b(?:dev|serve|start|preview|watch)\\b"),
+            Pattern.compile("\\b(?:(?:npx|bunx)(?:\\.cmd|\\.exe)?|npm(?:\\.cmd|\\.exe)?\\s+exec|pnpm(?:\\.cmd|\\.exe)?\\s+exec|yarn(?:\\.cmd|\\.exe)?\\s+dlx)\\s+(?:vite|next|nuxt|parcel|webpack-dev-server|http-server|live-server|storybook|nodemon|ts-node-dev)\\b"),
+            Pattern.compile("\\b(?:vite|next|nuxt)\\s+(?:dev|preview)\\b"),
+            Pattern.compile("\\b(?:ng|nx)\\s+serve\\b"),
+            Pattern.compile("\\breact-scripts\\s+start\\b"),
+            Pattern.compile("\\bpython(?:\\.exe)?\\s+-m\\s+http\\.server\\b"),
+            Pattern.compile("\\bpython(?:\\.exe)?\\s+-m\\s+(?:uvicorn|gunicorn|hypercorn|flask)\\b"),
+            Pattern.compile("\\b(?:uvicorn|gunicorn|hypercorn)\\b"),
+            Pattern.compile("\\b(?:flask\\s+run|nodemon|ts-node-dev|vite-node)\\b"),
+            Pattern.compile("\\bdotnet\\s+watch\\b"),
+            Pattern.compile("\\b(?:gradle|gradlew|gradlew\\.bat|mvn|mvnw|mvnw\\.cmd)\\s+.*\\b(?:bootRun|spring-boot:run)\\b"));
 
     private final BrowserPolicyProperties browserPolicy;
 
@@ -26,6 +65,7 @@ public final class NodeToolRequestPolicy {
     public Map<String, Object> prepare(String toolName, Map<String, Object> arguments) {
         Map<String, Object> prepared = new LinkedHashMap<>(arguments == null ? Map.of() : arguments);
         prepared.remove(BROWSER_POLICY_ARGUMENT);
+        removeNullArguments(prepared);
 
         if ("browser.open".equals(toolName)) {
             String safeUrl = BrowserUrlPolicy.requireAllowed(stringValue(prepared.get("url")), browserPolicy);
@@ -37,8 +77,17 @@ public final class NodeToolRequestPolicy {
         }
 
         validatePowerShellCommand(toolName, prepared);
+        validatePathPlaceholders(toolName, prepared);
+        validateShortLivedShellCommand(toolName, prepared);
+        validateManagedProcessCommand(toolName, prepared);
         NodeToolArgumentValidator.validate(toolName, prepared);
         return Map.copyOf(prepared);
+    }
+
+    private static void removeNullArguments(Map<String, Object> arguments) {
+        if (arguments != null) {
+            arguments.entrySet().removeIf(entry -> entry.getValue() == null);
+        }
     }
 
     /**
@@ -96,6 +145,99 @@ public final class NodeToolRequestPolicy {
         int end = index + "-command".length();
         boolean after = end == value.length() || Character.isWhitespace(value.charAt(end));
         return before && after;
+    }
+
+    private static void validatePathPlaceholders(String toolName, Map<String, Object> arguments) {
+        if (arguments == null || arguments.isEmpty()) {
+            return;
+        }
+        for (String name : PATH_ARGUMENT_NAMES) {
+            Object value = arguments.get(name);
+            if (value instanceof String text && containsPathPlaceholder(text)) {
+                throw new IllegalArgumentException(
+                        toolName + " argument '" + name + "' contains an unreplaced placeholder. "
+                                + "Use a concrete path returned by an inspection tool or provided by the user.");
+            }
+        }
+        Object rawChanges = arguments.get("changes");
+        if (rawChanges instanceof List<?> changes) {
+            for (Object rawChange : changes) {
+                if (rawChange instanceof Map<?, ?> change) {
+                    Object value = change.get("path");
+                    if (value instanceof String text && containsPathPlaceholder(text)) {
+                        throw new IllegalArgumentException(
+                                toolName + " argument 'changes[].path' contains an unreplaced placeholder. "
+                                        + "Use a concrete path returned by an inspection tool or provided by the user.");
+                    }
+                }
+            }
+        }
+    }
+
+    private static boolean containsPathPlaceholder(String value) {
+        String normalized = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+        return PATH_PLACEHOLDERS.stream().anyMatch(normalized::contains);
+    }
+
+    private static void validateShortLivedShellCommand(String toolName, Map<String, Object> arguments) {
+        if (!("shell.run".equals(toolName) || "system.shell.run".equals(toolName))) {
+            return;
+        }
+        Object rawCommand = arguments == null ? null : arguments.get("command");
+        if (!(rawCommand instanceof String command) || command.isBlank()) {
+            return;
+        }
+        String normalized = normalizedCommand(command);
+        if (isDetachedOrLongRunningShellCommand(normalized)) {
+            throw new IllegalArgumentException(
+                    toolName + " is for short-lived commands. Use process.start or system.process.start for long-running development servers or watch processes.");
+        }
+    }
+
+    private static void validateManagedProcessCommand(String toolName, Map<String, Object> arguments) {
+        if (!("process.start".equals(toolName) || "system.process.start".equals(toolName))) {
+            return;
+        }
+        Object rawCommand = arguments == null ? null : arguments.get("command");
+        if (!(rawCommand instanceof String command) || command.isBlank()) {
+            return;
+        }
+        String normalized = normalizedCommand(command);
+        if (normalized.contains("start-process")
+                || normalized.contains("start-job")
+                || normalized.contains("disown")
+                || normalized.contains("setsid")
+                || normalized.contains("nohup ")
+                || normalized.matches("^(?:cmd(?:\\.exe)?\\s+/c\\s+)?start(?:\\s+|$).*")
+                || normalized.endsWith(" &")) {
+            throw new IllegalArgumentException(
+                    toolName + " manages the process itself. Use a foreground command; do not use Start-Process, nohup, or a trailing '&'.");
+        }
+    }
+
+    private static boolean isDetachedOrLongRunningShellCommand(String normalized) {
+        return normalized.contains("start-job")
+                || normalized.contains("start-process")
+                || normalized.contains("disown")
+                || normalized.contains("setsid")
+                || normalized.contains("nohup ")
+                || normalized.endsWith(" &")
+                || normalized.matches("^(?:cmd(?:\\.exe)?\\s+/c\\s+)?start(?:\\s+|$).*")
+                || dockerComposeUpWithoutDetach(normalized)
+                || LIKELY_LONG_RUNNING_SERVER_COMMANDS.stream().anyMatch(pattern -> pattern.matcher(normalized).find());
+    }
+
+    private static boolean dockerComposeUpWithoutDetach(String normalized) {
+        boolean composeUp = normalized.matches(".*\\bdocker(?:\\.exe)?\\s+compose\\b.*\\sup\\b.*")
+                || normalized.matches(".*\\bdocker-compose(?:\\.exe)?\\b.*\\sup\\b.*");
+        return composeUp && !normalized.matches(".*(?:^|\\s)(?:-d|--detach)(?:\\s|$).*");
+    }
+
+    private static String normalizedCommand(String command) {
+        return command == null ? "" : command.toLowerCase(Locale.ROOT)
+                .replaceAll("[\"']", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
     }
 
     private static String stringValue(Object value) {

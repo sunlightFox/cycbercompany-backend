@@ -1,6 +1,7 @@
 package io.github.yourname.agentstudio.skill;
 
 import io.github.yourname.agentstudio.tool.ResolvedToolBinding;
+import java.util.ArrayList;
 import java.util.List;
 
 /** UI-facing readiness report generated without queuing a Run or invoking a model. */
@@ -14,8 +15,21 @@ public record SkillPreflightView(
         List<ResolvedToolBinding> effectiveTools) {
 
     public SkillPreflightView {
-        skillBindings = skillBindings == null ? List.of() : List.copyOf(skillBindings);
-        analyses = analyses == null ? List.of() : List.copyOf(analyses);
-        effectiveTools = effectiveTools == null ? List.of() : List.copyOf(effectiveTools);
+        skillBindings = copyNonNull(skillBindings);
+        analyses = copyNonNull(analyses);
+        effectiveTools = copyNonNull(effectiveTools);
+    }
+
+    private static <T> List<T> copyNonNull(List<T> values) {
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        List<T> sanitized = new ArrayList<>();
+        for (T value : values) {
+            if (value != null) {
+                sanitized.add(value);
+            }
+        }
+        return sanitized.isEmpty() ? List.of() : List.copyOf(sanitized);
     }
 }

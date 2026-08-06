@@ -49,7 +49,7 @@ public final class DesktopOrganizationTool {
             result.put("desktopPath", desktopRoot.toString());
             result.put("sortableFiles", countSortableFiles());
             result.put("visibleDirectories", visibleDirectories());
-            return ToolExecutionResult.success(Map.copyOf(result));
+            return ToolExecutionResult.success(result);
         } catch (IOException ex) {
             return ToolExecutionResult.failure("desktop.organize.list failed: " + message(ex));
         }
@@ -165,6 +165,10 @@ public final class DesktopOrganizationTool {
         String text = value == null ? "" : value.toString().trim();
         if (text.isBlank()) {
             throw new IllegalArgumentException("Missing required argument: " + name);
+        }
+        String placeholderError = WindowsToolArgumentPolicy.placeholderError(text, name);
+        if (placeholderError != null) {
+            throw new IllegalArgumentException(placeholderError);
         }
         if (text.equals(".") || text.equals("..") || text.startsWith(".")
                 || text.indexOf('/') >= 0 || text.indexOf('\\') >= 0 || text.indexOf(':') >= 0

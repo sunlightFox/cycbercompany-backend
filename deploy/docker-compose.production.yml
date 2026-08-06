@@ -10,21 +10,19 @@ services:
       PORT: 8080
       APP_DATA_DIR: /data
       APP_SECURITY_MODE: LOCAL
+      APP_SECURITY_ALLOW_LOCAL_PROXY: "true"
+      AGENT_STUDIO_API_TOKEN: ${AGENT_STUDIO_API_TOKEN:-}
       H2_CONSOLE_ENABLED: "false"
       EDGEFN_API_KEY: ${A6API_API_KEY}
       EDGEFN_BASE_URL: ${A6API_BASE_URL:-https://a6api.com/v1}
       EDGEFN_MODEL: ${A6API_MODEL:-gpt-5.6-luna}
-      SEARXNG_ENDPOINT: http://searxng:8080
-      SEARXNG_LANGUAGE: zh-CN
-      SEARXNG_SAFESEARCH: "1"
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
     volumes:
       - backend-data:/data
     ports:
       - "5173:5173"
     networks:
       - studio
-    depends_on:
-      - searxng
 
   frontend:
     build:
@@ -36,15 +34,8 @@ services:
     depends_on:
       - backend
 
-  searxng:
-    image: searxng/searxng:latest
-    restart: unless-stopped
-    volumes:
-      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
-    networks:
-      - studio
-
   workspace-node:
+    profiles: ["local-executor"]
     build:
       context: ./backend
       dockerfile: ../Dockerfile.workspace-node
@@ -55,6 +46,7 @@ services:
     user: "0:0"
     environment:
       AGENT_STUDIO_SKILL_RUNTIME: docker
+      AGENT_STUDIO_API_TOKEN: ${AGENT_STUDIO_API_TOKEN:-}
     volumes:
       - /opt/spring-agent-studio/workspace:/workspace
       - node-config:/root/.agent-studio-node

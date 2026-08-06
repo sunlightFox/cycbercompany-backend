@@ -96,6 +96,21 @@ class ConversationAttachmentServiceTest {
     }
 
     @Test
+    void rejectsAttachmentUploadIntoAnArchivedConversation() {
+        ConversationRepository conversations = mock(ConversationRepository.class);
+        ConversationAttachmentRepository attachments = mock(ConversationAttachmentRepository.class);
+        ConversationEntity entity = new ConversationEntity("conversation-1", ACTOR.tenantId(), "Test", Instant.now());
+        entity.archive(Instant.now());
+        when(conversations.findByIdAndTenantId(entity.id(), ACTOR.tenantId())).thenReturn(Optional.of(entity));
+        ConversationAttachmentService service = new ConversationAttachmentService(
+                new AppProperties(tempDir, null, null, null, null, null, null), conversations, attachments);
+
+        assertThatThrownBy(() -> service.upload("conversation-1", List.of(), ACTOR))
+                .isInstanceOf(ConversationArchivedException.class)
+                .hasMessage("Conversation is archived: conversation-1");
+    }
+
+    @Test
     void boundsTextAcrossMultipleAttachmentsButKeepsTheirMetadataAndAnExplicitNotice() throws Exception {
         ConversationAttachmentRepository attachments = mock(ConversationAttachmentRepository.class);
         Path storage = tempDir.resolve("attachments");

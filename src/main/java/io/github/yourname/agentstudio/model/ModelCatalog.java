@@ -51,6 +51,7 @@ public class ModelCatalog {
 
     @Transactional(readOnly = true)
     public List<ModelProfileView> list() {
+        // 默认模型只影响“展示和后续选择”，不会修改已经创建的 RunSpec。
         String defaultId = defaultModelProfileId();
         return repository.findAll().stream()
                 .map(entity -> viewOf(entity, entity.id().equals(defaultId)))
@@ -108,6 +109,7 @@ public class ModelCatalog {
 
     @Transactional
     public ModelProfileView save(UpsertModelProfileCommand command) {
+        // 更新时 apiKey 为空表示“保留原密钥”，避免前端编辑普通字段时把密钥清空。
         var entity = repository.findById(command.id())
                 .orElseGet(() -> new ModelProfileEntity(
                         command.id(),
@@ -210,6 +212,7 @@ public class ModelCatalog {
     }
 
     public ModelTestResult test(String id, TestModelCommand command) {
+        // 测试调用使用专用 system prompt，避免把诊断请求误当成真实 Agent 任务。
         String prompt = command == null || command.prompt() == null || command.prompt().isBlank()
                 ? DEFAULT_MODEL_TEST_PROMPT
                 : command.prompt();

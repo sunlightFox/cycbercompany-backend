@@ -3,14 +3,16 @@ package io.github.yourname.agentstudio.orchestration;
 import java.util.List;
 
 /**
- * Server-owned execution category for a persisted run.
+ * 服务端为持久化 Run 判定的执行类别。
  *
- * <p>A selected node enables a general native-tool loop. The model decides whether an advertised
- * tool is needed for the current request; it is never inferred from a keyword catalog.
+ * <p>只要选择了节点，就启用通用本机工具循环。模型是否真的调用某个已暴露工具，
+ * 由工具 schema 和上下文决定；服务端不会用关键词猜测要执行哪类任务。
  */
 enum RunExecutionMode {
     CONVERSATIONAL,
+    /** 与节点交互，但不要求代码交付门禁。 */
     NODE_INTERACTION,
+    /** 编码类 Run，需要额外交付验证。 */
     CODING;
 
     static RunExecutionMode from(CreateRunCommand command) {
@@ -35,7 +37,7 @@ enum RunExecutionMode {
     }
 
     boolean requiresDeliveryGate() {
-        return usesNativeToolLoop();
+        return this == CODING;
     }
 
 }

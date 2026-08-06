@@ -10,25 +10,40 @@ import java.time.Instant;
 import java.util.EnumSet;
 import java.util.Set;
 
+/**
+ * 一个可调用的模型配置。
+ *
+ * <p>Profile 把 Provider、endpoint、模型名、密钥引用和能力标签放在一起。它不是模型本身，
+ * 而是“如何找到并调用某个模型”的运行配置。
+ */
 @Entity(name = "model_profile")
 public class ModelProfileEntity {
 
     @Id
+    /** Profile 的稳定 ID，RunSpec 会保存这个 ID。 */
     private String id;
 
     @Enumerated(EnumType.STRING)
+    /** Provider 类型，例如 OpenAI-compatible。 */
     private ProviderType providerType;
 
+    /** 模型服务的基础 URL，不包含密钥。 */
     private String baseUrl;
+    /** 具体模型名，例如 MiniMax-M3 或 gpt-4o-mini。 */
     private String modelName;
+    /** 环境变量名称，推荐通过它读取密钥。 */
     private String credentialRef;
+    /** 可选的本地配置密钥；API View 不会直接返回它。 */
     private String apiKey;
 
     @ElementCollection(fetch = FetchType.EAGER)
     @Enumerated(EnumType.STRING)
+    /** 模型能力集合，用于在调用前检查图片、工具、Embedding 等需求。 */
     private Set<ModelCapability> capabilities = EnumSet.noneOf(ModelCapability.class);
 
+    /** 禁用后不能被选择为默认模型或新 Run 模型。 */
     private boolean enabled;
+    /** Profile 创建时间。 */
     private Instant createdAt;
 
     protected ModelProfileEntity() {

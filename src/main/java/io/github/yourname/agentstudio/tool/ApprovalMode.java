@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * User-selected approval behavior for one Run.
+ * 一次 Run 选择的工具审批行为。
  *
  * <p>The mode changes whether a tool call pauses for a human decision. It never
  * disables the server-side invocation ledger: even {@link #FULL_ACCESS} calls

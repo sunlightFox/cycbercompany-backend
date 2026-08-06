@@ -22,6 +22,9 @@ import java.util.Map;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,6 +38,7 @@ class CodingAgentLoop {
     private static final int MAX_TOOL_CALLS = 48;
     private static final int MAX_CONSECUTIVE_TOOL_FAILURES = 4;
     private static final int TOOL_BUDGET_WARNING = 36;
+    private static final int TOOL_PROGRESS_INTERVAL_SECONDS = 10;
     // 以字符数近似上下文长度，避免长日志与截图文本在工具循环中无限累积。
     private static final int MAX_CONTEXT_CHARS = 96_000;
     private static final int RECENT_CONTEXT_CHARS = 42_000;
@@ -71,10 +75,10 @@ class CodingAgentLoop {
                discovers the Desktop path: create the software project with system.fs.* tools, not desktop organization
                tools. After a shell.run build or test failure, send its bounded output to project.diagnose
                when advertised, then use fs.read on the reported path and line before proposing a targeted patch. For
-               a running dev server, use process.status and process.logs when advertised to inspect its
-               managed stdout/stderr before restarting it. To prove a node-managed local service is
-               actually ready for frontend/backend integration, use process.wait_http when advertised with a literal
-               loopback health URL; it accepts only localhost/127.0.0.1/::1 and never returns a body.
+               a running dev server, use the advertised process.status/process.logs or system.process.status/system.process.logs
+               pair to inspect its managed stdout/stderr before restarting it. To prove a node-managed local service is
+               actually ready for frontend/backend integration, use the advertised process.wait_http or system.process.wait_http
+               with a literal loopback health URL; it accepts only localhost/127.0.0.1/::1 and never returns a body.
                After browser or desktop interaction, use the advertised read-only verification or snapshot
                capability to prove the resulting state. For an asynchronous frontend request, use
                browser.wait_response when advertised before final verification. For a frontend flow that calls a backend API, include
@@ -150,10 +154,6 @@ class CodingAgentLoop {
             5. Finish when the requested interaction is complete or a concrete blocker is known. Do not claim an
                action or browser state without a successful tool result.
             """;
-    private static final String UNKNOWN_TOOL_RESULT = "{\"status\":\"FAILED\","
-            + "\"code\":\"TOOL_NOT_AVAILABLE\","
-            + "\"error\":\"The requested tool is not available in this run.\","
-            + "\"recovery\":\"Choose a tool advertised in the current request; do not retry this tool name.\"}";
     private static final String DEFERRED_TOOL_RESULT = "{\"status\":\"DEFERRED\","
             + "\"code\":\"APPROVAL_PENDING\","
             + "\"error\":\"Another tool call is awaiting approval, so this call did not run.\","
@@ -460,7 +460,7 @@ class CodingAgentLoop {
                     ResolvedToolBinding tool = byModelName.get(call.name());
                     if (tool == null) {
                         events.publish(runId, RunEventType.TOOL_CALL_FAILED, "Unknown tool requested: " + call.name(), actor);
-                        messages.add(ModelGateway.ModelMessage.toolResult(call.id(), UNKNOWN_TOOL_RESULT));
+                        messages.add(ModelGateway.ModelMessage.toolResult(call.id(), unknownToolResult(available)));
                         continue;
                     }
                     String callFingerprint = failedCallFingerprint(tool, call.arguments());
@@ -478,7 +478,7 @@ class CodingAgentLoop {
                     if (checkpoints != null) {
                         checkpoints.phase(runId, actor, RunWorkflowPhase.EXECUTING);
                     }
-                    ToolProviderResult outcome = tools.invoke(new ToolInvocationRequest(
+                    ToolInvocationRequest invocationRequest = new ToolInvocationRequest(
                             runId,
                             call.id(),
                             tool,
@@ -487,7 +487,9 @@ class CodingAgentLoop {
                             workspaceScope,
                             actor,
                             null,
-                            effectiveApprovalMode));
+                            effectiveApprovalMode);
+                    ToolProviderResult outcome = invokeWithProgress(
+                            invocationRequest, tool.logicalName(), runId, actor);
                     if (outcome.requiresApproval()) {
                         if (checkpoints != null) {
                             checkpoints.phase(runId, actor, RunWorkflowPhase.WAITING_APPROVAL);
@@ -546,6 +548,38 @@ class CodingAgentLoop {
         }
     }
 
+    private ToolProviderResult invokeWithProgress(
+            ToolInvocationRequest request,
+            String logicalToolName,
+            String runId,
+            ActorContext actor) {
+        long startedAt = System.nanoTime();
+        ScheduledExecutorService progress = Executors.newSingleThreadScheduledExecutor(
+                Thread.ofVirtual().name("tool-progress-", 0).factory());
+        progress.scheduleAtFixedRate(() -> {
+            long elapsedSeconds = Duration.ofNanos(System.nanoTime() - startedAt).toSeconds();
+            try {
+                events.publish(
+                        runId,
+                        RunEventType.TOOL_CALL_PROGRESS,
+                        "tool=" + logicalToolName + ", status=running, elapsedSeconds=" + elapsedSeconds,
+                        actor);
+            } catch (RuntimeException ignored) {
+                // Progress delivery is best-effort and must never change the tool outcome.
+            }
+        }, TOOL_PROGRESS_INTERVAL_SECONDS, TOOL_PROGRESS_INTERVAL_SECONDS, TimeUnit.SECONDS);
+        try {
+            return tools.invoke(request);
+        } finally {
+            progress.shutdownNow();
+            try {
+                progress.awaitTermination(2, TimeUnit.SECONDS);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
     private String failedCallFingerprint(ResolvedToolBinding tool, Map<String, Object> arguments) {
         return tool.providerId() + ":" + tool.logicalName() + ":"
                 + objectMapper.valueToTree(arguments == null ? Map.of() : arguments);
@@ -568,6 +602,25 @@ class CodingAgentLoop {
                 Map.of("code", "DUPLICATE_FAILED_CALL", "tool", toolName),
                 "An identical failed call was blocked. Inspect its prior error and choose a different tool or changed arguments.",
                 null);
+    }
+
+    private String unknownToolResult(List<ResolvedToolBinding> available) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("status", "FAILED");
+        result.put("code", "TOOL_NOT_AVAILABLE");
+        result.put("error", "The requested tool is not available in this run.");
+        result.put("recovery", "Choose one of availableTools exactly; do not retry this tool name or invent aliases.");
+        result.put("availableTools", (available == null ? List.<ResolvedToolBinding>of() : available).stream()
+                .map(ResolvedToolBinding::logicalName)
+                .filter(name -> name != null && !name.isBlank())
+                .distinct()
+                .toList());
+        try {
+            return objectMapper.writeValueAsString(result);
+        } catch (Exception ex) {
+            return "{\"status\":\"FAILED\",\"code\":\"TOOL_NOT_AVAILABLE\","
+                    + "\"error\":\"The requested tool is not available in this run.\"}";
+        }
     }
 
     private static int failFastAfterConsecutiveToolFailures(
@@ -832,6 +885,11 @@ class CodingAgentLoop {
         for (ResolvedToolBinding binding : bindings) {
             addModelCallAlias(aliases, ambiguous, binding.logicalName(), binding);
             addModelCallAlias(aliases, ambiguous, "tool_" + readableToolName(binding.logicalName()), binding);
+            if (binding.logicalName() != null && binding.logicalName().startsWith("system.")) {
+                String unqualified = binding.logicalName().substring("system.".length());
+                addModelCallAlias(aliases, ambiguous, unqualified, binding);
+                addModelCallAlias(aliases, ambiguous, "tool_" + readableToolName(unqualified), binding);
+            }
         }
         return aliases;
     }

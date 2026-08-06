@@ -6,15 +6,19 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import java.time.Instant;
 
+/** 租户级执行拓扑设置的数据库实体。 */
 @Entity(name = "execution_settings")
 class ExecutionSettingsEntity {
 
     @Id
+    /** 租户 ID，同时作为设置表主键。 */
     private String tenantId;
 
     @Enumerated(EnumType.STRING)
+    /** 允许的执行位置模式。 */
     private ExecutionMode mode;
 
+    /** 设置最后修改时间。 */
     private Instant updatedAt;
 
     protected ExecutionSettingsEntity() {

@@ -1102,7 +1102,7 @@ public class BrowserTool implements AutoCloseable {
         result.put("diagnosticArtifactCaptured", false);
         BrowserSession session = sessions.get(sessionKey(executionSessionId));
         if (session == null || session.page == null || session.page.isClosed()) {
-            return ToolExecutionResult.failure(Map.copyOf(result), errorMessage);
+            return ToolExecutionResult.failure(result, errorMessage);
         }
         try {
             Path output;
@@ -1127,7 +1127,7 @@ public class BrowserTool implements AutoCloseable {
             // 保留原始操作错误；取证失败不能掩盖真正需要模型恢复的页面错误。
             result.put("diagnosticCaptureFailed", true);
         }
-        return ToolExecutionResult.failure(Map.copyOf(result), errorMessage);
+        return ToolExecutionResult.failure(result, errorMessage);
     }
 
     private static final class BrowserSession {

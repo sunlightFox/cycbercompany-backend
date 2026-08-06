@@ -2,6 +2,7 @@ package io.github.yourname.agentstudio.orchestration;
 
 import java.time.Instant;
 
+/** 返回给前端的 Run 摘要视图。 */
 public record RunView(
         String id,
         String conversationId,

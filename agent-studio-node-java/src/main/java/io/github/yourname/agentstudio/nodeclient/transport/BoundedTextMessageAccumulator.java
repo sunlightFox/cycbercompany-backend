@@ -47,6 +47,10 @@ final class BoundedTextMessageAccumulator {
         return new AppendResult(Status.COMPLETE, message);
     }
 
+    synchronized void clear() {
+        reset();
+    }
+
     private void reset() {
         buffer.setLength(0);
         bufferedBytes = 0;

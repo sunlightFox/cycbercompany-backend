@@ -2,6 +2,17 @@
 
 Spring Agent Studio is a local-first Java backend for building and reviewing AI agent systems. It is designed as a modular monolith: one Spring Boot process, clear module boundaries, durable run state, SSE events, tenant-aware knowledge retrieval, and an OpenAI-compatible model gateway.
 
+## 中文新手学习手册
+
+如果你是第一次学习这个项目，建议先阅读
+[docs/new-developer-guide.md](docs/new-developer-guide.md)。这份手册按“启动项目、理解模块、
+跟踪一次 Run、理解模型/工具/知识库/Skill/MCP/节点”的顺序整理了代码入口和 Mermaid 流程图。
+
+接口学习和链路调试建议继续阅读
+[docs/api-and-call-chain-guide.md](docs/api-and-call-chain-guide.md)。启动后端后可打开
+`http://127.0.0.1:8080/swagger-ui` 查看 Swagger UI，或访问
+`http://127.0.0.1:8080/v3/api-docs` 获取 OpenAPI JSON。
+
 ## Node Execution Safety
 
 The optional Java node runs file, Shell, Git, browser, and desktop actions on the
@@ -59,6 +70,12 @@ only the management API can assign `SANDBOX` and its labels.
 - `browser.wait_response` waits for a matching status and/or query-free URL after the latest page action, making asynchronous frontend-to-backend checks deterministic. It returns only bounded response metadata; `browser.verify` remains the final auditable delivery assertion.
 - If the task explicitly asks for a full-stack / frontend-backend integration test (including `前后端` or `联调`), the delivery gate also requires a passed post-interaction `responseStatus` or `responseUrlContains` check. A visible success message alone cannot finish that task.
 - Windows system mode exposes approval-protected desktop window snapshots, UI Automation control metadata/actions, keyboard input, and bounded text clipboard operations.
+- Windows system mode exposes approval-protected `system.software.query`, `system.software.install`, and `system.software.uninstall` tools backed by exact `winget` IDs. These tools do not accept arbitrary command lines, installer override arguments, hash bypasses, reboot allowances, display-name searches, or shell syntax, and they do not bypass Windows ACLs, protected services, file locks, vendor uninstallers, or reboot requirements.
+- Windows system mode exposes approval-protected `system.service.query`, `system.service.stop`, and `system.service.set_start_mode` tools for exact Windows service names. They are intended for controlled preflight/remediation around uninstall blockers, but cannot bypass `NOT_STOPPABLE` service semantics, protected services, security software, or reboot requirements.
+- Windows system mode exposes approval-protected `system.os_process.query` and `system.os_process.terminate` tools for exact Windows process image names, such as `QQPCTray.exe`. Termination requires explicit process IDs from a prior query or `allMatching=true`; it does not expose arbitrary `taskkill`, PowerShell, command-line filters, paths, or wildcards.
+- Windows system mode exposes `system.privilege.query` to report whether the node process is running as an administrator token or LocalSystem. It is a read-only self-check used before system-level remediation.
+- Windows system mode exposes `system.uninstall.preflight` to gather privilege, package, service, and process facts into one read-only remediation snapshot before uninstalling a Windows package.
+- Windows system mode exposes approval-protected `system.uninstall.execute` as the guided remediation path: it runs preflight, optionally stops the exact service, optionally terminates exact process IDs, then retries one exact `winget` uninstall. It still cannot bypass Windows ACLs, protected services/processes, vendor UI requirements, or reboot requirements.
 - Window activation and keyboard input require both `processId` and the latest `snapshotRevision` from `system.desktop.session.snapshot`; guessed or stale process targets are rejected locally before Windows receives input.
 - Desktop UI Automation snapshots issue node-local `ref` values plus a monotonic `snapshotRevision`. Click and type require both values, invalidate them after any attempted action, and reject a live UI Automation lookup unless it has exactly one match; this prevents a stale or ambiguous text selector from silently targeting another control.
 - `system.desktop.screenshot` captures the current primary display only after approval. It creates a PNG Artifact in the node-controlled artifact root; the existing artifact uploader sends an immutable reference and removes the node-local file before the tool result crosses WebSocket.
@@ -123,12 +140,41 @@ the local companion is registered automatically and can act on the signed-in use
 .\scripts\start-personal-local.ps1 -Workspace D:\work\my-project
 ```
 
-This launches the compose stack and the local companion together in the background. Use
+This command expects the matching frontend repository at `..\spring-agent-studio-web`. It starts
+that repository's development compose stack, publishes the backend on `http://127.0.0.1:8083`,
+and then starts the host-side local companion against that loopback API. Use
 `.\scripts\stop-personal-local.ps1` to shut both down manually. The companion remains a separate
 process and connects to the backend through the normal node protocol. Do not add it to Docker
 Compose: a container would operate on the container filesystem, not the user's desktop.
+On Windows, this launcher requests administrator approval through UAC by default, so the local
+companion inherits the current user's elevated token. This is still the signed-in user, not the
+Windows `LocalSystem` account. Choose the same Windows account in the UAC prompt; personal-local
+startup and shutdown reject elevation as a different administrator user so token, state, desktop,
+and workspace paths do not silently switch accounts. Use `-NoElevation` only when intentionally
+running without UAC.
+The loopback launcher used by the web UI also starts the local companion through UAC when it is
+not already elevated, so UI-started personal-local nodes follow the same privilege behavior.
+When `APP_SECURITY_MODE=TOKEN` is enabled, set `AGENT_STUDIO_API_TOKEN` in the current process,
+user environment, machine environment, or compose environment before starting. The launcher reads
+those scopes and passes the token through process environment inheritance. If UAC elevation would
+lose a process-scoped token, the startup script and loopback launcher hand it to the elevated child
+through a restricted temporary file and delete that file after reading it; they do not write the
+token to state files, logs, or command-line arguments.
+`start-local` already registers the companion in `SYSTEM` capability mode, which means the node
+can address paths the current Windows user can access; it does not bypass Windows ACLs or protected
+services such as `QQPCRTP`.
 Switching the execution mode in the UI exposes registered-node selection and management; the
 default personal-local UI does not expose node terminology.
+The Nodes page also provides a Disconnect action for the managed local executor when you want to
+close the companion from the server side.
+Docker Compose deployment files keep the executor service behind the `local-executor`
+profile; use `docker compose --profile local-executor up -d` only when you explicitly
+want the bundled executor service to start with the server.
+
+The compose files under `deploy/` are for release-bundle layouts that contain packaged
+`backend` and `frontend` build contexts. For day-to-day source checkout development, use
+`.\gradlew.bat bootRun` for the backend alone or `.\scripts\start-personal-local.ps1` for the
+full frontend/backend/local-companion flow.
 
 ## Frontend Repository
 
@@ -151,6 +197,7 @@ Browser
 ```text
 POST /api/v1/conversations
 GET  /api/v1/conversations/{id}
+POST /api/v1/conversations/{id}/archive
 POST /api/v1/conversations/{id}/attachments
 
 GET  /api/v1/models
@@ -159,6 +206,15 @@ GET  /api/v1/approval-modes
 
 GET  /api/v1/agents
 GET  /api/v1/tools
+GET  /api/v1/skill-marketplace
+GET  /skill-marketplace
+GET  /api/v1/skill-repositories
+POST /api/v1/skill-repositories/search
+POST /api/v1/skill-repositories/discover
+GET  /api/v1/skill-registries/clawhub/search
+GET  /api/v1/mcp-repositories                 # MCPMarket.cn only
+POST /api/v1/mcp-repositories/search           # MCPMarket.cn only
+POST /api/v1/mcp-connections/install            # one-click remote install
 
 POST /api/v1/knowledge-bases
 GET  /api/v1/knowledge-bases
@@ -319,31 +375,29 @@ record without being injected as image bytes into a text-only model request.
 
 ## Web Search
 
-Web search uses a self-hosted [SearXNG](https://github.com/searxng/searxng) JSON endpoint for
-general discovery, plus the free GDELT DOC index for news candidates with timestamps. The included
-SearXNG profile routes general searches to MWMBL, Bing Web, and Baidu, and news searches to Bing
-News plus Reuters. Broad current
-queries are expanded into at most three complementary searches and executed in parallel with
-GDELT; provider results are cached briefly so immediate retries do not lose GDELT to its public
-cooldown. Candidates are merged, deduplicated, and diversified. Relative index times such as
-`7 hours ago` and calendar dates embedded in news URLs are accepted as freshness signals. Result pages are read directly
-first; the optional Jina Reader fallback
-is used only when direct page extraction fails. Publication times are collected from the news index,
-HTML metadata, and JSON-LD before a current-news result is accepted. There is no RSS fallback.
+Web search is invoked automatically when the run intent requires current or external information.
+Tavily is selected automatically when `TAVILY_API_KEY` is present, and the free GDELT DOC index can
+supplement news candidates with timestamps.
+Broad current queries are expanded into at most three complementary searches and executed in
+parallel, with GDELT added for news intent. Candidates are merged, deduplicated,
+and diversified. Relative index times and calendar dates embedded in news URLs are accepted as
+freshness signals. Result pages are read directly first; the optional Jina Reader fallback is used
+only when direct page extraction fails. Publication times are collected from the news index, HTML
+metadata, and JSON-LD before a current-news result is accepted. There is no RSS fallback.
 
 The public GDELT endpoint is globally throttled to one request every five seconds, as required by
 its service. A repeated query can return `CACHED`; a different query during that cooldown reports
-GDELT as `SKIPPED` while SearXNG and page verification remain available.
+GDELT as `SKIPPED` while Tavily and page verification remain available.
 
-Start the included local SearXNG service before starting the backend:
+Set the Tavily key before starting the backend:
 
 ```powershell
-docker compose -f docker-compose.searxng.yml up -d
+$env:TAVILY_API_KEY="tvly-..."
 ```
 
-The backend defaults to `http://localhost:8888`; set `SEARXNG_ENDPOINT` when it is hosted
-elsewhere. The compose file binds SearXNG to localhost only. Change the generated secret in
-`infra/searxng/settings.yml` before exposing it on a network.
+The backend uses Tavily automatically when `TAVILY_API_KEY` is present.
+Legacy web-search settings remain in `application.yml` only for compatibility with older local
+deployments.
 
 ```powershell
 Invoke-RestMethod -Method Post `
@@ -352,7 +406,7 @@ Invoke-RestMethod -Method Post `
   -Body '{"query":"assistant-ui GitHub","limit":3}'
 ```
 
-Pass `trace: true` to inspect the chosen intent, SearXNG status, duplicates removed,
+Pass `trace: true` to inspect the chosen intent, provider status, duplicates removed,
 domain-diversity filtering, and page-verification counts. Without it, the endpoint continues
 to return the result array for compatibility.
 
@@ -364,9 +418,8 @@ Invoke-RestMethod -Method Post `
 ```
 
 The optional request fields are `mode`, `freshness` (`ANY`, `DAY`, `WEEK`, `MONTH`),
-`includeDomains`, `excludeDomains`, and `trace`. SearXNG connection, per-domain limits,
-query fan-out, short-lived cache, per-domain limits, and page-reader safety limits are configured
-under `app.web-search` in `application.yml`.
+`includeDomains`, `excludeDomains`, and `trace`. Per-domain limits, query fan-out, short-lived
+cache, and page-reader safety limits are configured under `app.web-search` in `application.yml`.
 
 The agent automatically searches the web when the user asks for terms such as
 `联网`, `搜索`, `最新`, `新闻`, `GitHub`, `latest`, or `search`. Natural-language

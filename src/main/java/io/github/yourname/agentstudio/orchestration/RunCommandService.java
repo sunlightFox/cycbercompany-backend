@@ -165,6 +165,7 @@ public class RunCommandService {
     @Transactional
     public CreateRunResponse create(CreateRunCommand command, ActorContext actor) {
         command = resolveComputerControlTarget(command, actor);
+        conversations.ensureWritable(command.conversationId(), actor);
         ApprovalMode approvalMode = ApprovalMode.from(command.approvalMode());
         RunExecutionMode executionMode = RunExecutionMode.from(command);
         if (executionMode.usesNativeToolLoop()) {
@@ -365,6 +366,7 @@ public class RunCommandService {
                 || source.runSpecDigest() == null || source.runSpecDigest().isBlank()) {
             throw new IllegalStateException("Run cannot be retried because its execution snapshot is unavailable.");
         }
+        conversations.ensureWritable(source.conversationId(), actor);
 
         RunSpec spec = deserializeRunSpec(source);
         String retryRunId = UUID.randomUUID().toString();
@@ -1434,11 +1436,23 @@ public class RunCommandService {
                   system.fs.write with that path. system.desktop.organize.mkdir and system.desktop.organize.write are
                   only for an explicit desktop-organization request. Do not create temporary files in the desktop root,
                   and do not use a write-then-delete sequence to compensate for choosing the wrong tool.
+                - For a long-running local server or watch process, prefer process.start or system.process.start
+                  when advertised. Use shell.run only for short-lived commands that should complete within the
+                  tool timeout; do not keep a dev server alive inside shell.run.
                 - For system.shell.run, only the command is required. Omit cwd unless the user's current request
                   explicitly names an existing absolute working directory. Do not invent placeholder path strings,
                   project roots, sample paths, or angle-bracket labels; an invalid cwd makes an otherwise valid
                   command fail. If no working directory is requested, leave cwd absent and let the node use its
                   configured default.
+                - For Windows software, service, process, install, uninstall, or remediation requests, prefer the
+                  exposed structured system tools: system.software.*, system.service.*, system.os_process.*,
+                  system.privilege.query, system.uninstall.preflight, and system.uninstall.execute. Do not encode
+                  the same action as winget, taskkill, sc.exe, PowerShell, or system.shell.run command strings when
+                  a matching structured tool is exposed. Use system.uninstall.preflight before uninstall/remediation
+                  actions, and call system.uninstall.execute only for an explicit user-requested uninstall or
+                  remediation when approval is available. Exact package IDs, Windows service names, and process image
+                  names matter; if the tool result does not identify them, report the limitation instead of inventing
+                  names or falling back to shell commands.
                 - After a side effect, use an advertised verification or status capability when available. Report
                   only the result that the host tool actually returned, and state when verification was unavailable.
                 - For a non-trivial browser interaction, first use browser.open to establish the page session. Then start
@@ -1460,7 +1474,7 @@ public class RunCommandService {
                 - You are working in a developer workspace through native tools. Before the final answer, call at least one relevant available native tool. If no exposed tool can address the request, state that limitation without fabricating a call. Never claim a command or test passed unless its tool result says so.
                 - Follow the coding workflow strictly: treat any target directory named by the user as the only project scope. For a new target, first inspect its existing parent directory, then create the target and its required parents; do not inspect unrelated samples, previous experiments, or sibling projects.
                 - Desktop-organization tools are only for sorting existing top-level desktop files. Never use them to create, inspect, or write a software project or source tree; use the generic filesystem, project, or shell capability that is exposed for the selected node instead.
-                - Use only function names exposed for this run. Do not infer that system.fs.mkdir is available because another system.fs capability is available; when no exposed native directory-creation capability exists, use the exposed system.shell.run capability instead.
+                - Use only function names exposed for this run. Do not infer that system.fs.mkdir is available because another system.fs capability is available; when no exposed native directory-creation capability exists, use the exposed system.shell.run capability only for short-lived commands, not for a background server or watch process. If no long-running process capability is exposed, state that limitation instead of faking one with shell.run.
                 - The delivery gate requires structured project evidence, not only shell output: before the first project-file change, make one successful exposed project or system.fs.list/read/search inspection of the existing parent or target directory. After the final change, make one successful exposed system.fs.read or project inspection of a changed file for review. Do not give the final answer until both inspections have succeeded.
                 - Start with only the minimum inspection needed for the requested files. For an existing or unfamiliar repository, use project.map once when it is available to identify module, source, test, and configuration boundaries. If the target may contain separate frontend, backend, or modules, use project.discover once when available and use project.inspect for the specific module when available before choosing build, test, package-manager, or start commands. If those project tools are not exposed, derive the same facts from the narrowest available file search/read operations and manifests. Use only manifest-backed recommendations unless later inspection proves a different command is required. Once the target is known, use fs.search when available to locate symbols or error text and then read only the matching files inside it. For a large file, use fs.read with startLine and endLine when those parameters are advertised by its schema; otherwise use the smallest supported read. Do not repeatedly inspect the workspace root or browse unrelated README files for inspiration.
                 - Work in coherent stages: create or edit the implementation, run the smallest relevant compile/test command, then start a managed development process, when that capability is exposed, only if live verification is needed. If a command fails, use its structured stdout/stderr and exit code as the diagnosis input before changing code. Use HTTP or browser tools, when exposed, to validate the user-facing path before reporting completion. For browser verification, use browser.snapshot when available to get visible controls and their selectors, use browser.wait when available after asynchronous transitions, and use browser.wait_response when available to wait for an asynchronous API result after the triggering action. Then interact and snapshot again to prove the result. For a non-trivial browser interaction, capture browser.trace.start/browser.trace.stop only when both tools are available; never substitute raw or invented tool calls.
@@ -1803,12 +1817,15 @@ public class RunCommandService {
         List<String> requestedTools = normalizeComputerControlTools(command.toolNames());
         if ((requestedTools == null || requestedTools.isEmpty()) && requestsDesktopProject(command.text())) {
             requestedTools = desktopProjectToolSet();
+        } else if ((requestedTools == null || requestedTools.isEmpty()) && requestsWindowsSystemOperation(command.text())) {
+            requestedTools = windowsRemediationToolSet();
         }
         String requestedNodeId = command.nodeId();
         boolean automaticNode = requestedNodeId != null && "auto".equalsIgnoreCase(requestedNodeId.trim());
         boolean systemOperationRequested = requestedTools != null
                 && requestedTools.stream().anyMatch(tool -> tool.startsWith("system."));
         systemOperationRequested = systemOperationRequested || requestsDesktopOperation(command.text());
+        systemOperationRequested = systemOperationRequested || requestsWindowsSystemOperation(command.text());
         boolean labelsRequested = command.nodeLabels() != null && !command.nodeLabels().isEmpty();
         String resolvedNodeId;
         if (automaticNode && !systemOperationRequested) {
@@ -1857,6 +1874,9 @@ public class RunCommandService {
 
     static boolean requestsDesktopOperation(String text) {
         String normalized = text == null ? "" : text.toLowerCase(java.util.Locale.ROOT);
+        if (suppressesLocalToolAutoSelection(normalized)) {
+            return false;
+        }
         boolean mentionsDesktop = normalized.contains("desktop") || normalized.contains("\u684c\u9762");
         boolean requestsAction = normalized.contains("organize")
                 || normalized.contains("organise")
@@ -1875,10 +1895,102 @@ public class RunCommandService {
 
     static boolean requestsDesktopProject(String text) {
         String normalized = text == null ? "" : text.toLowerCase(java.util.Locale.ROOT);
+        if (suppressesLocalToolAutoSelection(normalized)) {
+            return false;
+        }
         boolean mentionsDesktop = normalized.contains("desktop") || normalized.contains("\u684c\u9762");
         boolean requestsProject = normalized.matches(
                 "(?s).*(create|build|make|develop|implement|\u521b\u5efa|\u65b0\u5efa|\u5b9e\u73b0|\u5f00\u53d1|\u751f\u6210).*(project|frontend|game|website|web app|\u9879\u76ee|\u524d\u7aef|\u6e38\u620f|\u7f51\u7ad9|\u5e94\u7528).*");
         return mentionsDesktop && requestsProject;
+    }
+
+    static boolean requestsWindowsSystemOperation(String text) {
+        String normalized = text == null ? "" : text.toLowerCase(java.util.Locale.ROOT);
+        if (normalized.isBlank()) {
+            return false;
+        }
+        if (suppressesLocalToolAutoSelection(normalized)) {
+            return false;
+        }
+        if (normalized.contains("winget")) {
+            return true;
+        }
+        boolean mentionsExeImage = normalized.matches("(?s).*\\b[a-z0-9._-]+\\.exe\\b.*");
+        boolean englishProcessAction = normalized.matches("(?s).*\\b(kill|terminate|stop|query|inspect|check|remove|uninstall)\\b.*");
+        if (mentionsExeImage && englishProcessAction) {
+            return true;
+        }
+        boolean chineseSoftwareObject = normalized.contains("\u8f6f\u4ef6")
+                || normalized.contains("\u5e94\u7528")
+                || normalized.contains("\u7a0b\u5e8f")
+                || normalized.contains("\u5305");
+        boolean chineseSoftwareAction = normalized.contains("\u5b89\u88c5")
+                || normalized.contains("\u5378\u8f7d")
+                || normalized.contains("\u79fb\u9664")
+                || normalized.contains("\u5220\u9664")
+                || normalized.contains("\u67e5\u8be2")
+                || normalized.contains("\u68c0\u67e5")
+                || normalized.contains("\u67e5\u770b");
+        boolean chineseServiceIntent = normalized.contains("\u670d\u52a1")
+                && (normalized.contains("\u505c\u6b62")
+                || normalized.contains("\u7981\u7528")
+                || normalized.contains("\u542f\u7528")
+                || normalized.contains("\u542f\u52a8")
+                || normalized.contains("\u8bbe\u7f6e")
+                || normalized.contains("\u67e5\u8be2")
+                || normalized.contains("\u68c0\u67e5")
+                || normalized.contains("\u67e5\u770b"));
+        boolean chineseProcessIntent = normalized.contains("\u8fdb\u7a0b")
+                && (normalized.contains("\u7ed3\u675f")
+                || normalized.contains("\u7ec8\u6b62")
+                || normalized.contains("\u6740")
+                || normalized.contains("\u505c\u6b62")
+                || normalized.contains("\u67e5\u8be2")
+                || normalized.contains("\u68c0\u67e5")
+                || normalized.contains("\u67e5\u770b"));
+        boolean chineseSystemIntent = chineseServiceIntent
+                || chineseProcessIntent
+                || (chineseSoftwareObject && chineseSoftwareAction);
+        if (chineseSystemIntent) {
+            return true;
+        }
+        boolean serviceIntent = normalized.matches("(?s).*(\\b(stop|disable|enable|query|inspect|check|set)\\b.*\\b(windows\\s+)?service\\b|\\b(windows\\s+)?service\\b.*\\b(stop|disable|enable|query|inspect|check|set|status|start mode)\\b).*");
+        boolean processIntent = normalized.matches("(?s).*(\\b(kill|terminate|stop|query|inspect|check)\\b.*\\b(process|processes)\\b|\\b(process|processes)\\b.*\\b(kill|terminate|stop|query|inspect|check)\\b).*");
+        boolean uninstallIntent = normalized.matches("(?s).*\\b(uninstall|remove)\\b.*\\b(app|application|program|software|package)\\b.*")
+                || normalized.matches("(?s).*\\b(app|application|program|software|package)\\b.*\\b(uninstall|remove)\\b.*");
+        boolean installIntent = normalized.matches("(?s).*\\binstall\\b.*\\b(app|application|program|software)\\b.*")
+                || normalized.matches("(?s).*\\b(app|application|program|software)\\b.*\\binstall\\b.*");
+        return serviceIntent || processIntent || uninstallIntent || installIntent;
+    }
+
+    private static boolean isExplanatoryRequest(String normalized) {
+        if (normalized == null || normalized.isBlank()) {
+            return false;
+        }
+        String trimmed = normalized.stripLeading();
+        return trimmed.matches("(?s)^(explain|what\\s+is|what\\s+are|how\\s+to|how\\s+do\\s+i|how\\s+can\\s+i|how\\s+should\\s+i|why|tell\\s+me\\s+about)\\b.*")
+                || trimmed.matches("(?s).*(\\bexplain\\b|\\bwhy\\b|\\bhow\\s+to\\b|\u89e3\u91ca|\u8bf4\u660e|\u4ecb\u7ecd|\u6559\u7a0b|\u4ec0\u4e48\u662f|\u4e3a\u4ec0\u4e48|\u600e\u4e48|\u6211\u600e\u4e48|\u5982\u4f55|\u6211\u8be5\u5982\u4f55|\u5206\u6790\u4e00\u4e0b).*");
+    }
+
+    private static boolean suppressesLocalToolAutoSelection(String normalized) {
+        return isExplanatoryRequest(normalized) && !containsExplicitLocalActionRequest(normalized);
+    }
+
+    private static boolean containsExplicitLocalActionRequest(String normalized) {
+        if (normalized == null || normalized.isBlank()) {
+            return false;
+        }
+        String englishAction = "(check|inspect|query|stop|disable|enable|kill|terminate|uninstall|remove|install|create|write|make|organize|organise|clean|sort)";
+        String trimmed = normalized.stripLeading();
+        if (trimmed.matches("(?s)^(please\\s+|can\\s+you\\s+|could\\s+you\\s+|go\\s+ahead\\s+and\\s+)?"
+                + englishAction + "\\b.*")
+                || normalized.matches("(?s).*[?.!;]\\s*(please\\s+)?(also\\s+|then\\s+|now\\s+)?" + englishAction + "\\b.*")
+                || normalized.matches("(?s).*\\band\\s+(please\\s+)?(also\\s+)?(go\\s+ahead\\s+and\\s+)?" + englishAction + "\\b.*")) {
+            return true;
+        }
+        String chineseAction = "(\u68c0\u67e5|\u67e5\u770b|\u67e5\u8be2|\u505c\u6b62|\u7981\u7528|\u542f\u7528|\u542f\u52a8|\u7ed3\u675f|\u7ec8\u6b62|\u5378\u8f7d|\u79fb\u9664|\u5b89\u88c5|\u521b\u5efa|\u65b0\u5efa|\u5199\u5165|\u6574\u7406|\u6e05\u7406)";
+        return trimmed.matches("(?s)^(\u8bf7|\u5e2e\u6211|\u8bf7\u5e2e\u6211|\u9ebb\u70e6|\u9ebb\u70e6\u4f60)?" + chineseAction + ".*")
+                || normalized.matches("(?s).*(\u5e76|\u7136\u540e|\u540c\u65f6|\u987a\u4fbf)(\u5e2e\u6211|\u8bf7)?" + chineseAction + ".*");
     }
 
     static List<String> desktopProjectToolSet() {
@@ -1888,7 +2000,27 @@ public class RunCommandService {
                 "system.fs.mkdir",
                 "system.fs.write",
                 "system.fs.read",
+                "system.process.start",
+                "system.process.status",
+                "system.process.logs",
+                "system.process.wait_http",
+                "system.process.stop",
                 "system.shell.run");
+    }
+
+    static List<String> windowsRemediationToolSet() {
+        return List.of(
+                "system.privilege.query",
+                "system.software.query",
+                "system.software.install",
+                "system.software.uninstall",
+                "system.service.query",
+                "system.service.stop",
+                "system.service.set_start_mode",
+                "system.os_process.query",
+                "system.os_process.terminate",
+                "system.uninstall.preflight",
+                "system.uninstall.execute");
     }
 
     private static boolean isBlank(String value) {

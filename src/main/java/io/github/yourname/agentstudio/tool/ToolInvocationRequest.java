@@ -1,9 +1,15 @@
 package io.github.yourname.agentstudio.tool;
 
 import io.github.yourname.agentstudio.security.ActorContext;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
-/** 已绑定 Provider 的一次工具调用；只有 arguments 来自模型，其余字段均由服务端填充。 */
+/**
+ * 已绑定 Provider 的一次工具调用。
+ *
+ * <p>只有 {@code arguments} 来自模型，其余字段由服务端从 RunSpec、ActorContext 和策略中填充。
+ * 这条规则防止模型通过参数偷偷切换到另一个节点或租户。
+ */
 public record ToolInvocationRequest(
         String runId,
         String toolCallId,
@@ -19,7 +25,7 @@ public record ToolInvocationRequest(
         if (binding == null) {
             throw new IllegalArgumentException("Tool invocation requires a resolved binding.");
         }
-        arguments = arguments == null ? Map.of() : Map.copyOf(arguments);
+        arguments = sanitizeArguments(arguments);
         workspaceScope = workspaceScope == null ? CodingWorkspaceScope.from(null) : workspaceScope;
         if (actor == null) {
             throw new IllegalArgumentException("Tool invocation requires a trusted actor.");
@@ -48,5 +54,18 @@ public record ToolInvocationRequest(
             ActorContext actor,
             String approvalId) {
         this(runId, toolCallId, binding, arguments, timeoutSeconds, workspaceScope, actor, approvalId, ApprovalMode.ON_REQUEST);
+    }
+
+    private static Map<String, Object> sanitizeArguments(Map<String, Object> arguments) {
+        if (arguments == null || arguments.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> sanitized = new LinkedHashMap<>();
+        arguments.forEach((key, value) -> {
+            if (key != null && value != null) {
+                sanitized.put(key, value);
+            }
+        });
+        return sanitized.isEmpty() ? Map.of() : Map.copyOf(sanitized);
     }
 }

@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Skill Marketplace</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --page: #f6f7f5;
+      --panel: #ffffff;
+      --panel-soft: #f0f1ec;
+      --text: #171717;
+      --muted: #6a6f67;
+      --border: #d9ddd3;
+      --border-strong: #c8cdc2;
+      --accent: #1d4ed8;
+      --accent-soft: rgba(29, 78, 216, 0.08);
+      --success: #116932;
+      --warning: #b45309;
+      --danger: #b42318;
+      --shadow: 0 12px 30px rgba(15, 23, 42, 0.05);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: var(--page); color: var(--text); }
+    body {
+      font: 15px/1.45 "Inter", "IBM Plex Sans", "Noto Sans SC", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      letter-spacing: 0;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    button, input, select { font: inherit; }
+
+    .shell { max-width: 1440px; margin: 0 auto; padding: 24px; }
+    .topbar {
+      display: flex; justify-content: space-between; gap: 20px; align-items: flex-end;
+      border-bottom: 1px solid var(--border); padding-bottom: 18px; margin-bottom: 20px;
+    }
+    .brand h1 { margin: 0; font-size: 24px; line-height: 1.15; }
+    .brand p { margin: 8px 0 0; color: var(--muted); max-width: 880px; }
+    .clock { color: var(--muted); font-size: 13px; white-space: nowrap; }
+
+    .summary-grid, .sources-grid, .catalog-grid {
+      display: grid; gap: 12px;
+    }
+    .summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 20px; }
+    .sources-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .catalog-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+    .kpi, .panel, .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    .kpi { padding: 14px; }
+    .kpi-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0; }
+    .kpi-value { margin-top: 8px; font-size: 24px; font-weight: 700; }
+    .kpi-note { margin-top: 6px; color: var(--muted); font-size: 13px; min-height: 20px; }
+
+    .panel { padding: 14px; }
+    .section { margin-top: 20px; }
+    .section-head {
+      display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 12px;
+    }
+    .section-head h2 { margin: 0; font-size: 17px; }
+    .section-head p { margin: 0; color: var(--muted); font-size: 13px; }
+
+    .toolbar {
+      display: grid; grid-template-columns: minmax(0, 1.4fr) 120px 120px auto;
+      gap: 12px; align-items: end; margin: 14px 0 18px;
+    }
+    .field { display: grid; gap: 6px; }
+    .field label { font-size: 12px; color: var(--muted); }
+    .field input, .field select {
+      width: 100%; padding: 11px 12px; border-radius: 8px; border: 1px solid var(--border-strong);
+      background: #fff; color: var(--text); outline: none;
+    }
+    .field input:focus, .field select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+    .button-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    button {
+      border: 1px solid var(--border-strong); border-radius: 8px; padding: 10px 12px;
+      background: var(--panel-soft); color: var(--text); cursor: pointer;
+    }
+    button.primary { background: var(--text); color: #fff; border-color: var(--text); }
+    button.secondary { background: #fff; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .status {
+      margin-top: 12px; padding: 11px 12px; border-radius: 8px; border: 1px solid var(--border);
+      background: #fff; color: var(--muted);
+    }
+    .status[data-tone="error"] { color: var(--danger); border-color: rgba(180, 35, 24, 0.3); background: #fff7f6; }
+    .status[data-tone="success"] { color: var(--success); border-color: rgba(17, 105, 50, 0.25); background: #f5fbf7; }
+    .status[data-tone="warn"] { color: var(--warning); border-color: rgba(180, 83, 9, 0.25); background: #fff9f1; }
+
+    .source-card, .repo-card, .skill-card {
+      padding: 14px; border-radius: 8px; border: 1px solid var(--border); background: #fff;
+    }
+    .source-card h3, .repo-card h3, .skill-card h3 {
+      margin: 0 0 6px; font-size: 15px; line-height: 1.25;
+    }
+    .source-meta, .repo-meta, .skill-meta {
+      display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; color: var(--muted); font-size: 12px;
+    }
+    .source-desc, .repo-desc, .skill-desc { color: var(--muted); min-height: 42px; }
+    .badge {
+      display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 999px;
+      border: 1px solid var(--border); background: var(--panel-soft); color: var(--text);
+      font-size: 12px; white-space: nowrap;
+    }
+    .badge[data-tone="success"] { color: var(--success); border-color: rgba(17, 105, 50, 0.25); background: #f2faf5; }
+    .badge[data-tone="warn"] { color: var(--warning); border-color: rgba(180, 83, 9, 0.25); background: #fff8ef; }
+    .badge[data-tone="danger"] { color: var(--danger); border-color: rgba(180, 35, 24, 0.25); background: #fff5f4; }
+    .badge[data-tone="accent"] { color: var(--accent); border-color: rgba(29, 78, 216, 0.25); background: #f4f8ff; }
+
+    .card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .card-actions button, .card-actions a {
+      padding: 8px 10px; border-radius: 8px; font-size: 13px; line-height: 1; display: inline-flex; align-items: center;
+    }
+    .button-link {
+      border: 1px solid var(--border-strong);
+      background: #fff;
+      color: var(--text);
+    }
+
+    .empty {
+      padding: 16px; border: 1px dashed var(--border-strong); border-radius: 8px; color: var(--muted);
+      background: rgba(255, 255, 255, 0.55);
+    }
+
+    .list { display: grid; gap: 12px; }
+    .results-header {
+      display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 10px;
+    }
+    .results-header h3 { margin: 0; font-size: 15px; }
+    .results-header span { color: var(--muted); font-size: 13px; }
+
+    .json-tip { color: var(--muted); font-size: 12px; margin-top: 8px; }
+
+    @media (max-width: 1100px) {
+      .summary-grid, .sources-grid, .catalog-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .toolbar { grid-template-columns: 1fr 110px 110px; }
+      .toolbar .field:last-child { grid-column: span 3; }
+    }
+    @media (max-width: 760px) {
+      .shell { padding: 16px; }
+      .topbar { flex-direction: column; align-items: flex-start; }
+      .summary-grid, .sources-grid, .catalog-grid, .toolbar { grid-template-columns: 1fr; }
+      .toolbar .field:last-child { grid-column: span 1; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <h1>Skill Marketplace</h1>
+        <p>Search and install skills from SkillHub and ClawHub.</p>
+      </div>
+      <div class="clock" id="clock"></div>
+    </header>
+
+    <div class="summary-grid" id="summaryGrid"></div>
+
+    <section class="panel">
+      <div class="section-head">
+        <h2>Find</h2>
+        <p>Search both supported registries, then install directly from a result card.</p>
+      </div>
+      <div class="toolbar">
+        <div class="field">
+          <label for="queryInput">Search query</label>
+          <input id="queryInput" type="text" placeholder="Try agent skills, spreadsheet, browser automation..." autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="limitInput">Limit</label>
+          <input id="limitInput" type="number" min="1" max="100" value="100">
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <button id="searchButton" class="primary" type="button">Refresh marketplace</button>
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <div class="button-row">
+            <button id="loadFeaturedButton" class="secondary" type="button">Load featured</button>
+            <button id="clearButton" class="secondary" type="button">Clear</button>
+          </div>
+        </div>
+      </div>
+      <div class="status" id="statusBox" aria-live="polite">Ready.</div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Sources</h2>
+        <p>Each source reports its own health and result count.</p>
+      </div>
+      <div class="sources-grid" id="sourcesGrid"></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>SkillHub</h2>
+        <p>Seed repositories that give the marketplace a strong starting surface.</p>
+      </div>
+      <div class="catalog-grid" id="skillHubGrid"></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>ClawHub</h2>
+        <p>Trending plus registry search results, with one-click install.</p>
+      </div>
+      <div class="catalog-grid" id="clawHubGrid"></div>
+    </section>
+
+  </div>
+
+  <script>
+    const state = {
+      lastMarketplace: null,
+    };
+
+    const $ = (id) => document.getElementById(id);
+
+    const summaryGrid = $('summaryGrid');
+    const sourcesGrid = $('sourcesGrid');
+    const skillHubGrid = $('skillHubGrid');
+    const clawHubGrid = $('clawHubGrid');
+    const statusBox = $('statusBox');
+    const clock = $('clock');
+
+    const queryInput = $('queryInput');
+    const limitInput = $('limitInput');
+    const searchButton = $('searchButton');
+    const loadFeaturedButton = $('loadFeaturedButton');
+    const clearButton = $('clearButton');
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function setStatus(message, tone = 'info', target = statusBox) {
+      target.textContent = message;
+      target.dataset.tone = tone;
+    }
+
+    function setBusy(button, busy, label) {
+      button.disabled = busy;
+      button.textContent = busy ? label : button.dataset.label;
+    }
+
+    function formatNumber(value) {
+      return Number(value || 0).toLocaleString('en-US');
+    }
+
+    function pill(text, tone = 'accent') {
+      return `<span class="badge" data-tone="${tone}">${escapeHtml(text)}</span>`;
+    }
+
+    function clawHubCard(item) {
+      const meta = [];
+      if (item.official) meta.push(pill('official', 'success'));
+      if (item.suspicious) meta.push(pill('suspicious', 'danger'));
+      if (item.verdict) meta.push(pill(item.verdict, item.verdict === 'unknown' ? '' : 'accent'));
+      meta.push(pill(`${formatNumber(item.downloads)} downloads`, ''));
+      return `
+        <article class="skill-card">
+          <h3>${escapeHtml(item.name)}</h3>
+          <div class="skill-desc">${escapeHtml(item.description || 'No summary provided.')}</div>
+          <div class="skill-meta">${meta.join('')}</div>
+          <div class="skill-meta">reference: ${escapeHtml(item.reference)}</div>
+          <div class="card-actions">
+            <button class="primary" type="button" data-install-clawhub="1" data-label="Install"
+              data-reference="${escapeHtml(item.reference)}"
+              data-name="${escapeHtml(item.name)}">Install</button>
+            <button type="button" data-copy-reference="1"
+              data-reference="${escapeHtml(item.reference)}">Copy ref</button>
+            <a class="button-link" href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">Open</a>
+          </div>
+        </article>`;
+    }
+
+    function sourceCard(item) {
+      const tone = item.status === 'READY' ? 'success' : item.status === 'DEGRADED' ? 'warn' : '';
+      return `
+        <article class="source-card">
+          <h3>${escapeHtml(item.label)}</h3>
+          <div class="source-desc">${escapeHtml(item.description || '')}</div>
+          <div class="source-meta">
+            ${pill(item.sourceType || 'SOURCE', tone)}
+            ${pill(item.status || 'READY', tone)}
+            ${pill(`${formatNumber(item.count)} results`, '')}
+          </div>
+          <div class="source-meta">${escapeHtml(item.note || '')}</div>
+          <div class="source-meta"><a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">Open source</a></div>
+        </article>`;
+    }
+
+    function skillHubCard(item) {
+      return `<article class="skill-card"><h3>${escapeHtml(item.name)}</h3><div class="skill-desc">${escapeHtml(item.description || '')}</div><div class="skill-meta">${pill('SKILLHUB', 'accent')} ${pill(`${formatNumber(item.downloads)} downloads`, '')}</div><div class="skill-meta">${escapeHtml(item.reference)}</div><div class="card-actions"><button class="primary" type="button" data-install-skillhub="1" data-label="Install" data-reference="${escapeHtml(item.reference)}" data-name="${escapeHtml(item.name)}">Install</button><button type="button" data-copy-reference="1" data-reference="${escapeHtml(item.reference)}">Copy ref</button><a class="button-link" href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">Open</a></div></article>`;
+    }
+
+    function renderSummary(data) {
+      const cards = [
+        { label: 'SkillHub', value: data.skillHubSkills.length, note: 'Primary source' },
+        { label: 'ClawHub', value: data.clawHubSkills.length, note: 'Trending + registry search' },
+        { label: 'Sources', value: data.sources.length, note: data.generatedAt ? new Date(data.generatedAt).toLocaleString() : '' },
+      ];
+      summaryGrid.innerHTML = cards.map((card) => `
+        <div class="kpi">
+          <div class="kpi-label">${escapeHtml(card.label)}</div>
+          <div class="kpi-value">${formatNumber(card.value)}</div>
+          <div class="kpi-note">${escapeHtml(card.note)}</div>
+        </div>
+      `).join('');
+    }
+
+    function renderMarketplace(data) {
+      state.lastMarketplace = data;
+      renderSummary(data);
+      sourcesGrid.innerHTML = data.sources.length
+        ? data.sources.map(sourceCard).join('')
+        : '<div class="empty">No source metadata returned.</div>';
+      skillHubGrid.innerHTML = data.skillHubSkills.length
+        ? data.skillHubSkills.map(skillHubCard).join('')
+        : '<div class="empty">No SkillHub skills returned.</div>';
+      clawHubGrid.innerHTML = data.clawHubSkills.length
+        ? data.clawHubSkills.map(clawHubCard).join('')
+        : '<div class="empty">No ClawHub skills returned.</div>';
+    }
+
+    async function requestJson(path, options = {}) {
+      const response = await fetch(path, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(options.headers || {}),
+        },
+        ...options,
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        throw new Error(text || `HTTP ${response.status}`);
+      }
+      return text ? JSON.parse(text) : null;
+    }
+
+    async function loadMarketplace() {
+      const query = queryInput.value.trim();
+      const limit = Math.max(1, Math.min(50, Number(limitInput.value || 24)));
+      setBusy(searchButton, true, 'Refreshing...');
+      setStatus('Loading marketplace sources...', 'info');
+      try {
+        const data = await requestJson(`/api/v1/skill-marketplace?query=${encodeURIComponent(query)}&limit=${limit}`);
+        renderMarketplace(data);
+        setStatus(`Loaded ${data.skillHubSkills.length} SkillHub skills and ${data.clawHubSkills.length} ClawHub skills.`, 'success');
+      } catch (error) {
+        setStatus(error.message, 'error');
+      } finally {
+        setBusy(searchButton, false, 'Refresh marketplace');
+      }
+    }
+
+    async function installClawHubSkill(reference, button) {
+      const body = {
+        reference,
+        id: null,
+        enabled: true,
+        overwrite: false,
+      };
+      if (!body.reference) {
+        setStatus('ClawHub reference is required before install.', 'warn');
+        return;
+      }
+      setBusy(button, true, 'Installing...');
+      try {
+        await requestJson('/api/v1/skills/install/clawhub', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+        setStatus('ClawHub skill installed.', 'success');
+      } catch (error) {
+        setStatus(error.message, 'error');
+      } finally {
+        setBusy(button, false, 'Install');
+      }
+    }
+
+    async function installSkillHubSkill(reference, button) {
+      if (!reference) { setStatus('SkillHub reference is required before install.', 'warn'); return; }
+      setBusy(button, true, 'Installing...');
+      try {
+        await requestJson('/api/v1/skills/install/skillhub', { method: 'POST', body: JSON.stringify({ reference, id: null, enabled: true, overwrite: false }) });
+        setStatus('SkillHub skill installed.', 'success');
+      } catch (error) { setStatus(error.message, 'error'); }
+      finally { setBusy(button, false, 'Install'); }
+    }
+
+    async function copyReference(reference) {
+      try {
+        await navigator.clipboard.writeText(reference);
+        setStatus(`Copied ${reference}`, 'success');
+      } catch (error) {
+        setStatus(error.message, 'error');
+      }
+    }
+
+    function wireCardActions(root) {
+      root.addEventListener('click', async (event) => {
+        const button = event.target.closest('button');
+        if (!button) return;
+        if (button.dataset.installClawhub) {
+          await installClawHubSkill(button.dataset.reference, button);
+          return;
+        }
+        if (button.dataset.installSkillhub) {
+          await installSkillHubSkill(button.dataset.reference, button);
+          return;
+        }
+        if (button.dataset.copyReference) {
+          await copyReference(button.dataset.reference);
+        }
+      });
+    }
+
+    wireCardActions(skillHubGrid);
+    wireCardActions(clawHubGrid);
+
+    searchButton.dataset.label = 'Refresh marketplace';
+    loadFeaturedButton.dataset.label = 'Load featured';
+    clearButton.dataset.label = 'Clear';
+
+    searchButton.addEventListener('click', loadMarketplace);
+    loadFeaturedButton.addEventListener('click', () => {
+      queryInput.value = '';
+      loadMarketplace();
+    });
+    clearButton.addEventListener('click', () => {
+      queryInput.value = '';
+      limitInput.value = '24';
+      statusBox.textContent = 'Cleared search inputs.';
+      statusBox.dataset.tone = 'info';
+      loadMarketplace();
+    });
+    queryInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        loadMarketplace();
+      }
+    });
+
+    function syncClock() {
+      clock.textContent = new Date().toLocaleString();
+    }
+
+    syncClock();
+    setInterval(syncClock, 1000);
+
+    loadMarketplace();
+  </script>
+</body>
+</html>

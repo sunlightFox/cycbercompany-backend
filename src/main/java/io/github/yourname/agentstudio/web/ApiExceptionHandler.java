@@ -1,5 +1,6 @@
 package io.github.yourname.agentstudio.web;
 
+import io.github.yourname.agentstudio.conversation.ConversationArchivedException;
 import io.github.yourname.agentstudio.node.NodeToolApprovalConflictException;
 import io.github.yourname.agentstudio.execution.ExecutionModeChangeNotAllowedException;
 import io.github.yourname.agentstudio.skill.SkillCompatibilityException;
@@ -37,6 +38,14 @@ class ApiExceptionHandler {
     ProblemDetail executionModeConflict(ExecutionModeChangeNotAllowedException ex) {
         var detail = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
         detail.setProperty("code", "EXECUTION_MODE_NOT_ALLOWED");
+        detail.setProperty("timestamp", Instant.now().toString());
+        return detail;
+    }
+
+    @ExceptionHandler(ConversationArchivedException.class)
+    ProblemDetail conversationArchived(ConversationArchivedException ex) {
+        var detail = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+        detail.setProperty("code", "CONVERSATION_ARCHIVED");
         detail.setProperty("timestamp", Instant.now().toString());
         return detail;
     }

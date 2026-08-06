@@ -13,6 +13,7 @@ import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
@@ -69,5 +70,43 @@ class ArtifactUploadClientTest {
         assertEquals("run-1", runId.get());
         assertEquals(new String(expected, StandardCharsets.UTF_8), new String(uploaded.get(), StandardCharsets.UTF_8));
         assertTrue(Files.notExists(screenshot));
+    }
+
+    @Test
+    void preservesNullFieldsWhenReplacingLocalPathWithArtifactReference() throws Exception {
+        byte[] expected = "trace bytes".getBytes(StandardCharsets.UTF_8);
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/v1/node/artifacts", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            byte[] response = """
+                    {"id":"art-1","runId":"run-1","artifactType":"trace","filename":"trace.zip",\
+                    "mimeType":"application/zip","sizeBytes":11,"digest":"sha256:test","downloadUrl":"/api/v1/artifacts/art-1"}
+                    """.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+        Path artifactRoot = temporaryDirectory.resolve("artifacts");
+        Path trace = artifactRoot.resolve("browser/run-1/trace.zip");
+        Files.createDirectories(trace.getParent());
+        Files.write(trace, expected);
+        ArtifactUploadClient client = new ArtifactUploadClient(
+                new ObjectMapper(), HttpClient.newHttpClient(),
+                "http://127.0.0.1:" + server.getAddress().getPort(), "node-1", "secret", artifactRoot);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("artifactPath", "browser/run-1/trace.zip");
+        result.put("artifactType", "trace");
+        result.put("mimeType", "application/zip");
+        result.put("exitCode", null);
+
+        ToolExecutionResult uploaded = client.uploadIfPresent("run-1", ToolExecutionResult.success(result));
+
+        assertTrue(uploaded.success());
+        assertTrue(uploaded.result().containsKey("exitCode"));
+        assertEquals(null, uploaded.result().get("exitCode"));
+        assertFalse(uploaded.result().containsKey("artifactPath"));
+        assertNotNull(uploaded.result().get("artifact"));
     }
 }

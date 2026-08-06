@@ -42,7 +42,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /**
- * Agent-oriented web retrieval using one self-hosted SearXNG JSON endpoint.
+ * Agent-oriented web retrieval using Tavily when configured, with SearXNG kept as a legacy fallback.
  *
  * <p>Search results are discovery candidates. Only readable, relevant page excerpts are
  * marked as verified evidence; both remain untrusted external content.
@@ -51,6 +51,9 @@ import org.springframework.stereotype.Service;
 public class WebSearchService {
 
     private static final String SEARXNG_SOURCE = "searxng";
+    private static final String TAVILY_SOURCE = "tavily";
+    private static final String TAVILY_DEFAULT_ENDPOINT = "https://api.tavily.com/search";
+    private static final String TAVILY_API_KEY_ENV = "TAVILY_API_KEY";
     private static final String USER_AGENT = "AgentStudio/1.0 (+local web retrieval)";
     private static final Set<String> TRACKING_PARAMETERS = Set.of("fbclid", "gclid", "mc_cid", "mc_eid");
     private static final Pattern ENGLISH_RELATIVE_TIME = Pattern.compile(
@@ -106,6 +109,7 @@ public class WebSearchService {
         AppProperties.WebSearch config = effectiveConfig(properties.webSearch());
         String query = command.query().trim();
         WebSearchMode intent = resolveIntent(command, query);
+        boolean tavilyEnabled = tavilyConfigured();
         if (!config.enabled()) {
             return response(query, intent, List.of(), List.of(), 0, 0, 0, 0, 0, 0);
         }
@@ -126,13 +130,16 @@ public class WebSearchService {
         List<WebSearchResult> candidates = attempts.stream()
                 .flatMap(attempt -> attempt.results().stream())
                 .collect(Collectors.toCollection(ArrayList::new));
-        // Some SearXNG deployments have no healthy news-category engine. Retry the same
-        // user query against the general category when query fan-out is disabled.
+        // Retry the same user query against the general category when a news-style
+        // search returns no candidates and query fan-out is disabled.
         if (candidates.isEmpty() && intent == WebSearchMode.NEWS
                 && queryPlan.stream().noneMatch(item -> item.mode() == WebSearchMode.GENERAL)) {
-            SearchAttempt fallback = searchSearxng(
-                    config, command, query, WebSearchMode.GENERAL, candidateLimit,
-                    "searxng/general-fallback", planning.cacheTtlSeconds());
+            SearchAttempt fallback = tavilyEnabled
+                    ? searchTavily(command, query, WebSearchMode.GENERAL, candidateLimit,
+                            "tavily/general-fallback", planning.cacheTtlSeconds())
+                    : searchSearxng(
+                            config, command, query, WebSearchMode.GENERAL, candidateLimit,
+                            "searxng/general-fallback", planning.cacheTtlSeconds());
             traces.add(fallback.trace());
             candidates = fallback.results();
         }
@@ -161,11 +168,18 @@ public class WebSearchService {
             WebSearchFreshness freshness,
             int limit,
             long cacheTtlSeconds) {
+        boolean tavilyEnabled = tavilyConfigured();
         List<Future<SearchAttempt>> tasks = new ArrayList<>();
         try (ExecutorService executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
             for (WebSearchQueryPlanner.PlannedQuery planned : queryPlan) {
-                tasks.add(executor.submit(() -> searchSearxng(
-                        config, command, planned.query(), planned.mode(), limit, planned.sourceId(), cacheTtlSeconds)));
+                if (tavilyEnabled) {
+                    tasks.add(executor.submit(() -> searchTavily(
+                            command, planned.query(), planned.mode(), limit,
+                            planned.sourceId().replaceFirst("^searxng/", "tavily/"), cacheTtlSeconds)));
+                } else {
+                    tasks.add(executor.submit(() -> searchSearxng(
+                            config, command, planned.query(), planned.mode(), limit, planned.sourceId(), cacheTtlSeconds)));
+                }
             }
             if (newsSources.gdeltEnabled()
                     && queryPlan.stream().anyMatch(item -> item.mode() == WebSearchMode.NEWS)) {
@@ -181,6 +195,49 @@ public class WebSearchService {
                 }
             }
             return List.copyOf(attempts);
+        }
+    }
+
+    private SearchAttempt searchTavily(
+            WebSearchCommand command,
+            String query,
+            WebSearchMode intent,
+            int limit,
+            String sourceId,
+            long cacheTtlSeconds) {
+        long startedAt = System.nanoTime();
+        String providerQuery = query;
+        try {
+            URI uri = buildTavilyUri();
+            String body = buildTavilyRequestBody(providerQuery, command, intent, limit);
+            List<WebSearchResult> cached = cachedResults("tavily:" + body, cacheTtlSeconds);
+            if (cached != null) {
+                return cachedAttempt(sourceId, providerQuery, startedAt, cached);
+            }
+            HttpRequest request = HttpRequest.newBuilder(uri)
+                    .timeout(Duration.ofSeconds(12))
+                    .header("Accept", "application/json")
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer " + tavilyApiKey())
+                    .header("User-Agent", USER_AGENT)
+                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> response = searchHttpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new IllegalStateException("Tavily returned HTTP " + response.statusCode()
+                        + (response.body() == null || response.body().isBlank() ? "" : ": " + safeTavilyError(response.body())));
+            }
+            List<WebSearchResult> results = parseTavilyResults(response.body(), limit);
+            cacheResults("tavily:" + body, results, cacheTtlSeconds);
+            return new SearchAttempt(results, new WebSearchProviderTrace(
+                    sourceId, "SUCCESS", providerQuery, results.size(), elapsedMillis(startedAt), ""));
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            return failedAttempt(sourceId, providerQuery, startedAt,
+                    "endpoint=" + safeEndpoint(TAVILY_DEFAULT_ENDPOINT) + ": Tavily request was interrupted");
+        } catch (Exception ex) {
+            return failedAttempt(sourceId, providerQuery, startedAt,
+                    "endpoint=" + safeEndpoint(TAVILY_DEFAULT_ENDPOINT) + ": " + safeMessage(ex));
         }
     }
 
@@ -336,6 +393,34 @@ public class WebSearchService {
             Instant publishedAt = parseSearxngPublicationDate(item, url);
             parsed.add(new WebSearchResult(title, url, item.path("content").asText(""), engine,
                     "SEARXNG", publishedAt));
+            if (parsed.size() >= limit) {
+                break;
+            }
+        }
+        return List.copyOf(parsed);
+    }
+
+    private List<WebSearchResult> parseTavilyResults(String json, int limit) throws Exception {
+        JsonNode results = objectMapper.readTree(json).path("results");
+        if (!results.isArray()) {
+            throw new IllegalStateException("Tavily JSON response did not contain a results array");
+        }
+        List<WebSearchResult> parsed = new ArrayList<>();
+        for (JsonNode item : results) {
+            String title = item.path("title").asText("").trim();
+            String url = item.path("url").asText("").trim();
+            if (title.isBlank() || url.isBlank()) {
+                continue;
+            }
+            Instant publishedAt = parsePublicationDate(item.path("published_date").asText(""));
+            if (publishedAt == null) {
+                publishedAt = parsePublicationDate(item.path("publishedDate").asText(""));
+            }
+            if (publishedAt == null) {
+                publishedAt = parsePublicationDateFromUrl(url);
+            }
+            parsed.add(new WebSearchResult(title, url, item.path("content").asText(""), TAVILY_SOURCE,
+                    "TAVILY", publishedAt));
             if (parsed.size() >= limit) {
                 break;
             }
@@ -581,6 +666,53 @@ public class WebSearchService {
         return URI.create(endpoint + "?" + parameters);
     }
 
+    private URI buildTavilyUri() {
+        String apiKey = tavilyApiKey();
+        if (apiKey.isBlank()) {
+            throw new IllegalStateException("Tavily API key is not configured");
+        }
+        String configuredEndpoint = blankToDefault(System.getenv("TAVILY_ENDPOINT"), TAVILY_DEFAULT_ENDPOINT);
+        String normalizedEndpoint = configuredEndpoint.endsWith("/search")
+                ? configuredEndpoint
+                : (configuredEndpoint.endsWith("/") ? configuredEndpoint + "search" : configuredEndpoint + "/search");
+        URI endpoint = URI.create(normalizedEndpoint);
+        if (!"https".equalsIgnoreCase(endpoint.getScheme()) && !"http".equalsIgnoreCase(endpoint.getScheme())) {
+            throw new IllegalArgumentException("Tavily endpoint must use HTTP(S)");
+        }
+        if (endpoint.getRawQuery() != null || endpoint.getRawFragment() != null) {
+            throw new IllegalArgumentException("Tavily endpoint must not contain a query or fragment");
+        }
+        return endpoint;
+    }
+
+    private String buildTavilyRequestBody(
+            String query,
+            WebSearchCommand command,
+            WebSearchMode intent,
+            int limit) throws Exception {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("query", query);
+        payload.put("search_depth", "basic");
+        payload.put("topic", intent == WebSearchMode.NEWS ? "news" : "general");
+        String timeRange = tavilyTimeRangeFor(intent, effectiveFreshness(intent, command.freshness()));
+        if (timeRange != null) {
+            payload.put("time_range", timeRange);
+        }
+        List<String> includeDomains = new ArrayList<>(normalizeDomains(command.includeDomains()));
+        List<String> excludeDomains = new ArrayList<>(normalizeDomains(command.excludeDomains()));
+        if (!includeDomains.isEmpty()) {
+            payload.put("include_domains", includeDomains);
+        }
+        if (!excludeDomains.isEmpty()) {
+            payload.put("exclude_domains", excludeDomains);
+        }
+        payload.put("max_results", Math.min(20, Math.max(1, limit)));
+        payload.put("include_answer", false);
+        payload.put("include_raw_content", false);
+        payload.put("auto_parameters", false);
+        return objectMapper.writeValueAsString(payload);
+    }
+
     private static void addParameter(StringJoiner parameters, String key, String value) {
         parameters.add(URLEncoder.encode(key, StandardCharsets.UTF_8) + "=" + URLEncoder.encode(value, StandardCharsets.UTF_8));
     }
@@ -618,6 +750,23 @@ public class WebSearchService {
     private static String providerQuery(String query, List<String> includedDomains) {
         Set<String> domains = normalizeDomains(includedDomains);
         return domains.size() == 1 ? "site:" + domains.iterator().next() + " " + query : query;
+    }
+
+    private static String tavilyTimeRangeFor(WebSearchMode intent, WebSearchFreshness freshness) {
+        return switch (effectiveFreshness(intent, freshness)) {
+            case DAY -> "day";
+            case WEEK -> "week";
+            case MONTH -> "month";
+            case ANY -> null;
+        };
+    }
+
+    private static boolean tavilyConfigured() {
+        return !blankToDefault(System.getenv(TAVILY_API_KEY_ENV), "").isBlank();
+    }
+
+    private static String tavilyApiKey() {
+        return blankToDefault(System.getenv(TAVILY_API_KEY_ENV), "");
     }
 
     private static AppProperties.WebSearch effectiveConfig(AppProperties.WebSearch configured) {
@@ -658,6 +807,23 @@ public class WebSearchService {
             return uri.getScheme() + "://" + authority;
         } catch (Exception ignored) {
             return "<invalid>";
+        }
+    }
+
+    private static String safeTavilyError(String body) {
+        try {
+            JsonNode root = new ObjectMapper().readTree(body);
+            String detail = root.path("detail").asText("");
+            if (!detail.isBlank()) {
+                return detail;
+            }
+            String error = root.path("error").asText("");
+            if (!error.isBlank()) {
+                return error;
+            }
+            return body.substring(0, Math.min(240, body.length()));
+        } catch (Exception ignored) {
+            return body.substring(0, Math.min(240, body.length()));
         }
     }
 

@@ -28,7 +28,6 @@ import io.github.yourname.agentstudio.node.NodeConnectionView;
 import io.github.yourname.agentstudio.node.NodeDetailView;
 import io.github.yourname.agentstudio.node.NodeKind;
 import io.github.yourname.agentstudio.node.NodeStatus;
-import io.github.yourname.agentstudio.node.CodingRunEvidenceView;
 import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.skill.SkillCatalog;
 import io.github.yourname.agentstudio.skill.SkillRunBinding;
@@ -334,10 +333,6 @@ class RunCommandServiceSkillSnapshotTest {
         when(conversations.history("conversation-1", ACTOR)).thenReturn(List.of());
         when(codingAgentLoop.executeInteraction(anyString(), anyString(), any(), any(), any(), any(), any()))
                 .thenReturn("你好！");
-        when(nodes.codingEvidence(anyString(), any())).thenReturn(new CodingRunEvidenceView(
-                "run", 0, List.of(), -1, List.of(), false, List.of(), List.of(), List.of(), List.of(),
-                false, false, List.of()));
-
         service.create(new CreateRunCommand(
                 "conversation-1", "你好呀", "model-1", "agent-1", List.of(), List.of(), List.of(),
                 List.of(), "node-1", null), ACTOR);
@@ -352,7 +347,7 @@ class RunCommandServiceSkillSnapshotTest {
         verify(codingAgentLoop).executeInteraction(
                 anyString(), anyString(), any(), any(), any(), any(), any());
         verify(nodes).validateExecutionTarget("node-1", ACTOR);
-        verify(nodes).codingEvidence(anyString(), any());
+        verify(nodes, never()).codingEvidence(anyString(), any());
         assertThat(persisted.runSpecJson()).contains("\"executionMode\":\"NODE_INTERACTION\"");
         assertThat(persisted.status()).isEqualTo(RunStatus.SUCCEEDED);
     }

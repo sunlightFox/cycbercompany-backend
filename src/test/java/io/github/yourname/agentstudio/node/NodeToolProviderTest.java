@@ -90,6 +90,25 @@ class NodeToolProviderTest {
     }
 
     @Test
+    void discoversNodeToolsEvenWhenCapabilityVersionIsMissing() {
+        NodeService nodes = mock(NodeService.class);
+        NodeToolProvider provider = new NodeToolProvider(nodes, new ObjectMapper());
+        NodeToolView tool = new NodeToolView(
+                7L, "node-1", "system.shell.run", null, "Run", RiskLevel.HIGH,
+                true, false, "{}", Instant.now(), Instant.now());
+        when(nodes.isReadyForToolExecution("node-1", ACTOR)).thenReturn(true);
+        when(nodes.listTools("node-1", ACTOR)).thenReturn(List.of(tool));
+
+        ResolvedToolBinding binding = new ToolRouter(List.of(provider))
+                .resolve(new ToolDiscoveryRequest("run-7", "node-1", List.of(), ACTOR), List.of("*"), "node:*")
+                .getFirst();
+
+        assertThat(binding.attributes())
+                .containsEntry("nodeId", "node-1")
+                .doesNotContainKey("toolVersion");
+    }
+
+    @Test
     void fullAccessBypassesThePauseButStillUsesTheAuditedRunInvocation() {
         NodeService nodes = mock(NodeService.class);
         NodeToolProvider provider = new NodeToolProvider(nodes, new ObjectMapper());
@@ -111,6 +130,56 @@ class NodeToolProviderTest {
         verify(nodes).callToolForRun(
                 eq("run-4"), eq("call-4"), eq("node-1"), eq("shell.run"), any(), eq(ACTOR), eq(true));
         assertThat(result.succeeded()).isTrue();
+    }
+
+    @Test
+    void normalizesBlankNodeStatusAndNullResultWithoutThrowing() {
+        NodeService nodes = mock(NodeService.class);
+        NodeToolProvider provider = new NodeToolProvider(nodes, new ObjectMapper());
+        NodeToolView tool = new NodeToolView(
+                8L, "node-1", "system.shell.run", "1", "Run", RiskLevel.HIGH,
+                true, true, "{}", Instant.now(), Instant.now());
+        when(nodes.isReadyForToolExecution("node-1", ACTOR)).thenReturn(true);
+        when(nodes.listTools("node-1", ACTOR)).thenReturn(List.of(tool));
+        when(nodes.callToolForRun(any(), any(), any(), any(), any(), any())).thenReturn(
+                new NodeToolCallResult("inv-8", "node-1", "system.shell.run", null, null, "NullPointerException"));
+        ResolvedToolBinding binding = new ToolRouter(List.of(provider))
+                .resolve(new ToolDiscoveryRequest("run-8", "node-1", List.of(), ACTOR), List.of("*"), "node:*")
+                .getFirst();
+
+        var result = provider.invoke(new ToolInvocationRequest(
+                "run-8", "call-8", binding, Map.of("command", "echo ok"),
+                30, CodingWorkspaceScope.from(null), ACTOR));
+
+        assertThat(result.status()).isEqualTo("FAILED");
+        assertThat(result.succeeded()).isFalse();
+        assertThat(result.errorMessage()).isEqualTo("NullPointerException");
+        assertThat(result.result()).containsEntry("tool", "system.shell.run");
+        assertThat(result.result()).containsEntry("value", Map.of());
+    }
+
+    @Test
+    void reportsMissingNodeResultAsStructuredFailure() {
+        NodeService nodes = mock(NodeService.class);
+        NodeToolProvider provider = new NodeToolProvider(nodes, new ObjectMapper());
+        NodeToolView tool = new NodeToolView(
+                9L, "node-1", "system.shell.run", "1", "Run", RiskLevel.HIGH,
+                true, true, "{}", Instant.now(), Instant.now());
+        when(nodes.isReadyForToolExecution("node-1", ACTOR)).thenReturn(true);
+        when(nodes.listTools("node-1", ACTOR)).thenReturn(List.of(tool));
+        when(nodes.callToolForRun(any(), any(), any(), any(), any(), any())).thenReturn(null);
+        ResolvedToolBinding binding = new ToolRouter(List.of(provider))
+                .resolve(new ToolDiscoveryRequest("run-9", "node-1", List.of(), ACTOR), List.of("*"), "node:*")
+                .getFirst();
+
+        var result = provider.invoke(new ToolInvocationRequest(
+                "run-9", "call-9", binding, Map.of("command", "echo ok"),
+                30, CodingWorkspaceScope.from(null), ACTOR));
+
+        assertThat(result.status()).isEqualTo("FAILED");
+        assertThat(result.succeeded()).isFalse();
+        assertThat(result.errorMessage()).isEqualTo("Node tool returned no result.");
+        assertThat(result.result()).containsEntry("tool", "system.shell.run");
     }
 
     @Test

@@ -248,6 +248,17 @@ public class NodeService {
         nodes.delete(node);
     }
 
+    @Transactional
+    public NodeConnectionView disconnect(String id, ActorContext actor) {
+        NodeConnectionEntity node = requireNode(id, actor);
+        boolean shutdownRequested = sessions.requestShutdown(node.id(), "server requested client shutdown");
+        node.markOffline(Instant.now());
+        if (!shutdownRequested) {
+            sessions.disconnect(node.id(), "server requested client shutdown");
+        }
+        return NodeConnectionView.from(nodes.save(node));
+    }
+
     /**
      * 轮换长期节点密钥，并立即断开用旧密钥建立的连接。
      *
@@ -725,14 +736,14 @@ public class NodeService {
         List<String> verificationTools = history.stream()
                 .filter(invocation -> invocation.status() == NodeToolInvocationStatus.SUCCEEDED)
                 .map(NodeToolInvocationEntity::toolName)
-                .filter(name -> "shell.run".equals(name) || "process.wait_http".equals(name) || name.startsWith("browser."))
+                .filter(name -> "shell.run".equals(name) || isManagedProcessWaitHttp(name) || name.startsWith("browser."))
                 .distinct()
                 .toList();
         // 命令原文留在受权限保护的审计表中。交付门禁只需要知道它是不是可解释的测试、构建、静态检查
         // 或 HTTP 联调，因此这里输出有限的类别，既能拒绝 `echo done`，也不会把命令参数暴露给页面。
         List<String> commandVerifications = history.stream()
                 .filter(invocation -> invocation.status() == NodeToolInvocationStatus.SUCCEEDED)
-                .map(invocation -> "process.wait_http".equals(invocation.toolName())
+                .map(invocation -> isManagedProcessWaitHttp(invocation.toolName())
                         ? java.util.Optional.of("http")
                         : "shell.run".equals(invocation.toolName())
                                 ? commandVerificationCategory(invocation)
@@ -1041,14 +1052,14 @@ public class NodeService {
             if (invocation.status() != NodeToolInvocationStatus.SUCCEEDED) {
                 continue;
             }
-            if ("process.start".equals(invocation.toolName())) {
+            if (isManagedProcessStart(invocation.toolName())) {
                 String processId = opaqueProcessId(readJsonMap(invocation.resultJson()).get("processId"));
                 if (processId != null) {
                     startedProcessIds.add(processId);
                 }
                 continue;
             }
-            if ("process.wait_http".equals(invocation.toolName())) {
+            if (isManagedProcessWaitHttp(invocation.toolName())) {
                 String processId = opaqueProcessId(readJsonMap(invocation.argumentsJson()).get("processId"));
                 if (processId != null && startedProcessIds.contains(processId)) {
                     return true;
@@ -1320,14 +1331,14 @@ public class NodeService {
         List<NodeToolInvocationEntity> history = invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(actor.tenantId(), runId);
         List<ManagedProcessTarget> invocationTargets = history.stream()
                 .filter(invocation -> invocation.status() == NodeToolInvocationStatus.SUCCEEDED)
-                .filter(invocation -> "process.start".equals(invocation.toolName()))
+                .filter(invocation -> isManagedProcessStart(invocation.toolName()))
                 .map(this::managedProcessTarget)
                 .flatMap(java.util.Optional::stream)
                 .toList();
         List<ManagedProcessTarget> approvalTargets = approvals.findByTenantIdAndRunId(actor.tenantId(), runId).stream()
                 .filter(approval -> approval.status() == NodeToolApprovalStatus.APPROVED)
                 .filter(approval -> "SUCCEEDED".equalsIgnoreCase(approval.executionStatus()))
-                .filter(approval -> "process.start".equals(approval.toolName()))
+                .filter(approval -> isManagedProcessStart(approval.toolName()))
                 .map(this::managedProcessTarget)
                 .flatMap(java.util.Optional::stream)
                 .toList();
@@ -1724,13 +1735,14 @@ public class NodeService {
 
     private NodeToolCallResult stopManagedProcessForRun(String runId, ManagedProcessTarget target, ActorContext actor) {
         Instant now = Instant.now();
+        String stopToolName = target.stopToolName();
         NodeToolInvocationEntity invocation = invocations.save(new NodeToolInvocationEntity(
                 "nodeinv_" + UUID.randomUUID(),
                 actor.tenantId(),
                 runId,
                 "cleanup_" + target.processId(),
                 target.nodeId(),
-                "process.stop",
+                stopToolName,
                 toJson(Map.of("processId", target.processId())),
                 now));
         invocation.start(now);
@@ -1738,7 +1750,7 @@ public class NodeService {
         try {
             NodeToolCallResult result = executeTool(
                     target.nodeId(),
-                    "process.stop",
+                    stopToolName,
                     new CallNodeToolCommand(Map.of("processId", target.processId()), 30),
                     actor,
                     true,
@@ -1753,7 +1765,7 @@ public class NodeService {
         } catch (Exception ex) {
             invocation.fail(NodeToolInvocationStatus.FAILED, ex.getMessage(), Instant.now());
             invocations.save(invocation);
-            return new NodeToolCallResult(null, target.nodeId(), "process.stop", "FAILED", null, ex.getMessage());
+            return new NodeToolCallResult(null, target.nodeId(), stopToolName, "FAILED", null, ex.getMessage());
         }
     }
 
@@ -1763,7 +1775,8 @@ public class NodeService {
         if (processId == null || processId.toString().isBlank()) {
             return java.util.Optional.empty();
         }
-        return java.util.Optional.of(new ManagedProcessTarget(invocation.nodeId(), processId.toString()));
+        return java.util.Optional.of(new ManagedProcessTarget(
+                invocation.nodeId(), processId.toString(), stopToolNameForStart(invocation.toolName())));
     }
 
     private java.util.Optional<ManagedProcessTarget> managedProcessTarget(NodeToolApprovalEntity approval) {
@@ -1772,16 +1785,33 @@ public class NodeService {
         if (processId == null || processId.toString().isBlank()) {
             return java.util.Optional.empty();
         }
-        return java.util.Optional.of(new ManagedProcessTarget(approval.nodeId(), processId.toString()));
+        return java.util.Optional.of(new ManagedProcessTarget(
+                approval.nodeId(), processId.toString(), stopToolNameForStart(approval.toolName())));
     }
 
     private boolean wasStopped(List<NodeToolInvocationEntity> history, String processId) {
         return history.stream()
                 .filter(invocation -> invocation.status() == NodeToolInvocationStatus.SUCCEEDED)
-                .filter(invocation -> "process.stop".equals(invocation.toolName()))
+                .filter(invocation -> isManagedProcessStop(invocation.toolName()))
                 .map(invocation -> readJsonMap(invocation.argumentsJson()).get("processId"))
                 .filter(java.util.Objects::nonNull)
                 .anyMatch(processId::equals);
+    }
+
+    private static boolean isManagedProcessStart(String toolName) {
+        return "process.start".equals(toolName) || "system.process.start".equals(toolName);
+    }
+
+    private static boolean isManagedProcessWaitHttp(String toolName) {
+        return "process.wait_http".equals(toolName) || "system.process.wait_http".equals(toolName);
+    }
+
+    private static boolean isManagedProcessStop(String toolName) {
+        return "process.stop".equals(toolName) || "system.process.stop".equals(toolName);
+    }
+
+    private static String stopToolNameForStart(String startToolName) {
+        return "system.process.start".equals(startToolName) ? "system.process.stop" : "process.stop";
     }
 
     private int timeoutSeconds(CallNodeToolCommand command) {
@@ -2000,6 +2030,9 @@ public class NodeService {
         node.updateCapabilitySnapshot(capabilityRevision, runtimeVersions, features, now);
         nodes.save(node);
         for (NodeCapabilityPayload capability : capabilities) {
+            if (capability == null) {
+                continue;
+            }
             if (capability.name() == null || capability.name().isBlank()) {
                 continue;
             }
@@ -2081,6 +2114,6 @@ public class NodeService {
         }
     }
 
-    private record ManagedProcessTarget(String nodeId, String processId) {
+    private record ManagedProcessTarget(String nodeId, String processId, String stopToolName) {
     }
 }

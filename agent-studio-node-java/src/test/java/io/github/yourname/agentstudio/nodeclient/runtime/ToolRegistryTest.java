@@ -152,6 +152,54 @@ class ToolRegistryTest {
         var mkdir = registry.capabilities().stream().filter(item -> "system.fs.mkdir".equals(item.name())).findFirst().orElseThrow();
         var move = registry.capabilities().stream().filter(item -> "system.fs.move".equals(item.name())).findFirst().orElseThrow();
         var shell = registry.capabilities().stream().filter(item -> "system.shell.run".equals(item.name())).findFirst().orElseThrow();
+        var softwareQuery = registry.capabilities().stream()
+                .filter(item -> "system.software.query".equals(item.name()))
+                .findFirst()
+                .orElseThrow();
+        var softwareInstall = registry.capabilities().stream()
+                .filter(item -> "system.software.install".equals(item.name()))
+                .findFirst()
+                .orElseThrow();
+        var softwareUninstall = registry.capabilities().stream()
+                .filter(item -> "system.software.uninstall".equals(item.name()))
+                .findFirst()
+                .orElseThrow();
+        var serviceQuery = registry.capabilities().stream()
+                .filter(item -> "system.service.query".equals(item.name()))
+                .findFirst()
+                .orElseThrow();
+        var serviceStop = registry.capabilities().stream()
+                .filter(item -> "system.service.stop".equals(item.name()))
+                .findFirst()
+                .orElseThrow();
+        var serviceSetStartMode = registry.capabilities().stream()
+                .filter(item -> "system.service.set_start_mode".equals(item.name()))
+                .findFirst()
+                .orElseThrow();
+        var osProcessQuery = registry.capabilities().stream()
+                .filter(item -> "system.os_process.query".equals(item.name()))
+                .findFirst()
+                .orElseThrow();
+        var osProcessTerminate = registry.capabilities().stream()
+                .filter(item -> "system.os_process.terminate".equals(item.name()))
+                .findFirst()
+                .orElseThrow();
+        var privilegeQuery = registry.capabilities().stream()
+                .filter(item -> "system.privilege.query".equals(item.name()))
+                .findFirst()
+                .orElseThrow();
+        var uninstallPreflight = registry.capabilities().stream()
+                .filter(item -> "system.uninstall.preflight".equals(item.name()))
+                .findFirst()
+                .orElseThrow();
+        var uninstallExecute = registry.capabilities().stream()
+                .filter(item -> "system.uninstall.execute".equals(item.name()))
+                .findFirst()
+                .orElseThrow();
+        var systemProcessStart = registry.capabilities().stream()
+                .filter(item -> "system.process.start".equals(item.name()))
+                .findFirst()
+                .orElseThrow();
         var scopedList = registry.capabilities().stream()
                 .filter(item -> "system.desktop.organize.list".equals(item.name()))
                 .findFirst()
@@ -171,8 +219,41 @@ class ToolRegistryTest {
 
         assertEquals(java.util.List.of("source", "destination"), move.inputSchema().get("required"));
         assertEquals(java.util.List.of("command"), shell.inputSchema().get("required"));
+        assertEquals(java.util.List.of("packageId"), softwareQuery.inputSchema().get("required"));
+        assertEquals(java.util.List.of("packageId"), softwareInstall.inputSchema().get("required"));
+        assertEquals(java.util.List.of("packageId"), softwareUninstall.inputSchema().get("required"));
+        assertTrue(properties(softwareInstall.inputSchema()).containsKey("allowUpgrade"));
+        assertTrue(softwareInstall.description().contains("--no-upgrade"));
+        assertTrue(softwareUninstall.description().contains("protected services"));
+        assertTrue(registry.features().contains("system-software.v1"));
+        assertEquals(java.util.List.of("serviceName"), serviceQuery.inputSchema().get("required"));
+        assertEquals(java.util.List.of("serviceName"), serviceStop.inputSchema().get("required"));
+        assertEquals(java.util.List.of("serviceName", "startMode"), serviceSetStartMode.inputSchema().get("required"));
+        assertTrue(serviceStop.description().contains("not-stoppable services"));
+        assertTrue(properties(serviceSetStartMode.inputSchema()).containsKey("startMode"));
+        assertTrue(registry.features().contains("system-service.v1"));
+        assertEquals(java.util.List.of("processName"), osProcessQuery.inputSchema().get("required"));
+        assertEquals(java.util.List.of("processName"), osProcessTerminate.inputSchema().get("required"));
+        assertTrue(properties(osProcessTerminate.inputSchema()).containsKey("allMatching"));
+        assertTrue(osProcessQuery.description().contains("separate from system.process"));
+        assertTrue(registry.features().contains("system-os-process.v1"));
+        assertEquals(java.util.List.of(), privilegeQuery.inputSchema().getOrDefault("required", java.util.List.of()));
+        assertTrue(privilegeQuery.description().contains("administrator token"));
+        assertTrue(registry.features().contains("system-privilege.v1"));
+        assertEquals(java.util.List.of("packageId"), uninstallPreflight.inputSchema().get("required"));
+        assertTrue(properties(uninstallPreflight.inputSchema()).containsKey("serviceName"));
+        assertTrue(properties(uninstallPreflight.inputSchema()).containsKey("processNames"));
+        assertTrue(uninstallPreflight.description().contains("blocking signals"));
+        assertTrue(registry.features().contains("system-uninstall-preflight.v1"));
+        assertEquals(java.util.List.of("packageId"), uninstallExecute.inputSchema().get("required"));
+        assertTrue(properties(uninstallExecute.inputSchema()).containsKey("stopService"));
+        assertTrue(properties(uninstallExecute.inputSchema()).containsKey("terminateProcesses"));
+        assertTrue(properties(uninstallExecute.inputSchema()).containsKey("retryUninstall"));
+        assertTrue(uninstallExecute.description().contains("retry one exact winget uninstall"));
+        assertTrue(registry.features().contains("system-uninstall-execute.v1"));
         assertTrue(shell.description().contains(
                 io.github.yourname.agentstudio.nodeclient.tools.ShellTool.commandDialectDescription()));
+        assertTrue(systemProcessStart.description().contains("long-running process"));
         @SuppressWarnings("unchecked")
         var shellProperties = (java.util.Map<String, Object>) shell.inputSchema().get("properties");
         @SuppressWarnings("unchecked")
@@ -397,15 +478,52 @@ class ToolRegistryTest {
     }
 
     @Test
+    void workspaceModeRejectsDirectSystemToolExecution() throws Exception {
+        ToolRegistry registry = new ToolRegistry(
+                HttpClient.newHttpClient(), Files.createTempDirectory("agent-studio-workspace-execute"), NodeAccessMode.WORKSPACE);
+
+        var list = registry.execute("system.fs.list", Map.of("path", "."));
+        var shell = registry.execute("system.shell.run", Map.of("command", "echo should-not-run"));
+        var process = registry.execute("system.process.start", Map.of("command", "npm run dev"));
+
+        assertFalse(list.success());
+        assertFalse(shell.success());
+        assertFalse(process.success());
+        assertTrue(list.errorMessage().contains("not registered with system access"));
+        assertTrue(shell.errorMessage().contains("not registered with system access"));
+        assertTrue(process.errorMessage().contains("not registered with system access"));
+        registry.close();
+    }
+
+    @Test
+    void doesNotAdvertiseManagedProcessToolsWithoutAWorkspace() throws Exception {
+        ToolRegistry registry = new ToolRegistry(HttpClient.newHttpClient(), null, NodeAccessMode.WORKSPACE);
+
+        assertTrue(registry.capabilities().stream().noneMatch(item -> item.name().startsWith("process.")));
+        assertTrue(registry.capabilities().stream().noneMatch(item -> item.name().startsWith("system.process.")));
+        registry.close();
+    }
+
+    @Test
     void reportsRuntimeAndFeatureFactsSeparatelyFromToolPermissions() throws Exception {
         ToolRegistry registry = new ToolRegistry(
                 HttpClient.newHttpClient(), Files.createTempDirectory("agent-studio-runtime-facts"), NodeAccessMode.WORKSPACE);
 
         assertTrue(registry.runtimeVersions().containsKey("java"));
+        assertFalse(registry.runtimeVersions().containsKey("privilege.mode"));
         assertTrue(registry.features().contains("workspace.scope.v1"));
         assertTrue(registry.features().contains("managed-process.v1"));
         assertTrue(registry.features().stream().noneMatch("system-access.v1"::equals));
         assertTrue(registry.capabilities().stream().allMatch(capability -> capability.version() != null));
+        registry.close();
+    }
+
+    @Test
+    void systemModeReportsPrivilegeRuntimeFact() throws Exception {
+        ToolRegistry registry = new ToolRegistry(
+                HttpClient.newHttpClient(), Files.createTempDirectory("agent-studio-runtime-privilege"), NodeAccessMode.SYSTEM);
+
+        assertTrue(registry.runtimeVersions().containsKey("privilege.mode"));
         registry.close();
     }
 
@@ -426,8 +544,32 @@ class ToolRegistryTest {
         registry.close();
     }
 
+    @Test
+    void systemModeCanStartAndStopManagedProcessesOutsideTheWorkspace() throws Exception {
+        var workspace = Files.createTempDirectory("agent-studio-system-process-workspace");
+        var outside = Files.createTempDirectory("agent-studio-system-process-outside");
+        ToolRegistry registry = new ToolRegistry(HttpClient.newHttpClient(), workspace, NodeAccessMode.SYSTEM);
+
+        var started = registry.execute("system.process.start", Map.of(
+                "command", longRunningCommand(),
+                "cwd", outside.toString()));
+
+        assertTrue(started.success());
+        assertEquals("system", started.result().get("workingDirectoryScope"));
+        assertFalse(started.result().containsKey("workingDirectory"));
+        var stopped = registry.execute("system.process.stop", Map.of("processId", started.result().get("processId")));
+        assertTrue(stopped.success());
+        registry.close();
+    }
+
     @SuppressWarnings("unchecked")
     private static Map<String, Object> properties(Map<String, Object> schema) {
         return (Map<String, Object>) schema.get("properties");
+    }
+
+    private static String longRunningCommand() {
+        return System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("win")
+                ? "ping -n 20 127.0.0.1 > nul"
+                : "sleep 20";
     }
 }

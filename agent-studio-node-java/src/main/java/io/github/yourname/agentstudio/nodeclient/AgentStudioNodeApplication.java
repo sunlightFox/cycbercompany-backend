@@ -49,6 +49,14 @@ public class AgentStudioNodeApplication {
             startLocal(options, new NodeConfigStore(objectMapper, localConfigPath(options)), objectMapper, httpClient);
             return;
         }
+        if ("auto".equals(command)) {
+            autoStart(options, objectMapper, httpClient);
+            return;
+        }
+        if ("gui".equals(command)) {
+            NodeClientWindow.show(options, objectMapper, httpClient);
+            return;
+        }
         if ("install-browsers".equals(command)) {
             // Playwright Java 包不含浏览器二进制文件，首次使用浏览器工具前须单独安装。
             CLI.main(new String[]{"install", "chromium"});
@@ -57,7 +65,7 @@ public class AgentStudioNodeApplication {
         throw new IllegalArgumentException("Unknown command: " + command);
     }
 
-    private static void register(
+    static void register(
             Map<String, String> options,
             NodeConfigStore configStore,
             ObjectMapper objectMapper,
@@ -86,11 +94,20 @@ public class AgentStudioNodeApplication {
         System.out.println("config=" + configStore.path());
     }
 
-    private static void start(
+    static void start(
             Map<String, String> options,
             NodeConfigStore configStore,
             ObjectMapper objectMapper,
             HttpClient httpClient) throws Exception {
+        start(options, configStore, objectMapper, httpClient, ignored -> { });
+    }
+
+    static void start(
+            Map<String, String> options,
+            NodeConfigStore configStore,
+            ObjectMapper objectMapper,
+            HttpClient httpClient,
+            java.util.function.Consumer<NodeWebSocketClient> clientReady) throws Exception {
         NodeConfig config = configStore.load();
         try (NodeProcessLock ignored = NodeProcessLock.acquire(configStore.path())) {
             NodeWebSocketClient client = new NodeWebSocketClient(
@@ -99,11 +116,21 @@ public class AgentStudioNodeApplication {
                     config,
                     SystemInfo.current(),
                     optionalDesktopRoot(options.get("desktop-root")));
+            clientReady.accept(client);
             client.startBlocking();
         }
     }
 
     private static void startLocal(
+            Map<String, String> options,
+            NodeConfigStore configStore,
+            ObjectMapper objectMapper,
+            HttpClient httpClient) throws Exception {
+        provisionLocal(options, configStore, objectMapper, httpClient);
+        start(options, configStore, objectMapper, httpClient);
+    }
+
+    static void provisionLocal(
             Map<String, String> options,
             NodeConfigStore configStore,
             ObjectMapper objectMapper,
@@ -124,7 +151,36 @@ public class AgentStudioNodeApplication {
                 workspacePath(options).toString(),
                 NodeAccessMode.SYSTEM.name());
         configStore.save(config);
+    }
+
+    /** First-run registration for the packaged Windows client, then normal reconnects. */
+    private static void autoStart(
+            Map<String, String> options,
+            ObjectMapper objectMapper,
+            HttpClient httpClient) throws Exception {
+        NodeConfigStore configStore = new NodeConfigStore(objectMapper, configPath(options));
+        if (!java.nio.file.Files.exists(configStore.path())) {
+            String server = firstNonBlank(options.get("server"), System.getenv("AGENT_STUDIO_SERVER"));
+            String token = firstNonBlank(options.get("token"), System.getenv("AGENT_STUDIO_REGISTRATION_TOKEN"));
+            if (server == null || token == null) {
+                throw new IllegalArgumentException(
+                        "First launch requires --server/--token or AGENT_STUDIO_SERVER/AGENT_STUDIO_REGISTRATION_TOKEN.");
+            }
+            register(optionsWith(options, "server", server, "token", token), configStore, objectMapper, httpClient);
+        }
         start(options, configStore, objectMapper, httpClient);
+    }
+
+    private static String firstNonBlank(String first, String second) {
+        return first != null && !first.isBlank() ? first : (second != null && !second.isBlank() ? second : null);
+    }
+
+    private static Map<String, String> optionsWith(Map<String, String> options, String key1, String value1,
+                                                    String key2, String value2) {
+        Map<String, String> copy = new java.util.LinkedHashMap<>(options);
+        copy.put(key1, value1);
+        copy.put(key2, value2);
+        return copy;
     }
 
     private static String required(Map<String, String> options, String name) {
@@ -147,6 +203,8 @@ public class AgentStudioNodeApplication {
                   register --server http://localhost:8080 --token <registrationToken> [--name my-pc] [--workspace path] [--access workspace|system] [--config node-config.json]
                   start [--config node-config.json] [--desktop-root path]
                   start-local --server http://localhost:8080 [--name "This computer"] [--workspace path] [--config local-executor.json]
+                  auto [--server URL] [--token registrationToken] [--workspace path] [--config node-config.json]
+                  gui [--config node-config.json]
                   install-browsers
                 """);
     }
@@ -163,7 +221,7 @@ public class AgentStudioNodeApplication {
         return workspace;
     }
 
-    private static Path configPath(Map<String, String> options) {
+    static Path configPath(Map<String, String> options) {
         String configured = options.get("config");
         if (configured != null && !configured.isBlank()) {
             return Path.of(configured).toAbsolutePath().normalize();
@@ -171,7 +229,7 @@ public class AgentStudioNodeApplication {
         return defaultConfigPath();
     }
 
-    private static Path localConfigPath(Map<String, String> options) {
+    static Path localConfigPath(Map<String, String> options) {
         String configured = options.get("config");
         if (configured != null && !configured.isBlank()) {
             return Path.of(configured).toAbsolutePath().normalize();

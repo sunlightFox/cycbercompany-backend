@@ -1,6 +1,9 @@
 package io.github.yourname.agentstudio.nodeclient.transport;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.MissingNode;
 import io.github.yourname.agentstudio.nodeclient.NodeConfig;
 import io.github.yourname.agentstudio.nodeclient.SystemInfo;
 import io.github.yourname.agentstudio.nodeclient.artifact.ArtifactUploadClient;
@@ -153,9 +156,25 @@ public class NodeWebSocketClient implements WebSocket.Listener {
         toolRegistry.close();
     }
 
+    /** Stops reconnects and releases the active node connection and local tool resources. */
+    public void stop() {
+        stopping = true;
+        cancelHeartbeat();
+        WebSocket socket = webSocket;
+        if (socket != null) {
+            try {
+                socket.sendClose(WebSocket.NORMAL_CLOSURE, "node stopped by user");
+            } catch (Exception ignored) {
+            }
+        }
+        disconnected.countDown();
+        closeClientResources();
+    }
+
     @Override
     public void onOpen(WebSocket webSocket) {
         this.webSocket = webSocket;
+        incomingMessage.clear();
         this.sessionId = null;
         this.fencingToken = 0;
         this.heartbeatIntervalSeconds = 20;
@@ -178,15 +197,25 @@ public class NodeWebSocketClient implements WebSocket.Listener {
             webSocket.request(1);
             return null;
         }
+        NodeProtocolEnvelope envelope;
         try {
-            NodeProtocolEnvelope envelope = objectMapper.readValue(append.message(), NodeProtocolEnvelope.class);
+            envelope = objectMapper.readValue(append.message(), NodeProtocolEnvelope.class);
+        } catch (Exception ex) {
+            closeForProtocolError(webSocket, "invalid protocol JSON");
+            return null;
+        }
+        if (envelope == null || envelope.type() == null || envelope.type().isBlank()) {
+            closeForProtocolError(webSocket, "invalid protocol envelope");
+            return null;
+        }
+        try {
             String type = envelope.type();
             if (!acceptEnvelope(envelope, "node.accepted".equals(type))) {
                 System.err.println("Ignoring stale or invalid node protocol envelope.");
                 webSocket.request(1);
                 return null;
             }
-            var payload = envelope.payload();
+            JsonNode payload = envelope.payload() == null ? MissingNode.getInstance() : envelope.payload();
             logReceivedSummary(payload, type);
             if ("node.accepted".equals(type)) {
                 // 认证通过后才上报本机工具能力，避免未认证连接泄露能力列表。
@@ -201,6 +230,8 @@ public class NodeWebSocketClient implements WebSocket.Listener {
                 sendStatus(payload.path("invocationId").asText(), envelope.traceId());
             } else if ("tool.cancel".equals(type)) {
                 cancelInvocation(payload.path("invocationId").asText(), envelope.traceId());
+            } else if ("node.shutdown".equals(type)) {
+                shutdownFromServer(webSocket, payload.path("reason").asText("server requested shutdown"));
             }
         } catch (Exception ex) {
             System.err.println("Failed to handle server message: invalid protocol payload.");
@@ -209,10 +240,21 @@ public class NodeWebSocketClient implements WebSocket.Listener {
         return null;
     }
 
+    private void closeForProtocolError(WebSocket socket, String reason) {
+        System.err.println("Closing WebSocket because the server sent " + reason + ".");
+        cancelHeartbeat();
+        incomingMessage.clear();
+        try {
+            socket.sendClose(1007, reason);
+        } catch (Exception ignored) {
+        }
+    }
+
     @Override
     public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
         System.out.println("WebSocket closed: " + statusCode + " " + reason);
         cancelHeartbeat();
+        incomingMessage.clear();
         disconnected.countDown();
         return null;
     }
@@ -221,6 +263,7 @@ public class NodeWebSocketClient implements WebSocket.Listener {
     public void onError(WebSocket webSocket, Throwable error) {
         System.err.println("WebSocket error: " + error.getMessage());
         cancelHeartbeat();
+        incomingMessage.clear();
         disconnected.countDown();
     }
 
@@ -242,6 +285,27 @@ public class NodeWebSocketClient implements WebSocket.Listener {
             task.cancel(true);
             heartbeatTask = null;
         }
+    }
+
+    private void shutdownFromServer(WebSocket socket, String reason) {
+        System.out.println("Server requested node shutdown.");
+        stopping = true;
+        closeClientResources();
+        try {
+            socket.sendClose(WebSocket.NORMAL_CLOSURE,
+                    reason == null || reason.isBlank() ? "server requested shutdown" : reason);
+        } catch (Exception ignored) {
+        }
+        disconnected.countDown();
+    }
+
+    private void closeClientResources() {
+        cancelHeartbeat();
+        activeInvocations.values().forEach(future -> future.cancel(true));
+        activeInvocations.clear();
+        toolRegistry.close();
+        scheduler.shutdownNow();
+        toolExecutor.shutdownNow();
     }
 
     private void sendCapabilities() throws Exception {
@@ -272,13 +336,27 @@ public class NodeWebSocketClient implements WebSocket.Listener {
         }
     }
 
-    private void handleDispatch(com.fasterxml.jackson.databind.JsonNode payload, String traceId) throws Exception {
+    private void handleDispatch(JsonNode payload, String traceId) throws Exception {
         String invocationId = payload.path("invocationId").asText();
         String toolName = payload.path("toolName").asText();
         String argumentsDigest = payload.path("argumentsDigest").asText();
         int attempt = payload.path("attempt").asInt(1);
         String executionSessionId = payload.path("executionSessionId").asText(null);
-        Map<String, Object> arguments = objectMapper.convertValue(payload.path("arguments"), Map.class);
+        Map<String, Object> arguments = mapOrEmpty(payload.path("arguments"));
+        if (invocationId == null || invocationId.isBlank()) {
+            System.err.println("Ignoring malformed tool.invoke without an invocationId.");
+            return;
+        }
+        if (toolName == null || toolName.isBlank()) {
+            sendInvocationResult(null, "FAILED", invocationId,
+                    "Malformed tool.invoke: toolName is required.", traceId);
+            return;
+        }
+        if (argumentsDigest == null || argumentsDigest.isBlank()) {
+            sendInvocationResult(null, "FAILED", invocationId,
+                    "Malformed tool.invoke: argumentsDigest is required.", traceId);
+            return;
+        }
         NodeInvocationJournal.Acceptance acceptance = journal.accept(invocationId, toolName, argumentsDigest, attempt);
         if (acceptance.decision() == NodeInvocationJournal.Decision.CONFLICT) {
             sendInvocationResult(acceptance.entry(), "FAILED", null,
@@ -319,6 +397,15 @@ public class NodeWebSocketClient implements WebSocket.Listener {
         if (future.isDone()) {
             activeInvocations.remove(invocationId, future);
         }
+    }
+
+    private Map<String, Object> mapOrEmpty(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return Map.of();
+        }
+        Map<String, Object> converted = objectMapper.convertValue(
+                node, new TypeReference<Map<String, Object>>() { });
+        return converted == null ? Map.of() : converted;
     }
 
     private void handleToolInvoke(

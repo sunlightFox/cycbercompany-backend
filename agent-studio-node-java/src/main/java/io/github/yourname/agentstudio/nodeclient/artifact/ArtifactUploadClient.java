@@ -78,11 +78,11 @@ public final class ArtifactUploadClient {
             }
             safeResult.put("artifact", reference);
             Files.deleteIfExists(artifact);
-            return new ToolExecutionResult(execution.success(), Map.copyOf(safeResult), execution.errorMessage());
+            return new ToolExecutionResult(execution.success(), safeResult, execution.errorMessage());
         } catch (Exception ex) {
             safeResult.put("artifactUploadFailed", true);
             return ToolExecutionResult.failure(
-                    Map.copyOf(safeResult),
+                    safeResult,
                     "Artifact upload failed: " + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()));
         }
     }

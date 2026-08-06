@@ -566,7 +566,13 @@ public class SkillCatalog {
      * API 响应也有大小上限，避免异常代理返回超大内容占满内存。
      */
     private String resolveCommit(GitHubRepository repo, String requestedRef) {
-        String ref = blankToDefault(requestedRef, "main");
+        String ref = blankToDefault(requestedRef, "");
+        if (ref.isBlank()) {
+            ref = defaultBranch(repo);
+        }
+        if (ref.isBlank()) {
+            ref = "main";
+        }
         if (COMMIT_SHA.matcher(ref).matches()) {
             return ref.toLowerCase(Locale.ROOT);
         }
@@ -604,6 +610,16 @@ public class SkillCatalog {
 
     private static String encodePathSegment(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
+    }
+
+    private static boolean isSkillMarkdown(Path path) {
+        return path != null && isSkillMarkdown(path.toString());
+    }
+
+    private static boolean isSkillMarkdown(String path) {
+        String normalized = path == null ? "" : path.replace('\\', '/').toLowerCase(Locale.ROOT);
+        String skillFile = SKILL_FILE.toLowerCase(Locale.ROOT);
+        return normalized.equals(skillFile) || normalized.endsWith("/" + skillFile);
     }
 
     private byte[] downloadZip(GitHubRepository repo, String ref) {
@@ -650,7 +666,7 @@ public class SkillCatalog {
             }
             extracted.add(new ExtractedFile(insideSkill, file.content()));
             totalBytes += file.content().length;
-            if (insideSkill.toString().replace('\\', '/').equals(SKILL_FILE)) {
+            if (isSkillMarkdown(insideSkill)) {
                 skillMarkdown = file.content();
             }
         }
@@ -685,7 +701,7 @@ public class SkillCatalog {
                 rawFiles.add(new RawArchiveFile(path, content));
             }
         }
-        boolean hasRootSkill = rawFiles.stream().anyMatch(file -> file.path().toString().replace('\\', '/').equals(SKILL_FILE));
+        boolean hasRootSkill = rawFiles.stream().anyMatch(file -> isSkillMarkdown(file.path()));
         List<ArchiveFile> files = new ArrayList<>();
         for (RawArchiveFile raw : rawFiles) {
             Path path = hasRootSkill ? raw.path() : stripTopLevelDirectory(raw.path().toString());
@@ -699,7 +715,7 @@ public class SkillCatalog {
     private Path inferSkillRoot(List<ArchiveFile> files) {
         List<Path> roots = files.stream()
                 .map(ArchiveFile::path)
-                .filter(path -> path.getFileName().toString().equals(SKILL_FILE))
+                .filter(SkillCatalog::isSkillMarkdown)
                 .map(Path::getParent)
                 .map(path -> path == null ? Path.of("") : path)
                 .toList();
@@ -925,6 +941,31 @@ public class SkillCatalog {
                 size = Math.addExact(size, Files.size(file));
             }
             return new ContentStats(files.size(), size);
+        }
+    }
+
+    private String defaultBranch(GitHubRepository repo) {
+        URI uri = URI.create("https://api.github.com/repos/"
+                + encodePathSegment(repo.owner()) + "/" + encodePathSegment(repo.name()));
+        HttpRequest request = HttpRequest.newBuilder(uri)
+                .timeout(Duration.ofSeconds(20))
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .header("User-Agent", "spring-agent-studio")
+                .GET()
+                .build();
+        try {
+            HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                return "main";
+            }
+            String branch = objectMapper.readTree(response.body()).path("default_branch").asText("");
+            return branch.isBlank() ? "main" : branch;
+        } catch (IOException ex) {
+            return "main";
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            return "main";
         }
     }
 

@@ -1,5 +1,6 @@
 package io.github.yourname.agentstudio.skill;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /** Inputs needed to assess whether selected Skills can run in the current capability scope. */
@@ -12,9 +13,22 @@ public record SkillPreflightCommand(
         List<String> toolNames) {
 
     public SkillPreflightCommand {
-        skillIds = skillIds == null ? List.of() : List.copyOf(skillIds);
-        knowledgeBaseIds = knowledgeBaseIds == null ? List.of() : List.copyOf(knowledgeBaseIds);
-        mcpServerIds = mcpServerIds == null ? List.of() : List.copyOf(mcpServerIds);
-        toolNames = toolNames == null ? List.of() : List.copyOf(toolNames);
+        skillIds = copyNonNull(skillIds);
+        knowledgeBaseIds = copyNonNull(knowledgeBaseIds);
+        mcpServerIds = copyNonNull(mcpServerIds);
+        toolNames = copyNonNull(toolNames);
+    }
+
+    private static <T> List<T> copyNonNull(List<T> values) {
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        List<T> sanitized = new ArrayList<>();
+        for (T value : values) {
+            if (value != null) {
+                sanitized.add(value);
+            }
+        }
+        return sanitized.isEmpty() ? List.of() : List.copyOf(sanitized);
     }
 }

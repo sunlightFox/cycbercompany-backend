@@ -1,6 +1,7 @@
 package io.github.yourname.agentstudio.node;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /** 服务端已经持久化、可以下发给节点的一次调用快照。 */
@@ -20,7 +21,7 @@ public record NodeInvocationDispatch(
         String traceId) {
 
     public NodeInvocationDispatch {
-        arguments = arguments == null ? Map.of() : Map.copyOf(arguments);
+        arguments = sanitizeArguments(arguments);
         attempt = Math.max(1, attempt);
     }
 
@@ -39,5 +40,18 @@ public record NodeInvocationDispatch(
         payload.put("attempt", attempt);
         payload.put("idempotencyKey", idempotencyKey);
         return payload;
+    }
+
+    private static Map<String, Object> sanitizeArguments(Map<String, Object> arguments) {
+        if (arguments == null || arguments.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> sanitized = new LinkedHashMap<>();
+        arguments.forEach((key, value) -> {
+            if (key != null && value != null) {
+                sanitized.put(key, value);
+            }
+        });
+        return sanitized.isEmpty() ? Map.of() : Map.copyOf(sanitized);
     }
 }

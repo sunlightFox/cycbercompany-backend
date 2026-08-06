@@ -14,6 +14,9 @@ import io.github.yourname.agentstudio.execution.ExecutionSettingsService;
 import io.github.yourname.agentstudio.tool.RiskLevel;
 import io.github.yourname.agentstudio.security.ActorContext;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -75,6 +78,36 @@ class NodeServiceCapabilityPolicyTest {
         assertThat(node.capabilityRevision()).isEqualTo("sha256:" + "a".repeat(64));
         assertThat(node.runtimeVersions()).containsEntry("java", "21.0.4");
         assertThat(node.features()).contains("workspace.scope.v1");
+    }
+
+    @Test
+    void ignoresNullEntriesInReportedCapabilitiesAndMetadata() {
+        NodeService service = new NodeService(nodes, tokens, tools, invocations, approvals, sessions, new ObjectMapper());
+        NodeConnectionEntity node = new NodeConnectionEntity(
+                "node-1", "tenant-a", "desktop", "host", "Windows", "amd64", "test", "secret", Instant.now());
+        when(nodes.findById("node-1")).thenReturn(Optional.of(node));
+        when(tools.findByTenantIdAndNodeIdAndName("tenant-a", "node-1", "system.shell.run"))
+                .thenReturn(Optional.empty());
+        when(tools.save(any(NodeToolEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(tools.findByTenantIdAndNodeIdOrderByNameAsc("tenant-a", "node-1")).thenReturn(List.of());
+        Map<String, String> runtimes = new LinkedHashMap<>();
+        runtimes.put("node", "22");
+        runtimes.put("empty", null);
+        Set<String> features = new LinkedHashSet<>();
+        features.add("system-access.v1");
+        features.add(null);
+        List<NodeCapabilityPayload> capabilities = new ArrayList<>();
+        capabilities.add(null);
+        capabilities.add(new NodeCapabilityPayload(" ", "ignored", "1", Map.of()));
+        capabilities.add(new NodeCapabilityPayload("system.shell.run", "Run shell", "1", Map.of("type", "object")));
+
+        service.saveCapabilities("node-1", null, runtimes, features, capabilities);
+
+        ArgumentCaptor<NodeToolEntity> saved = ArgumentCaptor.forClass(NodeToolEntity.class);
+        verify(tools).save(saved.capture());
+        assertThat(saved.getValue().name()).isEqualTo("system.shell.run");
+        assertThat(node.runtimeVersions()).containsExactly(Map.entry("node", "22"));
+        assertThat(node.features()).containsExactly("system-access.v1");
     }
 
     @Test

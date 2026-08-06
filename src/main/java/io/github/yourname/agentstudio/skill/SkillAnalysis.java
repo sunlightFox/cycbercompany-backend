@@ -1,5 +1,6 @@
 package io.github.yourname.agentstudio.skill;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /** 不执行 Skill 的静态分析结果，可直接持久化到 RunSpec。 */
@@ -27,7 +28,16 @@ public record SkillAnalysis(
     }
 
     private static <T> List<T> copy(List<T> values) {
-        return values == null ? List.of() : List.copyOf(values);
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        List<T> sanitized = new ArrayList<>();
+        for (T value : values) {
+            if (value != null) {
+                sanitized.add(value);
+            }
+        }
+        return sanitized.isEmpty() ? List.of() : List.copyOf(sanitized);
     }
 
     public record RuntimeRequirement(String name, String versionConstraint, String source) {

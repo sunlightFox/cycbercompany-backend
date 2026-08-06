@@ -31,4 +31,18 @@ class BoundedTextMessageAccumulatorTest {
         assertEquals(BoundedTextMessageAccumulator.Status.COMPLETE, next.status());
         assertEquals("ok", next.message());
     }
+
+    @Test
+    void canClearAnIncompleteMessageWhenTheConnectionEnds() {
+        BoundedTextMessageAccumulator accumulator = new BoundedTextMessageAccumulator(32);
+
+        assertEquals(
+                BoundedTextMessageAccumulator.Status.INCOMPLETE,
+                accumulator.append("{\"stale\":", false).status());
+        accumulator.clear();
+
+        BoundedTextMessageAccumulator.AppendResult next = accumulator.append("\"fresh\"}", true);
+        assertEquals(BoundedTextMessageAccumulator.Status.COMPLETE, next.status());
+        assertEquals("\"fresh\"}", next.message());
+    }
 }

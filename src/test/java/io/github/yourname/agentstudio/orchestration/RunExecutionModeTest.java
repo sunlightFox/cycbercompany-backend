@@ -37,6 +37,13 @@ class RunExecutionModeTest {
                 .isEqualTo(RunExecutionMode.NODE_INTERACTION);
     }
 
+    @Test
+    void deliveryGateIsOnlyRequiredForExplicitCodingRuns() {
+        assertThat(RunExecutionMode.CONVERSATIONAL.requiresDeliveryGate()).isFalse();
+        assertThat(RunExecutionMode.NODE_INTERACTION.requiresDeliveryGate()).isFalse();
+        assertThat(RunExecutionMode.CODING.requiresDeliveryGate()).isTrue();
+    }
+
     private static CreateRunCommand command(String text, List<String> tools, String nodeId, String workingDirectory) {
         return new CreateRunCommand(
                 "conversation-1", text, "model-1", "agent-1", List.of(), List.of(), List.of(), tools,

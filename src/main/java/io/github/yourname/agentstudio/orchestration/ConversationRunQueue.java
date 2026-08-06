@@ -9,9 +9,10 @@ import java.util.Map;
 import org.springframework.stereotype.Component;
 
 /**
- * Serializes model work within one tenant conversation while preserving parallelism between conversations.
+ * 串行化同一租户同一会话内的模型工作，同时保留不同会话之间的并行能力。
  *
- * <p>Only scheduling metadata lives here. The run itself and its messages remain durable in the database.
+ * <p>这里仅保存调度元数据。Run 本身和消息仍然持久化在数据库中；应用重启后的恢复依赖
+ * RunExecutionTask 和 outbox，而不是这个内存队列。
  */
 @Component
 class ConversationRunQueue {
@@ -47,6 +48,7 @@ class ConversationRunQueue {
             state.activeRunId = next.runId();
             worker = next.worker();
         }
+        // worker 在同步块外执行，避免一次长模型调用阻塞其他会话的入队/查询。
         worker.run();
     }
 

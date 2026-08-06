@@ -1,5 +1,6 @@
 package io.github.yourname.agentstudio.tool;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -21,8 +22,8 @@ public record ResolvedToolBinding(
         Map<String, String> attributes) {
 
     public ResolvedToolBinding {
-        inputSchema = inputSchema == null ? Map.of() : Map.copyOf(inputSchema);
-        attributes = attributes == null ? Map.of() : Map.copyOf(attributes);
+        inputSchema = sanitizeObjectMap(inputSchema);
+        attributes = sanitizeStringMap(attributes);
     }
 
     static ResolvedToolBinding from(ToolDescriptor descriptor, String modelName) {
@@ -37,5 +38,31 @@ public record ResolvedToolBinding(
                 descriptor.requiresApproval(),
                 descriptor.inputSchema(),
                 descriptor.attributes());
+    }
+
+    private static Map<String, Object> sanitizeObjectMap(Map<String, Object> values) {
+        if (values == null || values.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> sanitized = new LinkedHashMap<>();
+        values.forEach((key, value) -> {
+            if (key != null && value != null) {
+                sanitized.put(key, value);
+            }
+        });
+        return sanitized.isEmpty() ? Map.of() : Map.copyOf(sanitized);
+    }
+
+    private static Map<String, String> sanitizeStringMap(Map<String, String> values) {
+        if (values == null || values.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, String> sanitized = new LinkedHashMap<>();
+        values.forEach((key, value) -> {
+            if (key != null && value != null) {
+                sanitized.put(key, value);
+            }
+        });
+        return sanitized.isEmpty() ? Map.of() : Map.copyOf(sanitized);
     }
 }

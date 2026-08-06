@@ -110,6 +110,7 @@ class RunCommandSystemPromptTest {
                 .contains("when those parameters are advertised by its schema")
                 .contains("only when both tools are available")
                 .contains("finite tool budget")
+                .contains("system.shell.run capability only for short-lived commands")
                 .contains("Project scope for this run: task-board");
     }
 
@@ -220,9 +221,123 @@ class RunCommandSystemPromptTest {
                 "system.fs.mkdir",
                 "system.fs.write",
                 "system.fs.read",
+                "system.process.start",
+                "system.process.status",
+                "system.process.logs",
+                "system.process.wait_http",
+                "system.process.stop",
                 "system.shell.run");
         assertThat(RunCommandService.desktopProjectToolSet())
                 .doesNotContain("browser.open", "system.desktop.clipboard.set", "skill.create_draft");
+    }
+
+    @Test
+    void windowsSystemRequestsGetStructuredRemediationTools() {
+        assertThat(RunCommandService.requestsWindowsSystemOperation(
+                "Uninstall the Windows software package Tencent.QQ after stopping QQPCRTP service and QQPCTray.exe"))
+                .isTrue();
+        assertThat(RunCommandService.requestsWindowsSystemOperation(
+                "Stop Windows service QQPCRTP and inspect QQPCTray.exe"))
+                .isTrue();
+        assertThat(RunCommandService.requestsWindowsSystemOperation(
+                "Check whether QQPCTray.exe is still running"))
+                .isTrue();
+        assertThat(RunCommandService.requestsWindowsSystemOperation(
+                "Why is QQPCTray.exe still running? Check it."))
+                .isTrue();
+        assertThat(RunCommandService.requestsWindowsSystemOperation(
+                "Check why QQPCRTP Windows service failed to stop."))
+                .isTrue();
+        assertThat(RunCommandService.requestsWindowsSystemOperation(
+                "\u5378\u8f7d\u7535\u8111\u4e0a\u7684\u8f6f\u4ef6\uff0c\u5148\u68c0\u67e5\u670d\u52a1\u548c\u8fdb\u7a0b"))
+                .isTrue();
+        assertThat(RunCommandService.requestsWindowsSystemOperation(
+                "\u5206\u6790\u4e00\u4e0b\u5e76\u68c0\u67e5\u670d\u52a1 QQPCRTP"))
+                .isTrue();
+        assertThat(RunCommandService.requestsWindowsSystemOperation(
+                "\u68c0\u67e5\u4e00\u4e0b\u4e3a\u4ec0\u4e48\u670d\u52a1 QQPCRTP \u505c\u6b62\u5931\u8d25"))
+                .isTrue();
+
+        assertThat(RunCommandService.windowsRemediationToolSet()).containsExactly(
+                "system.privilege.query",
+                "system.software.query",
+                "system.software.install",
+                "system.software.uninstall",
+                "system.service.query",
+                "system.service.stop",
+                "system.service.set_start_mode",
+                "system.os_process.query",
+                "system.os_process.terminate",
+                "system.uninstall.preflight",
+                "system.uninstall.execute");
+        assertThat(RunCommandService.windowsRemediationToolSet())
+                .doesNotContain("system.shell.run", "system.fs.delete", "system.desktop.organize.list");
+    }
+
+    @Test
+    void nodeInteractionPromptPrefersStructuredWindowsRemediationTools() {
+        CreateRunCommand command = new CreateRunCommand(
+                "conversation-1",
+                "Uninstall the Windows software package Tencent.QQ after stopping QQPCRTP service and QQPCTray.exe",
+                null,
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                RunCommandService.windowsRemediationToolSet(),
+                "node-1",
+                null);
+
+        String prompt = RunCommandService.buildSystemPrompt(
+                "You are a desktop assistant.", command, new EvidenceBundle(List.of()), List.of(), List.of(), "", "");
+
+        assertThat(prompt)
+                .contains("For Windows software, service, process, install, uninstall, or remediation requests")
+                .contains("prefer the")
+                .contains("system.software.*")
+                .contains("system.service.*")
+                .contains("system.os_process.*")
+                .contains("system.uninstall.preflight")
+                .contains("system.uninstall.execute")
+                .contains("Do not encode")
+                .contains("winget")
+                .contains("taskkill")
+                .contains("system.shell.run command strings")
+                .contains("Exact package IDs, Windows service names, and process image");
+    }
+
+    @Test
+    void ordinaryDependencyInstallDoesNotRequestWindowsSystemTools() {
+        assertThat(RunCommandService.requestsWindowsSystemOperation(
+                "Install npm dependencies and run the frontend test suite."))
+                .isFalse();
+        assertThat(RunCommandService.requestsWindowsSystemOperation(
+                "Explain how a background process works in Java."))
+                .isFalse();
+        assertThat(RunCommandService.requestsWindowsSystemOperation(
+                "Explain what node.exe is on Windows."))
+                .isFalse();
+        assertThat(RunCommandService.requestsWindowsSystemOperation(
+                "Explain how to stop a Windows service."))
+                .isFalse();
+        assertThat(RunCommandService.requestsWindowsSystemOperation(
+                "How can I stop a Windows service?"))
+                .isFalse();
+        assertThat(RunCommandService.requestsWindowsSystemOperation(
+                "How should I uninstall an app on Windows?"))
+                .isFalse();
+        assertThat(RunCommandService.requestsWindowsSystemOperation(
+                "What is winget and how does uninstall work?"))
+                .isFalse();
+        assertThat(RunCommandService.requestsWindowsSystemOperation(
+                "\u5e2e\u6211\u5199\u4e00\u4e2a\u8f6f\u4ef6\u9879\u76ee"))
+                .isFalse();
+        assertThat(RunCommandService.requestsWindowsSystemOperation(
+                "\u89e3\u91ca\u8f6f\u4ef6\u5de5\u7a0b\u91cc\u7684\u540e\u53f0\u8fdb\u7a0b"))
+                .isFalse();
+        assertThat(RunCommandService.requestsWindowsSystemOperation(
+                "\u4ec0\u4e48\u662f winget\uff0c\u5b83\u600e\u4e48\u5378\u8f7d\u8f6f\u4ef6"))
+                .isFalse();
     }
 
     @Test
@@ -249,6 +364,8 @@ class RunCommandSystemPromptTest {
                 .contains("only for an explicit desktop-organization request")
                 .contains("Do not create temporary files in the desktop root")
                 .contains("Do not invent placeholder path strings")
+                .contains("For a long-running local server or watch process")
+                .doesNotContain("when no exposed native directory-creation or long-running process capability exists, use the exposed system.shell.run capability instead")
                 .contains("angle-bracket labels");
     }
 
@@ -270,6 +387,27 @@ class RunCommandSystemPromptTest {
         assertThat(RunCommandService.requestsDesktopOperation(
                 "Explain how a frontend game project works."))
                 .isFalse();
+        assertThat(RunCommandService.requestsDesktopOperation(
+                "Explain how to organize desktop files."))
+                .isFalse();
+        assertThat(RunCommandService.requestsDesktopOperation(
+                "How should I organize desktop files?"))
+                .isFalse();
+        assertThat(RunCommandService.requestsDesktopOperation(
+                "\u6211\u8be5\u5982\u4f55\u6574\u7406\u684c\u9762\u6587\u4ef6\uff1f"))
+                .isFalse();
+        assertThat(RunCommandService.requestsDesktopOperation(
+                "Explain the failure and organize my desktop."))
+                .isTrue();
+        assertThat(RunCommandService.requestsDesktopOperation(
+                "Organize my desktop and explain what changed."))
+                .isTrue();
+        assertThat(RunCommandService.requestsDesktopProject(
+                "Explain how to create a desktop frontend project."))
+                .isFalse();
+        assertThat(RunCommandService.requestsDesktopProject(
+                "Explain the setup briefly and create a desktop frontend project."))
+                .isTrue();
     }
 
     @Test

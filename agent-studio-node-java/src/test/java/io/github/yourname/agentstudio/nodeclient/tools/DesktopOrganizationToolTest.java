@@ -85,4 +85,18 @@ class DesktopOrganizationToolTest {
         assertFalse(overwrite.success());
         assertFalse(nested.success());
     }
+
+    @Test
+    void rejectsUnreplacedFilenameAndCategoryPlaceholdersBeforeResolvingPaths() throws Exception {
+        Path desktop = Files.createTempDirectory("agent-studio-desktop-placeholder");
+        DesktopOrganizationTool tool = new DesktopOrganizationTool(desktop);
+
+        var write = tool.write(Map.of("filename", "<path>", "content", "blocked"));
+        var category = tool.createCategory(Map.of("category", "<folder>"));
+
+        assertFalse(write.success());
+        assertTrue(write.errorMessage().contains("unreplaced placeholder"));
+        assertFalse(category.success());
+        assertTrue(category.errorMessage().contains("unreplaced placeholder"));
+    }
 }

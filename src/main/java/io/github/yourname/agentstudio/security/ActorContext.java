@@ -1,13 +1,13 @@
 package io.github.yourname.agentstudio.security;
 
+import java.util.LinkedHashSet;
 import java.util.Set;
 
 /**
- * Trusted identity object passed into domain services.
+ * 服务端信任的当前操作者上下文。
  *
- * <p>Controllers may build this from headers in local mode, while production
- * can build it from JWT/OIDC claims. Domain code never trusts tenant/user data
- * supplied by prompts, tool arguments, or model output.
+ * <p>本地模式可以从请求头创建它，生产模式可以从 JWT/OIDC 声明创建它。业务代码绝不相信
+ * Prompt、工具参数或模型输出里携带的 tenant/user 信息。
  */
 public record ActorContext(
         String tenantId,
@@ -15,7 +15,25 @@ public record ActorContext(
         Set<String> roles,
         Set<String> scopes) {
 
+    public ActorContext {
+        roles = copyNonNull(roles);
+        scopes = copyNonNull(scopes);
+    }
+
     public static ActorContext local() {
         return new ActorContext("local", "local-user", Set.of("LOCAL_USER"), Set.of("agent:run"));
+    }
+
+    private static Set<String> copyNonNull(Set<String> values) {
+        if (values == null || values.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> sanitized = new LinkedHashSet<>();
+        for (String value : values) {
+            if (value != null) {
+                sanitized.add(value);
+            }
+        }
+        return sanitized.isEmpty() ? Set.of() : Set.copyOf(sanitized);
     }
 }

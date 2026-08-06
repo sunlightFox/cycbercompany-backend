@@ -19,11 +19,13 @@ import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.tool.ResolvedToolBinding;
 import io.github.yourname.agentstudio.tool.RiskLevel;
 import io.github.yourname.agentstudio.tool.ApprovalMode;
+import io.github.yourname.agentstudio.tool.ToolInvocationRequest;
 import io.github.yourname.agentstudio.tool.ToolProviderResult;
 import io.github.yourname.agentstudio.tool.ToolCleanupResult;
 import io.github.yourname.agentstudio.tool.ToolRouter;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -446,6 +448,8 @@ class CodingAgentLoopTest {
                 .contains("angle-bracket labels")
                 .contains("inspect the resulting diff")
                 .contains("Never claim a file changed")
+                .contains("system.process.status/system.process.logs")
+                .contains("system.process.wait_http")
                 .contains("Model turn: 1/24")
                 .contains("Tool calls used: 0/48");
         assertThat(executionGuidance(requests.getAllValues().get(1)))
@@ -494,6 +498,182 @@ class CodingAgentLoopTest {
     }
 
     @Test
+    void removesNullToolArgumentsBeforeInvokingTheRouter() {
+        ModelGateway gateway = mock(ModelGateway.class);
+        ToolRouter tools = mock(ToolRouter.class);
+        RunEventPublisher events = mock(RunEventPublisher.class);
+        ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
+        var shell = binding("tool_system_shell_run_123456", "system.shell.run");
+        Map<String, Object> arguments = new LinkedHashMap<>();
+        arguments.put("command", "pwd");
+        arguments.put("cwd", null);
+        arguments.put("timeoutSeconds", null);
+        when(gateway.complete(any()))
+                .thenReturn(new ModelGateway.ModelAnswer(
+                        "Checking the current directory.",
+                        null,
+                        null,
+                        "test-model",
+                        List.of(new ModelGateway.ModelToolCall("call-shell", "system.shell.run", arguments)),
+                        "tool_calls"))
+                .thenReturn(new ModelGateway.ModelAnswer("Directory checked.", null, null, "test-model"));
+        when(tools.invoke(any())).thenReturn(new ToolProviderResult("SUCCEEDED", true, Map.of(), "", null));
+        when(tools.cleanup("run-a", actor)).thenReturn(List.of());
+
+        String answer = new CodingAgentLoop(gateway, tools, events).execute(
+                "run-a",
+                "model-a",
+                List.of(shell),
+                new ArrayList<>(List.of(new ModelGateway.ModelMessage("user", "Check the cwd"))),
+                actor);
+
+        assertThat(answer).isEqualTo("Directory checked.");
+        ArgumentCaptor<ToolInvocationRequest> request = ArgumentCaptor.forClass(ToolInvocationRequest.class);
+        verify(tools).invoke(request.capture());
+        assertThat(request.getValue().arguments())
+                .containsEntry("command", "pwd")
+                .doesNotContainKeys("cwd", "timeoutSeconds");
+    }
+
+    @Test
+    void acceptsTheUnqualifiedAliasOfAnAdvertisedManagedProcessTool() {
+        ModelGateway gateway = mock(ModelGateway.class);
+        ToolRouter tools = mock(ToolRouter.class);
+        RunEventPublisher events = mock(RunEventPublisher.class);
+        ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
+        var process = binding("tool_process_start_123456", "process.start");
+        when(gateway.complete(any()))
+                .thenReturn(new ModelGateway.ModelAnswer(
+                        "Starting the process.",
+                        null,
+                        null,
+                        "test-model",
+                        List.of(new ModelGateway.ModelToolCall(
+                                "call-process", "tool_process_start", Map.of("command", "run"))),
+                        "tool_calls"))
+                .thenReturn(new ModelGateway.ModelAnswer("The process was started.", null, null, "test-model"));
+        when(tools.invoke(any())).thenReturn(new ToolProviderResult("SUCCEEDED", true, Map.of(), "", null));
+        when(tools.cleanup("run-a", actor)).thenReturn(List.of());
+
+        String answer = new CodingAgentLoop(gateway, tools, events).execute(
+                "run-a",
+                "model-a",
+                List.of(process),
+                new ArrayList<>(List.of(new ModelGateway.ModelMessage("user", "Start the server"))),
+                actor);
+
+        assertThat(answer).isEqualTo("The process was started.");
+        verify(tools).invoke(any());
+        verify(events).publish("run-a", RunEventType.TOOL_CALL_COMPLETED, "tool=process.start", actor);
+    }
+
+    @Test
+    void acceptsTheUnqualifiedAliasOfAnAdvertisedSystemManagedProcessTool() {
+        ModelGateway gateway = mock(ModelGateway.class);
+        ToolRouter tools = mock(ToolRouter.class);
+        RunEventPublisher events = mock(RunEventPublisher.class);
+        ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
+        var process = binding("tool_system_process_start_123456", "system.process.start");
+        when(gateway.complete(any()))
+                .thenReturn(new ModelGateway.ModelAnswer(
+                        "Starting the system process.",
+                        null,
+                        null,
+                        "test-model",
+                        List.of(new ModelGateway.ModelToolCall(
+                                "call-process", "tool_system_process_start", Map.of("command", "run"))),
+                        "tool_calls"))
+                .thenReturn(new ModelGateway.ModelAnswer("The system process was started.", null, null, "test-model"));
+        when(tools.invoke(any())).thenReturn(new ToolProviderResult("SUCCEEDED", true, Map.of(), "", null));
+        when(tools.cleanup("run-a", actor)).thenReturn(List.of());
+
+        String answer = new CodingAgentLoop(gateway, tools, events).execute(
+                "run-a",
+                "model-a",
+                List.of(process),
+                new ArrayList<>(List.of(new ModelGateway.ModelMessage("user", "Start the desktop app server"))),
+                actor);
+
+        assertThat(answer).isEqualTo("The system process was started.");
+        verify(tools).invoke(any());
+        verify(events).publish("run-a", RunEventType.TOOL_CALL_COMPLETED, "tool=system.process.start", actor);
+    }
+
+    @Test
+    void acceptsWorkspaceStyleAliasOfAnAdvertisedSystemManagedProcessTool() {
+        ModelGateway gateway = mock(ModelGateway.class);
+        ToolRouter tools = mock(ToolRouter.class);
+        RunEventPublisher events = mock(RunEventPublisher.class);
+        ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
+        var process = binding("tool_system_process_start_123456", "system.process.start");
+        when(gateway.complete(any()))
+                .thenReturn(new ModelGateway.ModelAnswer(
+                        "Starting the system process.",
+                        null,
+                        null,
+                        "test-model",
+                        List.of(new ModelGateway.ModelToolCall(
+                                "call-process", "tool_process_start", Map.of("command", "run"))),
+                        "tool_calls"))
+                .thenReturn(new ModelGateway.ModelAnswer("The system process was started.", null, null, "test-model"));
+        when(tools.invoke(any())).thenReturn(new ToolProviderResult("SUCCEEDED", true, Map.of(), "", null));
+        when(tools.cleanup("run-a", actor)).thenReturn(List.of());
+
+        String answer = new CodingAgentLoop(gateway, tools, events).execute(
+                "run-a",
+                "model-a",
+                List.of(process),
+                new ArrayList<>(List.of(new ModelGateway.ModelMessage("user", "Start the desktop app server"))),
+                actor);
+
+        assertThat(answer).isEqualTo("The system process was started.");
+        verify(tools).invoke(any());
+        verify(events).publish("run-a", RunEventType.TOOL_CALL_COMPLETED, "tool=system.process.start", actor);
+    }
+
+    @Test
+    void rejectsWorkspaceStyleAliasWhenWorkspaceAndSystemProcessToolsAreBothAdvertised() {
+        ModelGateway gateway = mock(ModelGateway.class);
+        ToolRouter tools = mock(ToolRouter.class);
+        RunEventPublisher events = mock(RunEventPublisher.class);
+        ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
+        var workspaceProcess = binding("tool_process_start_123456", "process.start");
+        var systemProcess = binding("tool_system_process_start_123456", "system.process.start");
+        when(gateway.complete(any()))
+                .thenReturn(new ModelGateway.ModelAnswer(
+                        "Trying an ambiguous process alias.",
+                        null,
+                        null,
+                        "test-model",
+                        List.of(new ModelGateway.ModelToolCall(
+                                "call-process", "tool_process_start", Map.of("command", "run"))),
+                        "tool_calls"))
+                .thenReturn(new ModelGateway.ModelAnswer(
+                        "Using the exact system process tool.",
+                        null,
+                        null,
+                        "test-model",
+                        List.of(new ModelGateway.ModelToolCall(
+                                "call-system-process", "tool_system_process_start_123456", Map.of("command", "run"))),
+                        "tool_calls"))
+                .thenReturn(new ModelGateway.ModelAnswer("The system process was started.", null, null, "test-model"));
+        when(tools.invoke(any())).thenReturn(new ToolProviderResult("SUCCEEDED", true, Map.of(), "", null));
+        when(tools.cleanup("run-a", actor)).thenReturn(List.of());
+
+        String answer = new CodingAgentLoop(gateway, tools, events).execute(
+                "run-a",
+                "model-a",
+                List.of(workspaceProcess, systemProcess),
+                new ArrayList<>(List.of(new ModelGateway.ModelMessage("user", "Start the desktop app server"))),
+                actor);
+
+        assertThat(answer).isEqualTo("The system process was started.");
+        verify(events).publish(
+                "run-a", RunEventType.TOOL_CALL_FAILED, "Unknown tool requested: tool_process_start", actor);
+        verify(events).publish("run-a", RunEventType.TOOL_CALL_COMPLETED, "tool=system.process.start", actor);
+    }
+
+    @Test
     void rejectsAnUnqualifiedAliasThatWasNotAdvertisedForThisRun() {
         ModelGateway gateway = mock(ModelGateway.class);
         ToolRouter tools = mock(ToolRouter.class);
@@ -531,6 +711,18 @@ class CodingAgentLoopTest {
         verify(events).publish(
                 "run-a", RunEventType.TOOL_CALL_FAILED, "Unknown tool requested: tool_system_shell_run", actor);
         verify(tools, times(1)).invoke(any());
+        ArgumentCaptor<ModelGateway.ModelCompletionRequest> requests =
+                ArgumentCaptor.forClass(ModelGateway.ModelCompletionRequest.class);
+        verify(gateway, times(3)).complete(requests.capture());
+        String unknownToolResult = requests.getAllValues().get(1).messages().stream()
+                .filter(message -> "call-shell".equals(message.toolCallId()))
+                .findFirst()
+                .orElseThrow()
+                .content();
+        assertThat(unknownToolResult)
+                .contains("\"availableTools\":[\"system.fs.read\"]")
+                .contains("Choose one of availableTools exactly")
+                .doesNotContain("system.shell.run");
     }
 
     @Test

@@ -1,5 +1,6 @@
 package io.github.yourname.agentstudio.tool;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -29,8 +30,8 @@ public record ToolDescriptor(
         providerToolName = requireText(providerToolName, "providerToolName");
         description = description == null ? "" : description;
         riskLevel = riskLevel == null ? RiskLevel.HIGH : riskLevel;
-        inputSchema = inputSchema == null ? Map.of() : Map.copyOf(inputSchema);
-        attributes = attributes == null ? Map.of() : Map.copyOf(attributes);
+        inputSchema = sanitizeObjectMap(inputSchema);
+        attributes = sanitizeStringMap(attributes);
     }
 
     private static String requireText(String value, String field) {
@@ -38,5 +39,31 @@ public record ToolDescriptor(
             throw new IllegalArgumentException("Tool descriptor " + field + " must not be blank.");
         }
         return value;
+    }
+
+    private static Map<String, Object> sanitizeObjectMap(Map<String, Object> values) {
+        if (values == null || values.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> sanitized = new LinkedHashMap<>();
+        values.forEach((key, value) -> {
+            if (key != null && value != null) {
+                sanitized.put(key, value);
+            }
+        });
+        return sanitized.isEmpty() ? Map.of() : Map.copyOf(sanitized);
+    }
+
+    private static Map<String, String> sanitizeStringMap(Map<String, String> values) {
+        if (values == null || values.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, String> sanitized = new LinkedHashMap<>();
+        values.forEach((key, value) -> {
+            if (key != null && value != null) {
+                sanitized.put(key, value);
+            }
+        });
+        return sanitized.isEmpty() ? Map.of() : Map.copyOf(sanitized);
     }
 }

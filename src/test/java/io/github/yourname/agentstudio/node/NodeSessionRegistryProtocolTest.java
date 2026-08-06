@@ -1,6 +1,7 @@
 package io.github.yourname.agentstudio.node;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -55,6 +56,80 @@ class NodeSessionRegistryProtocolTest {
     }
 
     @Test
+    void shutdownRequestUsesDedicatedControlEnvelope() throws Exception {
+        WebSocketSession socket = mock(WebSocketSession.class);
+        when(socket.isOpen()).thenReturn(true);
+        NodeSessionRegistry registry = new NodeSessionRegistry(objectMapper);
+        registry.register("node-1", socket, "session-current", 9);
+
+        assertThat(registry.requestShutdown("node-1", "server requested client shutdown")).isTrue();
+
+        org.mockito.ArgumentCaptor<TextMessage> captured = org.mockito.ArgumentCaptor.forClass(TextMessage.class);
+        verify(socket).sendMessage(captured.capture());
+        NodeProtocolEnvelope envelope = objectMapper.readValue(captured.getValue().getPayload(), NodeProtocolEnvelope.class);
+        assertThat(envelope.type()).isEqualTo("node.shutdown");
+        assertThat(envelope.payload().path("reason").asText()).isEqualTo("server requested client shutdown");
+    }
+
+    @Test
+    void invalidSessionQueriesAreSafeNoOps() {
+        NodeSessionRegistry registry = new NodeSessionRegistry(objectMapper);
+
+        assertThat(registry.isConnected(null)).isFalse();
+        assertThat(registry.awaitConnected(" ", Duration.ofMillis(10))).isFalse();
+        assertThat(registry.requestShutdown(null, "shutdown")).isFalse();
+        assertThat(registry.cancel(null, "inv-1", null)).isFalse();
+
+        registry.unregister(null, null);
+        registry.disconnect(" ", "disconnect");
+    }
+
+    @Test
+    void invalidInvocationInputsFailWithActionableErrors() {
+        WebSocketSession socket = mock(WebSocketSession.class);
+        when(socket.isOpen()).thenReturn(true);
+        NodeSessionRegistry registry = new NodeSessionRegistry(objectMapper);
+        registry.register("node-1", socket, "session-current", 9);
+
+        assertThatThrownBy(() -> registry.invoke("node-1", (NodeInvocationDispatch) null, Duration.ofSeconds(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("dispatch must not be null");
+
+        NodeInvocationDispatch malformed = new NodeInvocationDispatch(
+                "inv-1", "run-1", "call-1", " ", Map.of(), "fixture", null,
+                Instant.now().plusSeconds(30), "policy-1", "sha256:args", 1,
+                "idem-1", "trace-1");
+        assertThatThrownBy(() -> registry.invoke("node-1", malformed, Duration.ofSeconds(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("dispatch.toolName must not be blank");
+
+        assertThatThrownBy(() -> registry.invoke("node-1", validDispatch(), null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("timeout must be positive");
+        assertThatThrownBy(() -> registry.invoke("node-1", " ", Map.of(), Duration.ofSeconds(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("toolName must not be blank");
+        assertThatThrownBy(() -> registry.invoke("node-1", "system.shell.run", Map.of(), Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("timeout must be positive");
+    }
+
+    @Test
+    void nullInboundMessagesAndResultsAreRejected() {
+        WebSocketSession socket = mock(WebSocketSession.class);
+        when(socket.isOpen()).thenReturn(true);
+        NodeSessionRegistry registry = new NodeSessionRegistry(objectMapper);
+        registry.register("node-1", socket, "session-current", 9);
+
+        assertThat(registry.acceptInbound("node-1", socket, null)).isFalse();
+        assertThat(registry.complete((NodeToolCallResult) null)).isFalse();
+        assertThat(registry.complete(
+                null, "node-1", "system.shell.run", "legacy", 1, null)).isFalse();
+        assertThat(registry.complete(new NodeToolCallResult(" ", "node-1", "system.shell.run", "FAILED", null, "bad")))
+                .isFalse();
+    }
+
+    @Test
     void disconnectAfterDispatchReturnsUnknownWithoutReplayingTheSideEffect() throws Exception {
         WebSocketSession socket = mock(WebSocketSession.class);
         when(socket.isOpen()).thenReturn(true);
@@ -101,5 +176,74 @@ class NodeSessionRegistryProtocolTest {
 
         registry.unregister("node-1", socket);
         assertThat(resultFuture.get(2, TimeUnit.SECONDS).status()).isEqualTo("UNKNOWN");
+    }
+
+    @Test
+    void directToolCallQueriesJournalBeforeReturningUnknownOnTimeout() throws Exception {
+        WebSocketSession socket = mock(WebSocketSession.class);
+        when(socket.isOpen()).thenReturn(true);
+        NodeSessionRegistry registry = new NodeSessionRegistry(objectMapper);
+        registry.register("node-1", socket, "session-current", 9);
+
+        NodeToolCallResult result = registry.invoke(
+                "node-1",
+                "system.shell.run",
+                Map.of("command", "slow-command"),
+                Duration.ofMillis(25));
+
+        org.mockito.ArgumentCaptor<TextMessage> captured = org.mockito.ArgumentCaptor.forClass(TextMessage.class);
+        org.mockito.Mockito.verify(socket, org.mockito.Mockito.atLeast(2)).sendMessage(captured.capture());
+        assertThat(result.status()).isEqualTo("UNKNOWN");
+        assertThat(result.errorMessage()).isEqualTo("Invocation timed out and node status could not be confirmed.");
+        assertThat(captured.getAllValues()).hasSizeGreaterThanOrEqualTo(2);
+        NodeProtocolEnvelope invoke =
+                objectMapper.readValue(captured.getAllValues().get(0).getPayload(), NodeProtocolEnvelope.class);
+        NodeProtocolEnvelope status =
+                objectMapper.readValue(captured.getAllValues().get(1).getPayload(), NodeProtocolEnvelope.class);
+        assertThat(invoke.type()).isEqualTo("tool.invoke");
+        assertThat(status.type()).isEqualTo("tool.status");
+        assertThat(status.payload().path("invocationId").asText()).isEqualTo(invoke.payload().path("invocationId").asText());
+        assertThat(status.payload().path("argumentsDigest").asText()).isEqualTo("legacy");
+        assertThat(status.payload().path("attempt").asInt()).isEqualTo(1);
+    }
+
+    @Test
+    void directToolCallAcceptsAStatusResultDuringTheReconciliationWindow() throws Exception {
+        WebSocketSession socket = mock(WebSocketSession.class);
+        when(socket.isOpen()).thenReturn(true);
+        NodeSessionRegistry registry = new NodeSessionRegistry(objectMapper);
+        registry.register("node-1", socket, "session-current", 9);
+
+        CompletableFuture<NodeToolCallResult> resultFuture = CompletableFuture.supplyAsync(
+                () -> registry.invoke(
+                        "node-1",
+                        "system.shell.run",
+                        Map.of("command", "slow-command"),
+                        Duration.ofMillis(25)));
+        org.mockito.ArgumentCaptor<TextMessage> captured = org.mockito.ArgumentCaptor.forClass(TextMessage.class);
+        org.mockito.Mockito.verify(socket, org.mockito.Mockito.timeout(3000).atLeast(2))
+                .sendMessage(captured.capture());
+        NodeProtocolEnvelope invoke =
+                objectMapper.readValue(captured.getAllValues().get(0).getPayload(), NodeProtocolEnvelope.class);
+
+        registry.complete(new NodeToolCallResult(
+                invoke.payload().path("invocationId").asText(),
+                "node-1",
+                "system.shell.run",
+                "SUCCEEDED",
+                Map.of("stdout", "ok"),
+                null));
+
+        NodeToolCallResult result = resultFuture.get(2, TimeUnit.SECONDS);
+        assertThat(result.status()).isEqualTo("SUCCEEDED");
+        assertThat(result.result()).containsEntry("stdout", "ok");
+    }
+
+    private NodeInvocationDispatch validDispatch() {
+        return new NodeInvocationDispatch(
+                "inv-valid", "run-1", "call-1", "fs.write",
+                Map.of("path", "note.txt"), "fixture", null,
+                Instant.now().plusSeconds(30), "policy-1", "sha256:args", 1,
+                "idem-valid", "trace-valid");
     }
 }

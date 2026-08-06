@@ -124,4 +124,67 @@ class McpConnectionServiceAuditTest {
         assertThat(connection.status()).isEqualTo(McpConnectionStatus.ERROR);
         assertThat(connection.lastError()).contains("tools/list");
     }
+
+    @Test
+    void importsPastedMcpServersJsonAsEnabledConnections() throws Exception {
+        AppProperties properties = mock(AppProperties.class);
+        AppProperties.McpStore store = new AppProperties.McpStore(Files.createTempDirectory("mcp-import-json-test"));
+        when(properties.mcp()).thenReturn(store);
+        McpConnectionService service = new McpConnectionService(
+                properties,
+                new ObjectMapper().registerModule(new JavaTimeModule()),
+                mock(McpStdioClient.class),
+                mock(McpToolInvocationRepository.class));
+        service.ensureConfigDirectoryExists();
+
+        List<McpConnectionView> imported = service.importJson(new ImportMcpConnectionsCommand("""
+                {
+                  "mcpServers": {
+                    "weather": {
+                      "description": "Weather tools",
+                      "command": "npx",
+                      "args": ["-y", "@h1deya/mcp-server-weather"],
+                      "env": { "WEATHER_CACHE": "env:WEATHER_CACHE" }
+                    }
+                  }
+                }
+                """, false, null, false));
+
+        assertThat(imported).singleElement().satisfies(connection -> {
+            assertThat(connection.id()).isEqualTo("weather");
+            assertThat(connection.enabled()).isTrue();
+            assertThat(connection.status()).isEqualTo(McpConnectionStatus.NEEDS_DISCOVERY);
+            assertThat(connection.command()).isEqualTo("npx");
+            assertThat(connection.args()).containsExactly("-y", "@h1deya/mcp-server-weather");
+            assertThat(connection.envKeys()).containsExactly("WEATHER_CACHE");
+            assertThat(connection.metadata()).containsEntry("importSource", "raw-json");
+        });
+    }
+
+    @Test
+    void npmInstallDefaultsToEnabledForOneClickInstalls() throws Exception {
+        AppProperties properties = mock(AppProperties.class);
+        AppProperties.McpStore store = new AppProperties.McpStore(Files.createTempDirectory("mcp-install-enabled-test"));
+        when(properties.mcp()).thenReturn(store);
+        McpConnectionService service = new McpConnectionService(
+                properties,
+                new ObjectMapper().registerModule(new JavaTimeModule()),
+                mock(McpStdioClient.class),
+                mock(McpToolInvocationRepository.class));
+        service.ensureConfigDirectoryExists();
+
+        McpConnectionView installed = service.installNpm(new InstallNpmMcpServerCommand(
+                "weather",
+                "Weather MCP",
+                "Weather tools",
+                "@h1deya/mcp-server-weather",
+                List.of(),
+                Map.of(),
+                null,
+                false));
+
+        assertThat(installed.enabled()).isTrue();
+        assertThat(installed.status()).isEqualTo(McpConnectionStatus.NEEDS_DISCOVERY);
+        assertThat(installed.metadata()).containsEntry("npmPackage", "@h1deya/mcp-server-weather");
+    }
 }

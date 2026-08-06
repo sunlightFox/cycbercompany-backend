@@ -8,6 +8,7 @@ logs/
 evaluation-results/
 .playwright-cli/
 .tmp-ui-skill-data/
+.tmp-ui-software-smoke/
 *.err.log
 *.out.log
 backend-*.log

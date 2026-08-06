@@ -9,8 +9,14 @@ import io.github.yourname.agentstudio.nodeclient.tools.DesktopTool;
 import io.github.yourname.agentstudio.nodeclient.tools.FileTool;
 import io.github.yourname.agentstudio.nodeclient.tools.GitTool;
 import io.github.yourname.agentstudio.nodeclient.tools.ManagedProcessTool;
+import io.github.yourname.agentstudio.nodeclient.tools.OsProcessTool;
+import io.github.yourname.agentstudio.nodeclient.tools.PrivilegeTool;
 import io.github.yourname.agentstudio.nodeclient.tools.ProjectTool;
+import io.github.yourname.agentstudio.nodeclient.tools.UninstallWorkflowTool;
+import io.github.yourname.agentstudio.nodeclient.tools.UninstallPreflightTool;
 import io.github.yourname.agentstudio.nodeclient.tools.ShellTool;
+import io.github.yourname.agentstudio.nodeclient.tools.SoftwareTool;
+import io.github.yourname.agentstudio.nodeclient.tools.ServiceTool;
 import java.net.http.HttpClient;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -30,9 +36,15 @@ public class ToolRegistry {
     private final BrowserTool browserTool;
     private final FileTool fileTool;
     private final ShellTool shellTool;
+    private final SoftwareTool softwareTool;
+    private final ServiceTool serviceTool;
+    private final OsProcessTool osProcessTool;
+    private final UninstallPreflightTool uninstallPreflightTool;
+    private final UninstallWorkflowTool uninstallWorkflowTool;
     private final GitTool gitTool;
     private final ManagedProcessTool managedProcessTool;
     private final ProjectTool projectTool;
+    private final PrivilegeTool privilegeTool;
     private final DesktopTool desktopTool;
     private final DesktopOrganizationTool desktopOrganizationTool;
     private final SkillTool skillTool;
@@ -77,8 +89,22 @@ public class ToolRegistry {
         this.browserTool = new BrowserTool(httpClient, resolvedArtifactRoot, workspaceRoot);
         this.fileTool = workspaceRoot == null ? null : new FileTool(workspaceRoot, systemAccess);
         this.shellTool = workspaceRoot == null ? null : new ShellTool(workspaceRoot, systemAccess);
+        SoftwareTool resolvedSoftwareTool = systemAccess ? new SoftwareTool() : null;
+        ServiceTool resolvedServiceTool = systemAccess ? new ServiceTool() : null;
+        OsProcessTool resolvedOsProcessTool = systemAccess ? new OsProcessTool() : null;
+        PrivilegeTool resolvedPrivilegeTool = systemAccess ? new PrivilegeTool() : null;
+        this.softwareTool = resolvedSoftwareTool;
+        this.serviceTool = resolvedServiceTool;
+        this.osProcessTool = resolvedOsProcessTool;
+        this.privilegeTool = resolvedPrivilegeTool;
+        this.uninstallPreflightTool = systemAccess
+                ? new UninstallPreflightTool(resolvedPrivilegeTool, resolvedSoftwareTool, resolvedServiceTool, resolvedOsProcessTool)
+                : null;
+        this.uninstallWorkflowTool = systemAccess
+                ? new UninstallWorkflowTool(this.uninstallPreflightTool, resolvedSoftwareTool, resolvedServiceTool, resolvedOsProcessTool)
+                : null;
         this.gitTool = workspaceRoot == null ? null : new GitTool(workspaceRoot);
-        this.managedProcessTool = workspaceRoot == null ? null : new ManagedProcessTool(workspaceRoot);
+        this.managedProcessTool = workspaceRoot == null ? null : new ManagedProcessTool(workspaceRoot, systemAccess);
         this.projectTool = workspaceRoot == null ? null : new ProjectTool(workspaceRoot);
         // 是否允许系统级命令由节点注册时的显式模式决定；是否真正执行仍由服务端审批决定。
         this.desktopTool = systemAccess ? new DesktopTool(resolvedArtifactRoot) : null;
@@ -355,6 +381,62 @@ public class ToolRegistry {
                         objectSchema(Map.of("processId", Map.of("type", "string", "minLength", 1,
                                 "description", "processId returned by process.start in this run.")), "processId")),
                 new NodeCapability(
+                        "system.process.start",
+                        "Start one long-running process with system access and return immediately. Supply a foreground command and a concrete working directory when the app lives outside the workspace. Do not wrap it in Start-Process, nohup, '&', or another background launcher. Requires human approval.",
+                        "HIGH",
+                        true,
+                        true,
+                        objectSchema(Map.of(
+                                "command", Map.of("type", "string", "minLength", 1, "maxLength", 8_000,
+                                        "description", "Foreground server or development command to manage."),
+                                "cwd", Map.of("type", "string", "description", "Optional concrete absolute working directory."),
+                                "stdoutPath", Map.of("type", "string", "description", "Optional absolute stdout log file."),
+                                "stderrPath", Map.of("type", "string", "description", "Optional absolute stderr log file.")), "command")),
+                new NodeCapability(
+                        "system.process.status",
+                        "Inspect one system-managed process by processId. Returns active state, workspace/system scope, and the exit code when finished; it does not return OS process IDs or log file paths.",
+                        "LOW",
+                        true,
+                        false,
+                        objectSchema(Map.of("processId", Map.of("type", "string", "minLength", 1,
+                                "description", "processId returned by system.process.start in this run.")), "processId")),
+                new NodeCapability(
+                        "system.process.logs",
+                        "Read the bounded tail of stdout or stderr for one system-managed process. It accepts only the processId returned by system.process.start and never reads an arbitrary path.",
+                        "LOW",
+                        true,
+                        false,
+                        objectSchema(Map.of(
+                                "processId", Map.of("type", "string", "minLength", 1,
+                                        "description", "processId returned by system.process.start in this run."),
+                                "stream", Map.of("type", "string", "enum", List.of("stdout", "stderr"), "default", "stdout",
+                                        "description", "Which managed stream to read."),
+                                "maxChars", Map.of("type", "integer", "minimum", 1, "maximum", 32_000, "default", 12_000,
+                                        "description", "Maximum tail size returned; defaults to 12,000 characters.")), "processId")),
+                new NodeCapability(
+                        "system.process.wait_http",
+                        "Wait for an HTTP GET health check on localhost, 127.0.0.1, or ::1 for one system-managed process. Redirects, credentials, query parameters, response bodies, headers, and remote addresses are not allowed or returned.",
+                        "LOW",
+                        true,
+                        false,
+                        objectSchema(Map.of(
+                                "processId", Map.of("type", "string", "minLength", 1,
+                                        "description", "processId returned by system.process.start in this run."),
+                                "url", Map.of("type", "string", "minLength", 1,
+                                        "description", "Absolute local http:// or https:// health URL without credentials, query, or fragment."),
+                                "timeoutMs", Map.of("type", "integer", "minimum", 100, "maximum", 120_000, "default", 30_000,
+                                        "description", "Maximum readiness wait in milliseconds."),
+                                "expectedStatus", Map.of("type", "integer", "minimum", 100, "maximum", 599,
+                                        "description", "Optional exact ready HTTP status. Defaults to any 2xx status.")), "processId", "url")),
+                new NodeCapability(
+                        "system.process.stop",
+                        "Stop one system-managed process and its descendants by processId. Requires human approval.",
+                        "HIGH",
+                        true,
+                        true,
+                        objectSchema(Map.of("processId", Map.of("type", "string", "minLength", 1,
+                                "description", "processId returned by system.process.start in this run.")), "processId")),
+                new NodeCapability(
                         "browser.open",
                         "Open a URL in this run's Playwright browser session and wait for the initial page load. Returns the final URL and title; use browser.snapshot to inspect page state.",
                         "MEDIUM",
@@ -592,6 +674,13 @@ public class ToolRegistry {
         if (systemAccess) {
             capabilities.addAll(systemCapabilities());
         }
+        boolean managedProcessAvailable = managedProcessTool != null;
+        if (!managedProcessAvailable) {
+            capabilities.removeIf(capability -> capability.name().startsWith("process."));
+        }
+        if (!systemAccess || !managedProcessAvailable) {
+            capabilities.removeIf(capability -> capability.name().startsWith("system.process."));
+        }
         return capabilities;
     }
 
@@ -600,10 +689,40 @@ public class ToolRegistry {
         Map<String, String> runtimes = new java.util.LinkedHashMap<>();
         runtimes.put("java", System.getProperty("java.version", "unknown"));
         runtimes.put("os", System.getProperty("os.name", "unknown"));
+        runtimes.putAll(privilegeRuntimeFacts());
         if (skillTool != null) {
             runtimes.putAll(skillTool.runtimes());
         }
         return Map.copyOf(runtimes);
+    }
+
+    private Map<String, String> privilegeRuntimeFacts() {
+        if (privilegeTool == null) {
+            return Map.of();
+        }
+        ToolExecutionResult result = privilegeTool.query();
+        if (!result.success() || result.result() == null) {
+            return Map.of("privilege.mode", "unknown");
+        }
+        Object value = result.result().get("privilege");
+        if (!(value instanceof Map<?, ?> privilege)) {
+            return Map.of("privilege.mode", "unknown");
+        }
+        Map<String, String> facts = new java.util.LinkedHashMap<>();
+        boolean localSystem = Boolean.TRUE.equals(privilege.get("isLocalSystem"));
+        boolean adminToken = Boolean.TRUE.equals(privilege.get("isAdministratorToken"));
+        boolean privileged = Boolean.TRUE.equals(privilege.get("isPrivileged"));
+        facts.put("privilege.mode", localSystem ? "LocalSystem" : adminToken ? "Administrator" : "Standard");
+        facts.put("privilege.isPrivileged", Boolean.toString(privileged));
+        Object accountName = privilege.get("accountName");
+        if (accountName instanceof String account && !account.isBlank()) {
+            facts.put("privilege.account", account);
+        }
+        Object userSid = privilege.get("userSid");
+        if (userSid instanceof String sid && !sid.isBlank()) {
+            facts.put("privilege.userSid", sid);
+        }
+        return facts;
     }
 
     /** 协议 feature 表示实现特性，不表示该能力已获管理员授权。 */
@@ -624,6 +743,12 @@ public class ToolRegistry {
         }
         if (systemAccess) {
             result.add("system-access.v1");
+            result.add("system-software.v1");
+            result.add("system-service.v1");
+            result.add("system-os-process.v1");
+            result.add("system-privilege.v1");
+            result.add("system-uninstall-preflight.v1");
+            result.add("system-uninstall-execute.v1");
         }
         return List.copyOf(result);
     }
@@ -694,6 +819,129 @@ public class ToolRegistry {
                                 "cwd", Map.of("type", "string", "description", "Optional concrete existing absolute working directory. Use only when the user explicitly requested that directory or a prior inspection returned it; otherwise omit and use the configured workspace."),
                                 "timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 120, "default", 30,
                                         "description", "Timeout in seconds.")), "command")),
+                new NodeCapability("system.software.query",
+                        "Query one installed Windows package by exact winget packageId. Does not accept display names, wildcards, paths, or shell syntax. Requires human approval.",
+                        "HIGH", softwareTool != null, true,
+                        objectSchema(Map.of(
+                                "packageId", Map.of("type", "string", "minLength", 1, "maxLength", 200,
+                                        "description", "Exact winget id such as Tencent.QQ; not a display name or search query."),
+                                "manager", Map.of("type", "string", "enum", List.of("winget"), "default", "winget",
+                                        "description", "Package manager; only winget is supported."),
+                                "timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 600, "default", 60,
+                                        "description", "Timeout in seconds.")), "packageId")),
+                new NodeCapability("system.software.install",
+                        "Install one Windows package by exact winget packageId using winget --id and --exact. Does not accept display names, custom installer arguments, force flags, hash bypasses, reboot allowance, paths, or shell syntax. Defaults to --no-upgrade; use a future upgrade tool for upgrades. Requires human approval.",
+                        "HIGH", softwareTool != null, true,
+                        objectSchema(Map.of(
+                                "packageId", Map.of("type", "string", "minLength", 1, "maxLength", 200,
+                                        "description", "Exact winget id such as Microsoft.VisualStudioCode or Tencent.QQ.NT; not a display name or search query."),
+                                "manager", Map.of("type", "string", "enum", List.of("winget"), "default", "winget",
+                                        "description", "Package manager; only winget is supported."),
+                                "source", Map.of("type", "string", "enum", List.of("winget", "msstore"),
+                                        "description", "Optional trusted winget source filter."),
+                                "scope", Map.of("type", "string", "enum", List.of("user", "machine"),
+                                        "description", "Optional install scope. machine usually requires an elevated/admin node."),
+                                "version", Map.of("type", "string", "minLength", 1, "maxLength", 128,
+                                        "description", "Optional literal winget version without spaces or shell syntax."),
+                                "silent", Map.of("type", "boolean", "default", true,
+                                        "description", "When true, request a silent install. When false, omits --silent but still disables interactive prompts."),
+                                "allowUpgrade", Map.of("type", "boolean", "default", false,
+                                        "description", "When false, adds --no-upgrade so install does not upgrade an existing package."),
+                                "timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 1200, "default", 600,
+                                        "description", "Timeout in seconds.")), "packageId")),
+                new NodeCapability("system.software.uninstall",
+                        "Uninstall one Windows package by exact winget packageId using winget --id and --exact. Does not run arbitrary commands or bypass Windows ACLs, protected services, file locks, vendor uninstallers, or reboot requirements. Requires human approval.",
+                        "HIGH", softwareTool != null, true,
+                        objectSchema(Map.of(
+                                "packageId", Map.of("type", "string", "minLength", 1, "maxLength", 200,
+                                        "description", "Exact winget id such as Tencent.QQ; not a display name or search query."),
+                                "manager", Map.of("type", "string", "enum", List.of("winget"), "default", "winget",
+                                        "description", "Package manager; only winget is supported."),
+                                "silent", Map.of("type", "boolean", "default", true,
+                                        "description", "When true, request a silent uninstall. When false, omits --silent but still disables interactive prompts."),
+                                "timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 600, "default", 300,
+                                        "description", "Timeout in seconds.")), "packageId")),
+                new NodeCapability("system.service.query",
+                        "Query one exact Windows service name. Returns status, start mode, processId, and canStop metadata without exposing an arbitrary shell. Requires human approval.",
+                        "HIGH", serviceTool != null, true,
+                        objectSchema(Map.of(
+                                "serviceName", Map.of("type", "string", "minLength", 1, "maxLength", 256,
+                                        "description", "Exact Windows service name such as QQPCRTP; not a display name or search query."),
+                                "timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 120, "default", 30,
+                                        "description", "Timeout in seconds.")), "serviceName")),
+                new NodeCapability("system.service.stop",
+                        "Stop one exact Windows service by serviceName. The node cannot bypass protected or not-stoppable services and may still fail when Windows or security software blocks the request. Requires human approval.",
+                        "HIGH", serviceTool != null, true,
+                        objectSchema(Map.of(
+                                "serviceName", Map.of("type", "string", "minLength", 1, "maxLength", 256,
+                                        "description", "Exact Windows service name such as QQPCRTP; not a display name or search query."),
+                                "timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 120, "default", 30,
+                                        "description", "Timeout in seconds.")), "serviceName")),
+                new NodeCapability("system.service.set_start_mode",
+                        "Set one exact Windows service start mode to automatic, manual, or disabled. This is the controlled path for disabling protected services before uninstall attempts. Requires human approval.",
+                        "HIGH", serviceTool != null, true,
+                        objectSchema(Map.of(
+                                "serviceName", Map.of("type", "string", "minLength", 1, "maxLength", 256,
+                                        "description", "Exact Windows service name such as QQPCRTP; not a display name or search query."),
+                                "startMode", Map.of("type", "string", "enum", List.of("automatic", "manual", "disabled"),
+                                        "description", "Desired Windows startup mode."),
+                                "timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 120, "default", 30,
+                                        "description", "Timeout in seconds.")), "serviceName", "startMode")),
+                new NodeCapability("system.os_process.query",
+                        "Query existing Windows OS processes by exact image name such as QQPCTray.exe. This is separate from system.process.*, which only manages node-started processes. Does not return command lines or executable paths. Requires human approval.",
+                        "HIGH", osProcessTool != null, true,
+                        objectSchema(Map.of(
+                                "processName", Map.of("type", "string", "minLength", 5, "maxLength", 128,
+                                        "description", "Exact Windows process image name ending in .exe, such as QQPCTray.exe; not a display name, path, or wildcard."),
+                                "timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 120, "default", 20,
+                                        "description", "Timeout in seconds.")), "processName")),
+                new NodeCapability("system.os_process.terminate",
+                        "Terminate existing Windows OS processes by exact image name and either explicit processIds from system.os_process.query or allMatching=true. Does not accept arbitrary taskkill, PowerShell, paths, wildcards, or command-line filters. Requires human approval.",
+                        "HIGH", osProcessTool != null, true,
+                        objectSchema(Map.of(
+                                "processName", Map.of("type", "string", "minLength", 5, "maxLength", 128,
+                                        "description", "Exact Windows process image name ending in .exe, such as QQPCTray.exe; not a display name, path, or wildcard."),
+                                "processIds", Map.of("type", "array", "items", Map.of("type", "integer", "minimum", 1),
+                                        "minItems", 1, "maxItems", 32,
+                                        "description", "Optional process IDs returned by system.os_process.query. Omit only when allMatching=true is explicit."),
+                                "allMatching", Map.of("type", "boolean", "default", false,
+                                        "description", "When true, terminate all current processes whose image name exactly equals processName."),
+                                "timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 120, "default", 20,
+                                        "description", "Timeout in seconds.")), "processName")),
+                new NodeCapability("system.privilege.query",
+                        "Report whether the current node process is running as a Windows administrator token or LocalSystem. This is a read-only self-check used before system-level remediation. Does not inspect other processes or modify privileges.",
+                        "LOW", privilegeTool != null, false,
+                        objectSchema(Map.of())),
+                new NodeCapability("system.uninstall.preflight",
+                        "Gather privilege, package, service, and process facts into one read-only remediation snapshot before uninstalling a Windows package. Returns blocking signals and suggested next steps without changing system state.",
+                        "LOW", uninstallPreflightTool != null, false,
+                        objectSchema(Map.of(
+                                "packageId", Map.of("type", "string", "minLength", 1, "maxLength", 200,
+                                        "description", "Exact winget package id to analyze."),
+                                "serviceName", Map.of("type", "string", "maxLength", 256,
+                                        "description", "Optional exact Windows service name that may block uninstall."),
+                                "processNames", Map.of("type", "array",
+                                        "items", Map.of("type", "string", "minLength", 1),
+                                        "maxItems", 16,
+                                        "description", "Optional exact Windows process image names to inspect, such as QQPCTray.exe or QQPCRTP.exe.")), "packageId")),
+                new NodeCapability("system.uninstall.execute",
+                        "Run uninstall preflight, optionally stop the confirmed Windows service, optionally terminate confirmed OS process IDs, and retry one exact winget uninstall. Returns a structured remediation summary. Does not accept arbitrary shell, taskkill, wildcards, or installer override flags. Requires human approval.",
+                        "HIGH", uninstallWorkflowTool != null, true,
+                        objectSchema(Map.of(
+                                "packageId", Map.of("type", "string", "minLength", 1, "maxLength", 200,
+                                        "description", "Exact winget package id to remediate."),
+                                "serviceName", Map.of("type", "string", "maxLength", 256,
+                                        "description", "Optional exact Windows service name that may block uninstall."),
+                                "processNames", Map.of("type", "array",
+                                        "items", Map.of("type", "string", "minLength", 1),
+                                        "maxItems", 16,
+                                        "description", "Optional exact Windows process image names to remediate, such as QQPCTray.exe or QQPCRTP.exe."),
+                                "stopService", Map.of("type", "boolean", "default", true,
+                                        "description", "When true, stop the exact service if preflight reports it running."),
+                                "terminateProcesses", Map.of("type", "boolean", "default", true,
+                                        "description", "When true, terminate exact process IDs discovered during preflight."),
+                                "retryUninstall", Map.of("type", "boolean", "default", true,
+                                        "description", "When true, retry winget uninstall after remediation.")), "packageId")),
                 new NodeCapability("system.desktop.set_wallpaper",
                         "Set the current Windows user's desktop wallpaper from one existing local image path. Does not download or generate an image. Requires human approval.",
                         "HIGH", true, true,
@@ -898,6 +1146,10 @@ public class ToolRegistry {
         if ("browser.close_session".equals(toolName)) {
             return ToolExecutionResult.success(Map.of("closed", closeExecutionSession(executionSessionId)));
         }
+        if (toolName != null && toolName.startsWith("system.") && !systemAccess) {
+            return ToolExecutionResult.failure(
+                    toolName + " is unavailable because this node was not registered with system access.");
+        }
         if ("system.fs.list".equals(toolName)) {
             return fileTool == null ? unavailable(toolName) : fileTool.list(arguments);
         }
@@ -939,6 +1191,39 @@ public class ToolRegistry {
         }
         if ("system.shell.run".equals(toolName)) {
             return shellTool == null ? unavailable(toolName) : shellTool.run(arguments);
+        }
+        if ("system.software.query".equals(toolName)) {
+            return softwareTool == null ? unavailable(toolName) : softwareTool.query(arguments);
+        }
+        if ("system.software.install".equals(toolName)) {
+            return softwareTool == null ? unavailable(toolName) : softwareTool.install(arguments);
+        }
+        if ("system.software.uninstall".equals(toolName)) {
+            return softwareTool == null ? unavailable(toolName) : softwareTool.uninstall(arguments);
+        }
+        if ("system.service.query".equals(toolName)) {
+            return serviceTool == null ? unavailable(toolName) : serviceTool.query(arguments);
+        }
+        if ("system.service.stop".equals(toolName)) {
+            return serviceTool == null ? unavailable(toolName) : serviceTool.stop(arguments);
+        }
+        if ("system.service.set_start_mode".equals(toolName)) {
+            return serviceTool == null ? unavailable(toolName) : serviceTool.setStartMode(arguments);
+        }
+        if ("system.os_process.query".equals(toolName)) {
+            return osProcessTool == null ? unavailable(toolName) : osProcessTool.query(arguments);
+        }
+        if ("system.os_process.terminate".equals(toolName)) {
+            return osProcessTool == null ? unavailable(toolName) : osProcessTool.terminate(arguments);
+        }
+        if ("system.privilege.query".equals(toolName)) {
+            return privilegeTool == null ? unavailable(toolName) : privilegeTool.query();
+        }
+        if ("system.uninstall.preflight".equals(toolName)) {
+            return uninstallPreflightTool == null ? unavailable(toolName) : uninstallPreflightTool.preflight(arguments);
+        }
+        if ("system.uninstall.execute".equals(toolName)) {
+            return uninstallWorkflowTool == null ? unavailable(toolName) : uninstallWorkflowTool.execute(arguments);
         }
         if ("system.desktop.set_wallpaper".equals(toolName)) {
             return desktopTool == null ? unavailable(toolName) : desktopTool.setWallpaper(arguments);
@@ -1071,6 +1356,31 @@ public class ToolRegistry {
         if ("process.stop".equals(toolName)) {
             return managedProcessTool == null
                     ? ToolExecutionResult.failure("process.stop is unavailable because this node has no configured workspace.")
+                    : managedProcessTool.stop(arguments);
+        }
+        if ("system.process.start".equals(toolName)) {
+            return managedProcessTool == null
+                    ? ToolExecutionResult.failure("system.process.start is unavailable because this node has no configured workspace.")
+                    : managedProcessTool.start(arguments);
+        }
+        if ("system.process.status".equals(toolName)) {
+            return managedProcessTool == null
+                    ? ToolExecutionResult.failure("system.process.status is unavailable because this node has no configured workspace.")
+                    : managedProcessTool.status(arguments);
+        }
+        if ("system.process.logs".equals(toolName)) {
+            return managedProcessTool == null
+                    ? ToolExecutionResult.failure("system.process.logs is unavailable because this node has no configured workspace.")
+                    : managedProcessTool.logs(arguments);
+        }
+        if ("system.process.wait_http".equals(toolName)) {
+            return managedProcessTool == null
+                    ? ToolExecutionResult.failure("system.process.wait_http is unavailable because this node has no configured workspace.")
+                    : managedProcessTool.waitHttp(arguments);
+        }
+        if ("system.process.stop".equals(toolName)) {
+            return managedProcessTool == null
+                    ? ToolExecutionResult.failure("system.process.stop is unavailable because this node has no configured workspace.")
                     : managedProcessTool.stop(arguments);
         }
         if ("git.status".equals(toolName)) {

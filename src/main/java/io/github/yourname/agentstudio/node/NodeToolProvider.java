@@ -68,9 +68,7 @@ public class NodeToolProvider implements ToolProvider {
                         tool.riskLevel(),
                         tool.requiresApproval(),
                         readSchema(tool.inputSchemaJson()),
-                        Map.of(
-                                "nodeId", nodeId,
-                                "toolVersion", tool.capabilityVersion())))
+                        nodeAttributes(nodeId, tool.capabilityVersion())))
                 .toList();
     }
 
@@ -109,7 +107,16 @@ public class NodeToolProvider implements ToolProvider {
                             toolName,
                             command,
                             request.actor());
-            boolean succeeded = "SUCCEEDED".equalsIgnoreCase(result.status());
+            if (result == null) {
+                return new ToolProviderResult(
+                        "FAILED",
+                        false,
+                        Map.of("tool", toolName, "nodeId", nodeId),
+                        "Node tool returned no result.",
+                        null);
+            }
+            String status = normalizeStatus(result.status(), result.errorMessage());
+            boolean succeeded = "SUCCEEDED".equalsIgnoreCase(status);
             Map<String, Object> content = new LinkedHashMap<>();
             content.put("tool", toolName);
             content.put("nodeId", nodeId);
@@ -120,7 +127,7 @@ public class NodeToolProvider implements ToolProvider {
                 content.put("diagnosis", diagnosis);
             }
             return new ToolProviderResult(
-                    result.status(),
+                    status,
                     succeeded,
                     content,
                     result.errorMessage(),
@@ -133,6 +140,13 @@ public class NodeToolProvider implements ToolProvider {
                     message(ex),
                     null);
         }
+    }
+
+    private static String normalizeStatus(String status, String errorMessage) {
+        if (status != null && !status.isBlank()) {
+            return status;
+        }
+        return errorMessage == null || errorMessage.isBlank() ? "UNKNOWN" : "FAILED";
     }
 
     @Override
@@ -172,6 +186,15 @@ public class NodeToolProvider implements ToolProvider {
 
     private static Map<String, Object> emptySchema() {
         return ModelVisibleText.schema(Map.of());
+    }
+
+    private static Map<String, String> nodeAttributes(String nodeId, String toolVersion) {
+        Map<String, String> attributes = new LinkedHashMap<>();
+        attributes.put("nodeId", nodeId);
+        if (toolVersion != null && !toolVersion.isBlank()) {
+            attributes.put("toolVersion", toolVersion);
+        }
+        return attributes;
     }
 
     private static Map<String, Object> scopedArguments(

@@ -31,12 +31,14 @@ public class AgentCatalog {
 
     @Transactional(readOnly = true)
     public AgentDefinitionView get(String id) {
+        // 编排层用这个入口读取 Agent，找不到时统一转换为业务异常。
         return repository.findById(id).map(AgentDefinitionView::from)
                 .orElseThrow(() -> new IllegalArgumentException("Agent not found: " + id));
     }
 
     @Transactional
     public AgentDefinitionView create(CreateAgentCommand command) {
+        // 新 Agent 复用默认 Agent 的模型和工具策略，避免新建对象意外获得无限权限。
         var defaultAgent = repository.findById(DEFAULT_AGENT_ID)
                 .orElseThrow(() -> new IllegalArgumentException(
                         "A default agent is required before creating an employee."));

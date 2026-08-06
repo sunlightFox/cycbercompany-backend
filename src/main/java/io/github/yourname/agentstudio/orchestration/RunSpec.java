@@ -6,6 +6,8 @@ import io.github.yourname.agentstudio.skill.SkillAnalysis;
 import io.github.yourname.agentstudio.skill.CompatibilityReport;
 import io.github.yourname.agentstudio.tool.ApprovalMode;
 import io.github.yourname.agentstudio.tool.ResolvedToolBinding;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -58,8 +60,8 @@ public record RunSpec(
         requestedToolNames = copy(requestedToolNames);
         toolBindings = copy(toolBindings);
         attachmentIds = copy(attachmentIds);
-        actorRoles = actorRoles == null ? Set.of() : Set.copyOf(actorRoles);
-        actorScopes = actorScopes == null ? Set.of() : Set.copyOf(actorScopes);
+        actorRoles = copy(actorRoles);
+        actorScopes = copy(actorScopes);
         attachmentContext = attachmentContext == null ? "" : attachmentContext;
         agentToolAllowList = agentToolAllowList == null ? "" : agentToolAllowList;
         approvalMode = ApprovalMode.from(approvalMode).wireValue();
@@ -90,6 +92,28 @@ public record RunSpec(
     }
 
     private static <T> List<T> copy(List<T> values) {
-        return values == null ? List.of() : List.copyOf(values);
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        List<T> sanitized = new ArrayList<>();
+        for (T value : values) {
+            if (value != null) {
+                sanitized.add(value);
+            }
+        }
+        return sanitized.isEmpty() ? List.of() : List.copyOf(sanitized);
+    }
+
+    private static <T> Set<T> copy(Set<T> values) {
+        if (values == null || values.isEmpty()) {
+            return Set.of();
+        }
+        Set<T> sanitized = new LinkedHashSet<>();
+        for (T value : values) {
+            if (value != null) {
+                sanitized.add(value);
+            }
+        }
+        return sanitized.isEmpty() ? Set.of() : Set.copyOf(sanitized);
     }
 }

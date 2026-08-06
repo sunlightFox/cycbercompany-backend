@@ -173,7 +173,7 @@ public final class NodeInvocationJournal {
 
     private static String terminalStatus(String value) {
         return switch (value == null ? "FAILED" : value) {
-            case "SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "UNKNOWN" -> value;
+            case "SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "UNKNOWN" -> value == null ? "FAILED" : value;
             default -> "FAILED";
         };
     }

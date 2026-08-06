@@ -6,18 +6,20 @@ services:
     container_name: agent-studio-backend
     restart: unless-stopped
     environment:
+      SERVER_ADDRESS: ${SERVER_ADDRESS:-0.0.0.0}
+      APP_SECURITY_MODE: ${APP_SECURITY_MODE:-LOCAL}
+      AGENT_STUDIO_API_TOKEN: ${AGENT_STUDIO_API_TOKEN:-}
       EDGEFN_API_KEY: ${EDGEFN_API_KEY:-}
       EDGEFN_BASE_URL: ${EDGEFN_BASE_URL:-https://api.edgefn.net/v1}
       EDGEFN_MODEL: ${EDGEFN_MODEL:-MiniMax-M3}
-      SEARXNG_ENDPOINT: http://searxng:8080
-      SEARXNG_LANGUAGE: zh-CN
-      SEARXNG_SAFESEARCH: "1"
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      # The frontend reverse proxy is the trusted local entry point in this
+      # development topology; it forwards host-side bootstrap requests.
+      APP_SECURITY_ALLOW_LOCAL_PROXY: ${APP_SECURITY_ALLOW_LOCAL_PROXY:-true}
     volumes:
       - backend-data:/app/data
     expose:
       - "8080"
-    depends_on:
-      - searxng
 
   frontend:
     build:
@@ -32,16 +34,8 @@ services:
     depends_on:
       - backend
 
-  searxng:
-    image: searxng/searxng:latest
-    container_name: agent-studio-searxng
-    restart: unless-stopped
-    volumes:
-      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
-    expose:
-      - "8080"
-
   node:
+    profiles: ["local-executor"]
     build:
       context: ./backend
       dockerfile: ../Dockerfile.node
@@ -49,9 +43,13 @@ services:
     restart: unless-stopped
     environment:
       AGENT_STUDIO_SKILL_RUNTIME: docker
-    command: ["./bin/agent-studio-node-java", "start-local", "--server", "http://backend:8080", "--name", "server-workspace", "--workspace", "/workspace", "--config", "/root/.agent-studio-node/local-executor.json"]
+      AGENT_STUDIO_API_TOKEN: ${AGENT_STUDIO_API_TOKEN:-}
+    command: ["./bin/agent-studio-node-java", "start-local", "--server", "http://127.0.0.1:8080", "--name", "server-workspace", "--workspace", "/workspace", "--config", "/root/.agent-studio-node/local-executor.json"]
+    network_mode: service:backend
     user: "0:0"
     volumes:
+      - node-workspace:/workspace
+      - node-data:/root/.agent-studio-node
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - backend

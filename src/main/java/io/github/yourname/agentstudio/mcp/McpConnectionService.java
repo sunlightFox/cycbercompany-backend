@@ -1,5 +1,6 @@
 package io.github.yourname.agentstudio.mcp;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.yourname.agentstudio.config.AppProperties;
 import io.github.yourname.agentstudio.security.ActorContext;
@@ -130,7 +131,7 @@ public class McpConnectionService {
                 command.name(),
                 command.description(),
                 McpTransportType.STDIO,
-                command.enabled(),
+                !Boolean.FALSE.equals(command.enabled()),
                 executable,
                 args,
                 null,
@@ -141,6 +142,59 @@ public class McpConnectionService {
             return refreshTools(created.id());
         }
         return created;
+    }
+
+    public McpConnectionView installRepository(InstallMcpRepositoryCommand command) {
+        if (command == null || command.name() == null || command.name().isBlank()
+                || command.endpoint() == null || command.endpoint().isBlank()) {
+            throw new IllegalArgumentException("MCPMarket entry does not expose an installable endpoint.");
+        }
+        McpConnectionView created = create(new CreateMcpConnectionCommand(
+                command.id(), command.name(), command.description(),
+                command.transportType() == null ? McpTransportType.STREAMABLE_HTTP : command.transportType(),
+                !Boolean.FALSE.equals(command.enabled()), null, List.of(), command.endpoint(), command.env(),
+                Map.of("installType", "mcpmarket", "source", McpRepositoryService.MARKET_URL), List.of()));
+        return Boolean.TRUE.equals(command.refreshTools()) ? refreshTools(created.id()) : created;
+    }
+
+    public List<McpConnectionView> importJson(ImportMcpConnectionsCommand command) {
+        if (command == null || command.json() == null || command.json().isBlank()) {
+            throw new IllegalArgumentException("MCP JSON is required.");
+        }
+        List<CreateMcpConnectionCommand> parsed = parseImportedConnections(command);
+        if (parsed.isEmpty()) {
+            throw new IllegalArgumentException("MCP JSON did not contain any server definitions.");
+        }
+        List<McpConnectionView> imported = new ArrayList<>();
+        for (CreateMcpConnectionCommand connection : parsed) {
+            String id = normalizeId(connection.id() == null || connection.id().isBlank()
+                    ? connection.name()
+                    : connection.id());
+            McpConnectionView saved;
+            if (Files.exists(configFile(id))) {
+                if (!Boolean.TRUE.equals(command.overwrite())) {
+                    throw new IllegalArgumentException("MCP connection already exists: " + id);
+                }
+                saved = update(id, new UpdateMcpConnectionCommand(
+                        connection.name(),
+                        connection.description(),
+                        connection.transportType(),
+                        connection.enabled(),
+                        connection.command(),
+                        connection.args(),
+                        connection.endpoint(),
+                        connection.env(),
+                        connection.metadata(),
+                        connection.tools()));
+            } else {
+                saved = create(connection);
+            }
+            if (Boolean.TRUE.equals(command.refreshTools())) {
+                saved = refreshTools(saved.id());
+            }
+            imported.add(saved);
+        }
+        return imported;
     }
 
     public McpConnectionView update(String id, UpdateMcpConnectionCommand command) {
@@ -558,6 +612,109 @@ public class McpConnectionService {
         return resolved;
     }
 
+    private List<CreateMcpConnectionCommand> parseImportedConnections(ImportMcpConnectionsCommand command) {
+        try {
+            JsonNode root = objectMapper.readTree(command.json());
+            JsonNode servers = firstObject(root, "mcpServers", "servers");
+            if (!servers.isMissingNode()) {
+                List<CreateMcpConnectionCommand> connections = new ArrayList<>();
+                servers.fields().forEachRemaining(entry -> connections.add(toCreateCommand(
+                        entry.getKey(), entry.getValue(), command.enabled())));
+                return connections;
+            }
+            if (root.isObject()) {
+                String id = text(root, "id", text(root, "name", "mcp"));
+                return List.of(toCreateCommand(id, root, command.enabled()));
+            }
+            throw new IllegalArgumentException("MCP JSON must be an object.");
+        } catch (IOException ex) {
+            throw new IllegalArgumentException("Invalid MCP JSON: " + ex.getMessage(), ex);
+        }
+    }
+
+    private CreateMcpConnectionCommand toCreateCommand(String id, JsonNode server, Boolean enabledOverride) {
+        if (server == null || !server.isObject()) {
+            throw new IllegalArgumentException("MCP server definition must be an object: " + id);
+        }
+        String command = text(server, "command", "");
+        String endpoint = text(server, "endpoint", text(server, "url", ""));
+        McpTransportType transport = importedTransport(server, command, endpoint);
+        boolean enabled = enabledOverride == null
+                ? !server.has("enabled") || server.path("enabled").asBoolean(true)
+                : enabledOverride;
+        Map<String, String> metadata = stringMap(server.path("metadata"));
+        metadata.putIfAbsent("importSource", "raw-json");
+        return new CreateMcpConnectionCommand(
+                id,
+                text(server, "name", id),
+                text(server, "description", ""),
+                transport,
+                enabled,
+                command,
+                stringList(server.path("args")),
+                endpoint,
+                stringMap(server.path("env")),
+                metadata,
+                List.of());
+    }
+
+    private static JsonNode firstObject(JsonNode root, String... fields) {
+        for (String field : fields) {
+            JsonNode value = root.path(field);
+            if (value.isObject()) {
+                return value;
+            }
+        }
+        return com.fasterxml.jackson.databind.node.MissingNode.getInstance();
+    }
+
+    private static McpTransportType importedTransport(JsonNode server, String command, String endpoint) {
+        String raw = text(server, "transportType", text(server, "transport", text(server, "type", "")))
+                .replace('-', '_')
+                .toUpperCase(Locale.ROOT);
+        if ("HTTP".equals(raw) || "STREAMABLE_HTTP".equals(raw)) {
+            return McpTransportType.STREAMABLE_HTTP;
+        }
+        if ("SSE".equals(raw)) {
+            return McpTransportType.SSE;
+        }
+        if ("STDIO".equals(raw)) {
+            return McpTransportType.STDIO;
+        }
+        return command.isBlank() && !endpoint.isBlank() ? McpTransportType.STREAMABLE_HTTP : McpTransportType.STDIO;
+    }
+
+    private static List<String> stringList(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return List.of();
+        }
+        if (node.isArray()) {
+            List<String> values = new ArrayList<>();
+            for (JsonNode value : node) {
+                values.add(value.asText());
+            }
+            return values;
+        }
+        if (node.isTextual() && !node.asText().isBlank()) {
+            return List.of(node.asText());
+        }
+        return List.of();
+    }
+
+    private static Map<String, String> stringMap(JsonNode node) {
+        if (node == null || !node.isObject()) {
+            return new LinkedHashMap<>();
+        }
+        Map<String, String> values = new LinkedHashMap<>();
+        node.fields().forEachRemaining(entry -> {
+            JsonNode value = entry.getValue();
+            if (!value.isNull() && !value.isMissingNode()) {
+                values.put(entry.getKey(), value.asText());
+            }
+        });
+        return values;
+    }
+
     private Path configFile(String id) {
         String safeId = normalizeId(id);
         Path resolved = configDir().resolve(safeId + FILE_SUFFIX).normalize();
@@ -622,6 +779,11 @@ public class McpConnectionService {
 
     private static String blankToEmpty(String value) {
         return value == null ? "" : value.trim();
+    }
+
+    private static String text(JsonNode node, String field, String fallback) {
+        String value = node.path(field).asText("");
+        return value.isBlank() ? fallback : value.trim();
     }
 
     private static String discoveryError(RuntimeException ex) {

@@ -3,8 +3,10 @@ package io.github.yourname.agentstudio.node;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.MissingNode;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.http.HttpHeaders;
@@ -85,13 +87,19 @@ public class NodeChannelWebSocketHandler extends TextWebSocketHandler {
             return;
         }
 
-        NodeProtocolEnvelope envelope = objectMapper.readValue(message.getPayload(), NodeProtocolEnvelope.class);
+        NodeProtocolEnvelope envelope;
+        try {
+            envelope = objectMapper.readValue(message.getPayload(), NodeProtocolEnvelope.class);
+        } catch (Exception ex) {
+            session.close(new CloseStatus(1007, "Invalid node protocol JSON."));
+            return;
+        }
         if (!sessions.acceptInbound(nodeId, session, envelope)) {
             // 旧 fencing token、过期帧、错误 session 或乱序帧都不能影响最新连接。
             return;
         }
         String type = envelope.type();
-        JsonNode payload = envelope.payload();
+        JsonNode payload = envelope.payload() == null ? MissingNode.getInstance() : envelope.payload();
         if ("node.heartbeat".equals(type)) {
             nodes.heartbeat(
                     nodeId,
@@ -104,13 +112,13 @@ public class NodeChannelWebSocketHandler extends TextWebSocketHandler {
         }
 
         if ("node.capabilities".equals(type)) {
-            List<NodeCapabilityPayload> capabilities = objectMapper.convertValue(
+            List<NodeCapabilityPayload> capabilities = listOrEmpty(
                     payload.path("capabilities"),
                     new TypeReference<List<NodeCapabilityPayload>>() {
                     });
-            Map<String, String> runtimes = objectMapper.convertValue(
+            Map<String, String> runtimes = mapOrEmpty(
                     payload.path("runtimes"), new TypeReference<Map<String, String>>() { });
-            java.util.Set<String> features = objectMapper.convertValue(
+            java.util.Set<String> features = setOrEmpty(
                     payload.path("features"), new TypeReference<java.util.Set<String>>() { });
             List<NodeToolView> saved = nodes.saveCapabilities(
                     nodeId,
@@ -118,7 +126,8 @@ public class NodeChannelWebSocketHandler extends TextWebSocketHandler {
                     runtimes,
                     features,
                     capabilities);
-            sessions.sendControl(nodeId, "node.capabilities.ack", envelope.messageId(), Map.of("toolCount", saved.size()));
+            sessions.sendControl(nodeId, "node.capabilities.ack", envelope.messageId(), Map.of(
+                    "toolCount", saved == null ? 0 : saved.size()));
             return;
         }
 
@@ -134,14 +143,16 @@ public class NodeChannelWebSocketHandler extends TextWebSocketHandler {
         }
 
         if ("tool.result".equals(type) || "tool.status.result".equals(type)) {
-            Map<String, Object> result = objectMapper.convertValue(
-                    payload.path("result"),
-                    new TypeReference<Map<String, Object>>() {
-                    });
+            Map<String, Object> result = toolResultMap(payload.path("result"));
+            String invocationId = payload.path("invocationId").asText();
+            String toolName = payload.path("toolName").asText();
+            if (invocationId == null || invocationId.isBlank() || toolName == null || toolName.isBlank()) {
+                return;
+            }
             NodeToolCallResult callResult = new NodeToolCallResult(
-                    payload.path("invocationId").asText(),
+                    invocationId,
                     nodeId,
-                    payload.path("toolName").asText(),
+                    toolName,
                     payload.path("status").asText("UNKNOWN"),
                     result,
                     textOrNull(payload, "errorMessage"));
@@ -227,8 +238,51 @@ public class NodeChannelWebSocketHandler extends TextWebSocketHandler {
     }
 
     private static String textOrNull(JsonNode root, String field) {
+        if (root == null || root.isMissingNode()) {
+            return null;
+        }
         JsonNode value = root.get(field);
         return value == null || value.isNull() ? null : value.asText();
+    }
+
+    private <T> List<T> listOrEmpty(JsonNode node, TypeReference<List<T>> type) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return List.of();
+        }
+        List<T> converted = objectMapper.convertValue(node, type);
+        return converted == null ? List.of() : converted;
+    }
+
+    private <T> Map<String, T> mapOrEmpty(JsonNode node, TypeReference<Map<String, T>> type) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return Map.of();
+        }
+        Map<String, T> converted = objectMapper.convertValue(node, type);
+        return converted == null ? Map.of() : converted;
+    }
+
+    private <T> java.util.Set<T> setOrEmpty(JsonNode node, TypeReference<java.util.Set<T>> type) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return java.util.Set.of();
+        }
+        java.util.Set<T> converted = objectMapper.convertValue(node, type);
+        return converted == null ? java.util.Set.of() : converted;
+    }
+
+    private Map<String, Object> toolResultMap(JsonNode resultNode) {
+        if (resultNode == null || resultNode.isMissingNode() || resultNode.isNull()) {
+            return Map.of();
+        }
+        if (resultNode.isObject()) {
+            Map<String, Object> converted = objectMapper.convertValue(
+                    resultNode,
+                    new TypeReference<Map<String, Object>>() {
+                    });
+            return converted == null ? Map.of() : converted;
+        }
+        Map<String, Object> wrapped = new LinkedHashMap<>();
+        wrapped.put("value", objectMapper.convertValue(resultNode, Object.class));
+        return Map.copyOf(wrapped);
     }
 
     private static boolean terminalStatus(String status) {

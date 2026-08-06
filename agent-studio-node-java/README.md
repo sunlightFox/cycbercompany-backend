@@ -44,6 +44,25 @@ Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/v1/node-registrati
 ..\gradlew.bat :agent-studio-node-java:run --args="start"
 ```
 
+个人本地节点建议使用仓库根目录的 Windows 启动器：
+
+```powershell
+.\scripts\start-personal-local.ps1 -Workspace D:\work\my-project
+```
+
+Windows software management is exposed only in system mode and remains approval gated on the
+server. Use `system.privilege.query` first when diagnosing permission-sensitive work. For
+uninstalls, prefer `system.uninstall.preflight` followed by `system.uninstall.execute`; the
+workflow accepts exact winget package IDs, exact Windows service names, and exact process image
+names, then performs a bounded service/process remediation before retrying one exact winget
+uninstall. It cannot bypass Windows ACLs, protected services, vendor uninstall UIs, or required
+reboots.
+
+该启动器默认通过 UAC 请求当前登录用户的管理员令牌，节点的 `start-local` 也默认使用
+`SYSTEM` 能力模式。这里的 `SYSTEM` 只是节点工具范围名称，不是 Windows `LocalSystem`
+账户；子进程仍受当前用户的 Windows ACL、服务保护策略和安全产品限制。需要完全绕过
+UAC 时可显式使用 `-NoElevation`。
+
 ## 启用整机/服务器访问
 
 默认节点只允许访问注册时配置的工作区。需要整理桌面、访问其他目录或执行服务器级命令时，注册节点时显式指定 `--access system`：

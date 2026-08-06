@@ -119,6 +119,50 @@ class NodeServiceManagedProcessCleanupTest {
     }
 
     @Test
+    void stopsSystemManagedHandlesWithTheSystemStopTool() {
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+        NodeConnectionEntity node = new NodeConnectionEntity(
+                "node-a", ACTOR.tenantId(), "node", "host", "Windows", "amd64", "test", "secret", now);
+        node.markOnline(now);
+        NodeToolEntity processStop = new NodeToolEntity(
+                ACTOR.tenantId(), "node-a", "system.process.stop", "stop system managed process", RiskLevel.HIGH, true, true, "{}", now);
+        NodeToolInvocationEntity started = new NodeToolInvocationEntity(
+                "nodeinv-start",
+                ACTOR.tenantId(),
+                "run-a",
+                "call-start",
+                "node-a",
+                "system.process.start",
+                "{\"command\":\"npm run dev\",\"cwd\":\"C:\\\\Users\\\\me\\\\Desktop\\\\app\"}",
+                now);
+        started.start(now);
+        started.succeed("{\"processId\":\"proc-system-owned\"}", now);
+
+        when(nodes.findByIdAndTenantId("node-a", ACTOR.tenantId())).thenReturn(Optional.of(node));
+        when(tools.findByTenantIdAndNodeIdAndName(ACTOR.tenantId(), "node-a", "system.process.stop"))
+                .thenReturn(Optional.of(processStop));
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(started));
+        when(approvals.findByTenantIdAndRunId(ACTOR.tenantId(), "run-a")).thenReturn(List.of());
+        when(invocations.save(any(NodeToolInvocationEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(sessions.isConnected("node-a")).thenReturn(true);
+        when(sessions.invoke(eq("node-a"), eq("system.process.stop"), any(), eq(Duration.ofSeconds(30)), eq("run-a")))
+                .thenReturn(new NodeToolCallResult(
+                        "remote-invocation", "node-a", "system.process.stop", "SUCCEEDED", Map.of("stopped", true), null));
+
+        NodeService service = new NodeService(nodes, tokens, tools, invocations, approvals, sessions, new ObjectMapper());
+        List<NodeToolCallResult> results = service.cleanupManagedProcessesForRun("run-a", ACTOR);
+
+        assertThat(results).singleElement().satisfies(result -> {
+            assertThat(result.status()).isEqualTo("SUCCEEDED");
+            assertThat(result.toolName()).isEqualTo("system.process.stop");
+        });
+        ArgumentCaptor<Map<String, Object>> arguments = ArgumentCaptor.forClass(Map.class);
+        verify(sessions).invoke(eq("node-a"), eq("system.process.stop"), arguments.capture(), eq(Duration.ofSeconds(30)), eq("run-a"));
+        assertThat(arguments.getValue()).containsEntry("processId", "proc-system-owned");
+    }
+
+    @Test
     void closesOnlyBrowserSessionsUsedByTheSameRun() {
         Instant now = Instant.parse("2026-01-01T00:00:00Z");
         NodeToolInvocationEntity browserOpen = new NodeToolInvocationEntity(

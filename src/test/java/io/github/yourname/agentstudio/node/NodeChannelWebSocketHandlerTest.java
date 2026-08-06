@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -63,6 +64,70 @@ class NodeChannelWebSocketHandlerTest {
     }
 
     @Test
+    void closesMalformedNodeProtocolJsonWithoutThrowing() throws Exception {
+        NodeService nodes = mock(NodeService.class);
+        NodeSessionRegistry sessions = mock(NodeSessionRegistry.class);
+        WebSocketSession session = mock(WebSocketSession.class);
+        HashMap<String, Object> attributes = new HashMap<>();
+        attributes.put("nodeId", "node-123");
+        when(session.getAttributes()).thenReturn(attributes);
+
+        NodeChannelWebSocketHandler handler =
+                new NodeChannelWebSocketHandler(nodes, sessions, new ObjectMapper());
+
+        handler.handleTextMessage(session, new TextMessage("{not-json"));
+
+        org.mockito.ArgumentCaptor<CloseStatus> status = org.mockito.ArgumentCaptor.forClass(CloseStatus.class);
+        verify(session).close(status.capture());
+        assertThat(status.getValue().getCode()).isEqualTo(1007);
+    }
+
+    @Test
+    void treatsNullHeartbeatPayloadAsEmptyPayload() throws Exception {
+        NodeService nodes = mock(NodeService.class);
+        NodeSessionRegistry sessions = mock(NodeSessionRegistry.class);
+        WebSocketSession session = mock(WebSocketSession.class);
+        HashMap<String, Object> attributes = new HashMap<>();
+        attributes.put("nodeId", "node-123");
+        when(session.getAttributes()).thenReturn(attributes);
+        when(sessions.acceptInbound(eq("node-123"), eq(session), any())).thenReturn(true);
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+        NodeProtocolEnvelope envelope = new NodeProtocolEnvelope(
+                "1.1", "node.heartbeat", "msg-heartbeat", "session-1", 1, null,
+                Instant.now(), null, null, 1, null);
+        NodeChannelWebSocketHandler handler = new NodeChannelWebSocketHandler(nodes, sessions, mapper);
+
+        handler.handleTextMessage(session, new TextMessage(mapper.writeValueAsString(envelope)));
+
+        verify(nodes).heartbeat("node-123", null, null, null, null);
+        verify(sessions).sendControl("node-123", "node.heartbeat.ack", "msg-heartbeat", java.util.Map.of());
+    }
+
+    @Test
+    void treatsNullCapabilitiesPayloadAsEmptyPayload() throws Exception {
+        NodeService nodes = mock(NodeService.class);
+        NodeSessionRegistry sessions = mock(NodeSessionRegistry.class);
+        WebSocketSession session = mock(WebSocketSession.class);
+        HashMap<String, Object> attributes = new HashMap<>();
+        attributes.put("nodeId", "node-123");
+        when(session.getAttributes()).thenReturn(attributes);
+        when(sessions.acceptInbound(eq("node-123"), eq(session), any())).thenReturn(true);
+        when(nodes.saveCapabilities(eq("node-123"), eq(null), eq(java.util.Map.of()), eq(java.util.Set.of()), eq(List.of())))
+                .thenReturn(List.of());
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+        NodeProtocolEnvelope envelope = new NodeProtocolEnvelope(
+                "1.1", "node.capabilities", "msg-capabilities", "session-1", 1, null,
+                Instant.now(), null, null, 1, null);
+        NodeChannelWebSocketHandler handler = new NodeChannelWebSocketHandler(nodes, sessions, mapper);
+
+        handler.handleTextMessage(session, new TextMessage(mapper.writeValueAsString(envelope)));
+
+        verify(nodes).saveCapabilities("node-123", null, java.util.Map.of(), java.util.Set.of(), List.of());
+        verify(sessions).sendControl(
+                "node-123", "node.capabilities.ack", "msg-capabilities", java.util.Map.of("toolCount", 0));
+    }
+
+    @Test
     void requestsJournalStatusAfterAcceptingAReconnectedNodeWithoutReplayingInvocation() throws Exception {
         NodeService nodes = mock(NodeService.class);
         NodeSessionRegistry sessions = mock(NodeSessionRegistry.class);
@@ -109,6 +174,94 @@ class NodeChannelWebSocketHandlerTest {
         handler.handleTextMessage(session, new TextMessage(mapper.writeValueAsString(envelope)));
 
         verify(nodes).reconcileInvocationResult(any(NodeToolCallResult.class), eq("fs.write"), eq("sha256:args"), eq(2));
+    }
+
+    @Test
+    void ignoresToolResultsWithoutRequiredCorrelationFields() throws Exception {
+        NodeService nodes = mock(NodeService.class);
+        NodeSessionRegistry sessions = mock(NodeSessionRegistry.class);
+        WebSocketSession session = mock(WebSocketSession.class);
+        HashMap<String, Object> attributes = new HashMap<>();
+        attributes.put("nodeId", "node-123");
+        when(session.getAttributes()).thenReturn(attributes);
+        when(sessions.acceptInbound(eq("node-123"), eq(session), any())).thenReturn(true);
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+        NodeProtocolEnvelope envelope = new NodeProtocolEnvelope(
+                "1.1", "tool.result", "msg-1", "session-1", 1, "inv-1", Instant.now(), null, null, 1,
+                mapper.valueToTree(java.util.Map.of(
+                        "invocationId", "inv-1", "argumentsDigest", "sha256:args", "attempt", 1,
+                        "status", "SUCCEEDED", "result", java.util.Map.of("ok", true))));
+        NodeChannelWebSocketHandler handler = new NodeChannelWebSocketHandler(nodes, sessions, mapper);
+
+        handler.handleTextMessage(session, new TextMessage(mapper.writeValueAsString(envelope)));
+
+        verify(sessions, never()).complete(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyInt(), any());
+        verify(nodes, never()).reconcileInvocationResult(any(), any(), any(), org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    @Test
+    void normalizesNullToolResultToAnEmptyMap() throws Exception {
+        NodeService nodes = mock(NodeService.class);
+        NodeSessionRegistry sessions = mock(NodeSessionRegistry.class);
+        WebSocketSession session = mock(WebSocketSession.class);
+        HashMap<String, Object> attributes = new HashMap<>();
+        attributes.put("nodeId", "node-123");
+        when(session.getAttributes()).thenReturn(attributes);
+        when(sessions.acceptInbound(eq("node-123"), eq(session), any())).thenReturn(true);
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+        var payload = mapper.createObjectNode();
+        payload.put("invocationId", "inv-1");
+        payload.put("toolName", "system.shell.run");
+        payload.put("argumentsDigest", "sha256:args");
+        payload.put("attempt", 1);
+        payload.put("status", "FAILED");
+        payload.putNull("result");
+        payload.put("errorMessage", "NullPointerException");
+        NodeProtocolEnvelope envelope = new NodeProtocolEnvelope(
+                "1.1", "tool.result", "msg-1", "session-1", 1, "inv-1", Instant.now(), null, null, 1, payload);
+        NodeChannelWebSocketHandler handler = new NodeChannelWebSocketHandler(nodes, sessions, mapper);
+
+        handler.handleTextMessage(session, new TextMessage(mapper.writeValueAsString(envelope)));
+
+        org.mockito.ArgumentCaptor<NodeToolCallResult> result =
+                org.mockito.ArgumentCaptor.forClass(NodeToolCallResult.class);
+        verify(nodes).reconcileInvocationResult(result.capture(), eq("system.shell.run"), eq("sha256:args"), eq(1));
+        assertThat(result.getValue().result()).isEmpty();
+        assertThat(result.getValue().errorMessage()).isEqualTo("NullPointerException");
+    }
+
+    @Test
+    void preservesNullFieldsInsideObjectToolResults() throws Exception {
+        NodeService nodes = mock(NodeService.class);
+        NodeSessionRegistry sessions = mock(NodeSessionRegistry.class);
+        WebSocketSession session = mock(WebSocketSession.class);
+        HashMap<String, Object> attributes = new HashMap<>();
+        attributes.put("nodeId", "node-123");
+        when(session.getAttributes()).thenReturn(attributes);
+        when(sessions.acceptInbound(eq("node-123"), eq(session), any())).thenReturn(true);
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+        var resultNode = mapper.createObjectNode();
+        resultNode.put("stdout", "ok");
+        resultNode.putNull("stderr");
+        var payload = mapper.createObjectNode();
+        payload.put("invocationId", "inv-1");
+        payload.put("toolName", "system.shell.run");
+        payload.put("argumentsDigest", "sha256:args");
+        payload.put("attempt", 1);
+        payload.put("status", "SUCCEEDED");
+        payload.set("result", resultNode);
+        NodeProtocolEnvelope envelope = new NodeProtocolEnvelope(
+                "1.1", "tool.result", "msg-1", "session-1", 1, "inv-1", Instant.now(), null, null, 1, payload);
+        NodeChannelWebSocketHandler handler = new NodeChannelWebSocketHandler(nodes, sessions, mapper);
+
+        handler.handleTextMessage(session, new TextMessage(mapper.writeValueAsString(envelope)));
+
+        org.mockito.ArgumentCaptor<NodeToolCallResult> result =
+                org.mockito.ArgumentCaptor.forClass(NodeToolCallResult.class);
+        verify(nodes).reconcileInvocationResult(result.capture(), eq("system.shell.run"), eq("sha256:args"), eq(1));
+        assertThat(result.getValue().result()).containsEntry("stdout", "ok");
+        assertThat(result.getValue().result()).containsKey("stderr");
+        assertThat(result.getValue().result().get("stderr")).isNull();
     }
 
     @Test

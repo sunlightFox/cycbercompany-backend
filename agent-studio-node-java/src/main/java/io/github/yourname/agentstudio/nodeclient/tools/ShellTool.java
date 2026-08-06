@@ -17,6 +17,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 /**
  * Executes a command from a configured node workspace.
@@ -31,6 +32,19 @@ public final class ShellTool {
     private static final int MAX_OUTPUT_BYTES = 64 * 1024;
     private static final int DEFAULT_TIMEOUT_SECONDS = 30;
     private static final int MAX_TIMEOUT_SECONDS = 120;
+    private static final List<Pattern> LIKELY_LONG_RUNNING_SERVER_COMMANDS = List.of(
+            Pattern.compile("\\b(?:npm|pnpm|yarn|bun)(?:\\.cmd|\\.exe)?\\s+(?:run\\s+)?(?:dev|serve|start|preview|watch|storybook)\\b"),
+            Pattern.compile("\\b(?:npm|pnpm|yarn|bun)(?:\\.cmd|\\.exe)?\\s+exec\\s+.*\\b(?:dev|serve|start|preview|watch)\\b"),
+            Pattern.compile("\\b(?:(?:npx|bunx)(?:\\.cmd|\\.exe)?|npm(?:\\.cmd|\\.exe)?\\s+exec|pnpm(?:\\.cmd|\\.exe)?\\s+exec|yarn(?:\\.cmd|\\.exe)?\\s+dlx)\\s+(?:vite|next|nuxt|parcel|webpack-dev-server|http-server|live-server|storybook|nodemon|ts-node-dev)\\b"),
+            Pattern.compile("\\b(?:vite|next|nuxt)\\s+(?:dev|preview)\\b"),
+            Pattern.compile("\\b(?:ng|nx)\\s+serve\\b"),
+            Pattern.compile("\\breact-scripts\\s+start\\b"),
+            Pattern.compile("\\bpython(?:\\.exe)?\\s+-m\\s+http\\.server\\b"),
+            Pattern.compile("\\bpython(?:\\.exe)?\\s+-m\\s+(?:uvicorn|gunicorn|hypercorn|flask)\\b"),
+            Pattern.compile("\\b(?:uvicorn|gunicorn|hypercorn)\\b"),
+            Pattern.compile("\\b(?:flask\\s+run|nodemon|ts-node-dev|vite-node)\\b"),
+            Pattern.compile("\\bdotnet\\s+watch\\b"),
+            Pattern.compile("\\b(?:gradle|gradlew|gradlew\\.bat|mvn|mvnw|mvnw\\.cmd)\\s+.*\\b(?:bootRun|spring-boot:run)\\b"));
 
     private final Path workspaceRoot;
     private final boolean systemAccess;
@@ -58,6 +72,11 @@ public final class ShellTool {
         }
         if (command.length() > MAX_COMMAND_CHARS) {
             return ToolExecutionResult.failure("Command exceeds the " + MAX_COMMAND_CHARS + " character limit.");
+        }
+        if (looksLikeLongRunningServerCommand(command)) {
+            return ToolExecutionResult.failure(
+                    "This command looks like a long-running development server or watch process. "
+                            + "Use process.start or system.process.start when advertised; shell.run is for short-lived commands.");
         }
 
         try {
@@ -125,6 +144,8 @@ public final class ShellTool {
             return ToolExecutionResult.failure(ex.getMessage());
         } catch (IOException ex) {
             return ToolExecutionResult.failure("Failed to start command.");
+        } catch (RuntimeException ex) {
+            return ToolExecutionResult.failure("shell.run failed before completion.");
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             return ToolExecutionResult.failure("Command execution was interrupted.");
@@ -176,6 +197,31 @@ public final class ShellTool {
             throw new IllegalArgumentException(argumentName
                     + " contains an unreplaced placeholder. Use a concrete working directory returned by an inspection tool or provided by the user, or omit cwd.");
         }
+    }
+
+    private static boolean looksLikeLongRunningServerCommand(String command) {
+        String normalized = command == null ? "" : command.toLowerCase(Locale.ROOT)
+                .replaceAll("[\"']", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+        if (normalized.isBlank()) {
+            return false;
+        }
+        return normalized.contains("start-job")
+                || normalized.contains("start-process")
+                || normalized.contains("disown")
+                || normalized.contains("setsid")
+                || normalized.contains("nohup ")
+                || normalized.endsWith(" &")
+                || normalized.matches("^(?:cmd(?:\\.exe)?\\s+/c\\s+)?start(?:\\s+|$).*")
+                || dockerComposeUpWithoutDetach(normalized)
+                || LIKELY_LONG_RUNNING_SERVER_COMMANDS.stream().anyMatch(pattern -> pattern.matcher(normalized).find());
+    }
+
+    private static boolean dockerComposeUpWithoutDetach(String normalized) {
+        boolean composeUp = normalized.matches(".*\\bdocker(?:\\.exe)?\\s+compose\\b.*\\sup\\b.*")
+                || normalized.matches(".*\\bdocker-compose(?:\\.exe)?\\b.*\\sup\\b.*");
+        return composeUp && !normalized.matches(".*(?:^|\\s)(?:-d|--detach)(?:\\s|$).*");
     }
 
     private static List<String> shellCommand(String command) {

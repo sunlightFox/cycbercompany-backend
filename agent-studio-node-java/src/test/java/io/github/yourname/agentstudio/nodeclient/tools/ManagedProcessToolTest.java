@@ -3,9 +3,11 @@ package io.github.yourname.agentstudio.nodeclient.tools;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
@@ -50,6 +52,107 @@ class ManagedProcessToolTest {
 
             assertFalse(result.success());
             assertTrue(result.errorMessage().contains("manages the command"));
+        }
+    }
+
+    @Test
+    void rejectsCmdStartWrappersThatDetachFromTheManagedHandle() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-managed-process");
+        try (ManagedProcessTool tool = new ManagedProcessTool(workspace)) {
+            var result = tool.start(Map.of("command", "cmd /c start npm run dev"));
+
+            assertFalse(result.success());
+            assertTrue(result.errorMessage().contains("manages the command"));
+        }
+    }
+
+    @Test
+    void rejectsCommonDetachedProcessWrappers() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-managed-process");
+        try (ManagedProcessTool tool = new ManagedProcessTool(workspace)) {
+            assertFalse(tool.start(Map.of("command", "Start-Job { npm run dev }")).success());
+            assertFalse(tool.start(Map.of("command", "disown npm run dev")).success());
+            assertFalse(tool.start(Map.of("command", "setsid npm run dev")).success());
+        }
+    }
+
+    @Test
+    void rejectsUnreplacedPathPlaceholdersBeforeStartingAProcess() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-managed-process-placeholder");
+        try (ManagedProcessTool tool = new ManagedProcessTool(workspace, true)) {
+            var cwd = tool.start(Map.of("command", longRunningCommand(), "cwd", "<path>"));
+            var stdout = tool.start(Map.of("command", longRunningCommand(), "stdoutPath", "<absolute path>"));
+
+            assertFalse(cwd.success());
+            assertTrue(cwd.errorMessage().contains("unreplaced placeholder"));
+            assertFalse(stdout.success());
+            assertTrue(stdout.errorMessage().contains("unreplaced placeholder"));
+        }
+    }
+
+    @Test
+    void rejectsLogPathsEscapingWorkspaceThroughDirectorySymlinks() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-managed-process-log-symlink");
+        Path outside = Files.createTempDirectory("agent-studio-managed-process-log-outside");
+        Path link = workspace.resolve("outside-logs");
+        try {
+            Files.createSymbolicLink(link, outside);
+        } catch (IOException | UnsupportedOperationException | SecurityException ex) {
+            assumeTrue(false, "Symbolic links are unavailable in this test environment.");
+        }
+        try (ManagedProcessTool tool = new ManagedProcessTool(workspace)) {
+            var result = tool.start(Map.of(
+                    "command", longRunningCommand(),
+                    "stdoutPath", link.resolve("server.log").toString()));
+
+            assertFalse(result.success());
+            assertTrue(result.errorMessage().contains("configured workspace"));
+        }
+    }
+
+    @Test
+    void rejectsDefaultLogDirectoryWhenAgentStudioFolderEscapesThroughSymlink() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-managed-process-default-log-symlink");
+        Path outside = Files.createTempDirectory("agent-studio-managed-process-default-log-outside");
+        try {
+            Files.createSymbolicLink(workspace.resolve(".agent-studio"), outside);
+        } catch (IOException | UnsupportedOperationException | SecurityException ex) {
+            assumeTrue(false, "Symbolic links are unavailable in this test environment.");
+        }
+        try (ManagedProcessTool tool = new ManagedProcessTool(workspace)) {
+            var result = tool.start(Map.of("command", longRunningCommand()));
+
+            assertFalse(result.success());
+            assertTrue(result.errorMessage().contains("configured workspace"));
+        }
+    }
+
+    @Test
+    void reportsAnUnreadableWorkingDirectoryWithoutEchoingThePath() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-managed-process-invalid-cwd");
+        try (ManagedProcessTool tool = new ManagedProcessTool(workspace, true)) {
+            var result = tool.start(Map.of("command", longRunningCommand(), "cwd", workspace.resolve("missing").toString()));
+
+            assertFalse(result.success());
+            assertTrue(result.errorMessage().contains("does not exist or is inaccessible"));
+            assertFalse(result.errorMessage().contains("missing"));
+        }
+    }
+
+    @Test
+    void systemAccessCanStartProcessesOutsideTheWorkspace() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-managed-process-system");
+        Path outside = Files.createTempDirectory("agent-studio-managed-process-system-outside");
+        try (ManagedProcessTool tool = new ManagedProcessTool(workspace, true)) {
+            var started = tool.start(Map.of(
+                    "command", longRunningCommand(),
+                    "cwd", outside.toString()));
+
+            assertTrue(started.success());
+            assertEquals("system", started.result().get("workingDirectoryScope"));
+            assertFalse(started.result().containsKey("workingDirectory"));
+            var stopped = tool.stop(Map.of("processId", started.result().get("processId")));
+            assertTrue(stopped.success());
         }
     }
 

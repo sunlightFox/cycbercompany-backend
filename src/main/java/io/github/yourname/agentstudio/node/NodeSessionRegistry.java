@@ -5,6 +5,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -35,8 +36,13 @@ public class NodeSessionRegistry {
     }
 
     public void register(String nodeId, WebSocketSession socket, String sessionId, long fencingToken) {
-        ConnectedSession next = new ConnectedSession(socket, sessionId, fencingToken);
-        ConnectedSession previous = sessions.put(nodeId, next);
+        String normalizedNodeId = requireNonBlank(nodeId, "nodeId");
+        if (socket == null) {
+            throw new IllegalArgumentException("socket must not be null");
+        }
+        String normalizedSessionId = requireNonBlank(sessionId, "sessionId");
+        ConnectedSession next = new ConnectedSession(socket, normalizedSessionId, fencingToken);
+        ConnectedSession previous = sessions.put(normalizedNodeId, next);
         if (previous != null && previous.socket() != socket) {
             closeQuietly(previous.socket(), "superseded by a newer node session");
             completeUnknown(previous, "Node session was superseded before the invocation result was confirmed.");
@@ -49,6 +55,9 @@ public class NodeSessionRegistry {
     }
 
     public void unregister(String nodeId, WebSocketSession socket) {
+        if (isBlank(nodeId) || socket == null) {
+            return;
+        }
         ConnectedSession connected = sessions.get(nodeId);
         if (connected == null || connected.socket() != socket || !sessions.remove(nodeId, connected)) {
             return;
@@ -57,11 +66,17 @@ public class NodeSessionRegistry {
     }
 
     public boolean isConnected(String nodeId) {
+        if (isBlank(nodeId)) {
+            return false;
+        }
         ConnectedSession connected = sessions.get(nodeId);
         return connected != null && connected.socket().isOpen();
     }
 
     public boolean awaitConnected(String nodeId, Duration timeout) {
+        if (isBlank(nodeId)) {
+            return false;
+        }
         if (isConnected(nodeId)) {
             return true;
         }
@@ -85,6 +100,9 @@ public class NodeSessionRegistry {
     }
 
     public void disconnect(String nodeId, String reason) {
+        if (isBlank(nodeId)) {
+            return;
+        }
         ConnectedSession connected = sessions.remove(nodeId);
         if (connected == null) {
             return;
@@ -96,7 +114,27 @@ public class NodeSessionRegistry {
     /**
      * 下发数据库中已经存在的 invocationId。超时后先发状态查询；仍无法确认时返回 UNKNOWN。
      */
+    public boolean requestShutdown(String nodeId, String reason) {
+        if (isBlank(nodeId)) {
+            return false;
+        }
+        ConnectedSession connected = sessions.get(nodeId);
+        if (connected == null || !connected.socket().isOpen()) {
+            return false;
+        }
+        try {
+            send(connected, "node.shutdown", "shutdown_" + UUID.randomUUID(), Map.of(
+                    "reason", reason == null || reason.isBlank() ? "server requested shutdown" : reason),
+                    Instant.now().plusSeconds(30), null);
+            return true;
+        } catch (Exception ex) {
+            return false;
+        }
+    }
+
     public NodeToolCallResult invoke(String nodeId, NodeInvocationDispatch dispatch, Duration timeout) {
+        validateDispatch(dispatch);
+        Duration effectiveTimeout = requirePositiveTimeout(timeout);
         ConnectedSession connected = requireConnected(nodeId);
         CompletableFuture<NodeToolCallResult> future = new CompletableFuture<>();
         PendingInvocation pending = new PendingInvocation(
@@ -115,7 +153,7 @@ public class NodeSessionRegistry {
         try {
             send(connected, "tool.invoke", dispatch.invocationId(), dispatch.payload(), dispatch.deadlineAt(), dispatch.traceId());
             try {
-                return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+                return future.get(effectiveTimeout.toMillis(), TimeUnit.MILLISECONDS);
             } catch (java.util.concurrent.TimeoutException timeoutException) {
                 // 超时不代表节点没有执行。先查询 Journal，给终态结果一个很短的回传窗口。
                 send(connected, "tool.status", dispatch.invocationId(), Map.of(
@@ -162,6 +200,8 @@ public class NodeSessionRegistry {
             Map<String, Object> arguments,
             Duration timeout,
             String executionSessionId) {
+        String normalizedToolName = requireNonBlank(toolName, "toolName");
+        Duration effectiveTimeout = requirePositiveTimeout(timeout);
         ConnectedSession connected = requireConnected(nodeId);
         String invocationId = "nodecall_" + UUID.randomUUID();
         CompletableFuture<NodeToolCallResult> future = new CompletableFuture<>();
@@ -169,7 +209,7 @@ public class NodeSessionRegistry {
                 nodeId,
                 connected.sessionId(),
                 connected.fencingToken(),
-                toolName,
+                normalizedToolName,
                 "legacy",
                 1,
                 future);
@@ -179,26 +219,38 @@ public class NodeSessionRegistry {
             // clients reject the former protocol-1.0 object and require these correlation fields.
             Map<String, Object> payload = new java.util.LinkedHashMap<>();
             payload.put("invocationId", invocationId);
-            payload.put("toolName", toolName);
+            payload.put("toolName", normalizedToolName);
             payload.put("arguments", arguments == null ? Map.of() : arguments);
             payload.put("argumentsDigest", "legacy");
             payload.put("attempt", 1);
             if (executionSessionId != null && !executionSessionId.isBlank()) {
                 payload.put("executionSessionId", executionSessionId);
             }
-            send(connected, "tool.invoke", invocationId, payload, Instant.now().plus(timeout), "trace_" + invocationId);
-            return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            send(connected, "tool.invoke", invocationId, payload, Instant.now().plus(effectiveTimeout), "trace_" + invocationId);
+            try {
+                return future.get(effectiveTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            } catch (java.util.concurrent.TimeoutException timeoutException) {
+                send(connected, "tool.status", invocationId, Map.of(
+                        "invocationId", invocationId,
+                        "toolName", normalizedToolName,
+                        "argumentsDigest", "legacy",
+                        "attempt", 1),
+                        Instant.now().plus(STATUS_RECONCILIATION_GRACE), "trace_" + invocationId);
+                try {
+                    return future.get(STATUS_RECONCILIATION_GRACE.toMillis(), TimeUnit.MILLISECONDS);
+                } catch (java.util.concurrent.TimeoutException unresolved) {
+                    return new NodeToolCallResult(invocationId, nodeId, normalizedToolName, "UNKNOWN", null,
+                            "Invocation timed out and node status could not be confirmed.");
+                }
+            }
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
-            return new NodeToolCallResult(invocationId, nodeId, toolName, "UNKNOWN", null,
+            return new NodeToolCallResult(invocationId, nodeId, normalizedToolName, "UNKNOWN", null,
                     "Invocation wait was interrupted before the result was confirmed.");
-        } catch (java.util.concurrent.TimeoutException ex) {
-            return new NodeToolCallResult(invocationId, nodeId, toolName, "UNKNOWN", null,
-                    "Invocation timed out before the result was confirmed.");
         } catch (IllegalArgumentException ex) {
             throw new IllegalStateException(ex.getMessage(), ex);
         } catch (Exception ex) {
-            return new NodeToolCallResult(invocationId, nodeId, toolName, "FAILED", null,
+            return new NodeToolCallResult(invocationId, nodeId, normalizedToolName, "FAILED", null,
                     "Invocation transport failed: " + safeMessage(ex));
         } finally {
             pendingInvocations.remove(invocationId, pending);
@@ -207,6 +259,9 @@ public class NodeSessionRegistry {
 
     /** 给当前节点活动调用发送协作式取消；ACK 只说明节点收到请求。 */
     public boolean cancel(String nodeId, String invocationId, String traceId) {
+        if (isBlank(nodeId) || isBlank(invocationId)) {
+            return false;
+        }
         ConnectedSession connected = sessions.get(nodeId);
         if (connected == null || !connected.socket().isOpen()) {
             return false;
@@ -222,6 +277,7 @@ public class NodeSessionRegistry {
 
     /** 服务端发出的心跳 ACK、能力 ACK 等也必须经过统一 Envelope。 */
     public void sendControl(String nodeId, String type, String correlationId, Object payload) throws Exception {
+        requireNonBlank(type, "type");
         send(requireConnected(nodeId), type, correlationId, payload, null, null);
     }
 
@@ -230,6 +286,9 @@ public class NodeSessionRegistry {
             String nodeId,
             WebSocketSession socket,
             NodeProtocolEnvelope envelope) {
+        if (isBlank(nodeId) || socket == null || envelope == null) {
+            return false;
+        }
         ConnectedSession connected = sessions.get(nodeId);
         if (connected == null
                 || connected.socket() != socket
@@ -257,13 +316,16 @@ public class NodeSessionRegistry {
             String argumentsDigest,
             int attempt,
             NodeToolCallResult result) {
+        if (envelope == null || result == null || isBlank(result.invocationId()) || isBlank(nodeId)) {
+            return false;
+        }
         PendingInvocation pending = pendingInvocations.get(result.invocationId());
         if (pending == null
                 || !pending.nodeId().equals(nodeId)
                 || !pending.sessionId().equals(envelope.sessionId())
                 || pending.fencingToken() != envelope.fencingToken()
-                || !pending.toolName().equals(toolName)
-                || !java.util.Objects.equals(pending.argumentsDigest(), argumentsDigest)
+                || !Objects.equals(pending.toolName(), toolName)
+                || !Objects.equals(pending.argumentsDigest(), argumentsDigest)
                 || pending.attempt() != attempt) {
             return false;
         }
@@ -272,17 +334,20 @@ public class NodeSessionRegistry {
 
     /** Accepts results from protocol 1.0 node clients that do not carry envelope metadata. */
     public boolean complete(NodeToolCallResult result) {
-        if (result == null || result.invocationId() == null) {
+        if (result == null || isBlank(result.invocationId())) {
             return false;
         }
         PendingInvocation pending = pendingInvocations.get(result.invocationId());
         return pending != null
-                && pending.nodeId().equals(result.nodeId())
-                && pending.toolName().equals(result.toolName())
+                && Objects.equals(pending.nodeId(), result.nodeId())
+                && Objects.equals(pending.toolName(), result.toolName())
                 && pending.future().complete(result);
     }
 
     ConnectedSession session(String nodeId) {
+        if (isBlank(nodeId)) {
+            return null;
+        }
         return sessions.get(nodeId);
     }
 
@@ -315,11 +380,41 @@ public class NodeSessionRegistry {
     }
 
     private ConnectedSession requireConnected(String nodeId) {
+        if (isBlank(nodeId)) {
+            throw new IllegalArgumentException("nodeId must not be blank");
+        }
         ConnectedSession connected = sessions.get(nodeId);
         if (connected == null || !connected.socket().isOpen()) {
             throw new IllegalArgumentException("Node is not connected: " + nodeId);
         }
         return connected;
+    }
+
+    private static void validateDispatch(NodeInvocationDispatch dispatch) {
+        if (dispatch == null) {
+            throw new IllegalArgumentException("dispatch must not be null");
+        }
+        requireNonBlank(dispatch.invocationId(), "dispatch.invocationId");
+        requireNonBlank(dispatch.toolName(), "dispatch.toolName");
+        requireNonBlank(dispatch.argumentsDigest(), "dispatch.argumentsDigest");
+    }
+
+    private static Duration requirePositiveTimeout(Duration timeout) {
+        if (timeout == null || timeout.isZero() || timeout.isNegative()) {
+            throw new IllegalArgumentException("timeout must be positive");
+        }
+        return timeout;
+    }
+
+    private static String requireNonBlank(String value, String name) {
+        if (isBlank(value)) {
+            throw new IllegalArgumentException(name + " must not be blank");
+        }
+        return value;
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 
     private void completeUnknown(ConnectedSession connected, String message) {

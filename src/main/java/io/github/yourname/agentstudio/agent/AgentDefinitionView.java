@@ -1,5 +1,10 @@
 package io.github.yourname.agentstudio.agent;
 
+/**
+ * 返回给前端的 Agent 视图。
+ *
+ * <p>View 只暴露允许公开的配置，不直接暴露 JPA 的生命周期或内部方法。
+ */
 public record AgentDefinitionView(
         String id,
         String name,

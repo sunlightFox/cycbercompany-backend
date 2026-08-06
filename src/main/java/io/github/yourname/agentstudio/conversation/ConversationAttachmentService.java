@@ -43,8 +43,11 @@ public class ConversationAttachmentService {
     @Transactional
     public List<ConversationAttachmentView> upload(
             String conversationId, List<MultipartFile> files, ActorContext actor) {
-        conversations.findByIdAndTenantId(conversationId, actor.tenantId())
+        var conversation = conversations.findByIdAndTenantId(conversationId, actor.tenantId())
                 .orElseThrow(() -> new IllegalArgumentException("Conversation not found: " + conversationId));
+        if (conversation.archived()) {
+            throw new ConversationArchivedException(conversationId);
+        }
         if (files == null || files.isEmpty()) {
             throw new IllegalArgumentException("At least one file is required.");
         }

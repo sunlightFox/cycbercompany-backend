@@ -32,6 +32,9 @@ public final class ApiTokenAuthenticationFilter extends OncePerRequestFilter {
         }
         String path = request.getRequestURI();
         return "/actuator/health".equals(path)
+                || path.startsWith("/swagger-ui/")
+                || "/swagger-ui.html".equals(path)
+                || path.startsWith("/v3/api-docs")
                 || "/api/v1/nodes/register".equals(path)
                 || "/api/v1/node-channel".equals(path);
     }

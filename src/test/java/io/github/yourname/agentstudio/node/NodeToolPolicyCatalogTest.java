@@ -17,6 +17,96 @@ class NodeToolPolicyCatalogTest {
     }
 
     @Test
+    void keepsSoftwareUninstallAsAnApprovalProtectedSystemOperation() {
+        NodeToolPolicy policy = NodeToolPolicyCatalog.policyFor("system.software.uninstall");
+
+        assertThat(policy.riskLevel()).isEqualTo(RiskLevel.HIGH);
+        assertThat(policy.enabledByDefault()).isTrue();
+        assertThat(policy.requiresApproval()).isTrue();
+    }
+
+    @Test
+    void keepsSoftwareInstallAsAnApprovalProtectedSystemOperation() {
+        NodeToolPolicy policy = NodeToolPolicyCatalog.policyFor("system.software.install");
+
+        assertThat(policy.riskLevel()).isEqualTo(RiskLevel.HIGH);
+        assertThat(policy.enabledByDefault()).isTrue();
+        assertThat(policy.requiresApproval()).isTrue();
+    }
+
+    @Test
+    void keepsSoftwareQueryApprovalProtectedBecauseItReadsSystemInventory() {
+        NodeToolPolicy policy = NodeToolPolicyCatalog.policyFor("system.software.query");
+
+        assertThat(policy.riskLevel()).isEqualTo(RiskLevel.HIGH);
+        assertThat(policy.enabledByDefault()).isTrue();
+        assertThat(policy.requiresApproval()).isTrue();
+    }
+
+    @Test
+    void keepsServiceStopAsAnApprovalProtectedSystemOperation() {
+        NodeToolPolicy policy = NodeToolPolicyCatalog.policyFor("system.service.stop");
+
+        assertThat(policy.riskLevel()).isEqualTo(RiskLevel.HIGH);
+        assertThat(policy.enabledByDefault()).isTrue();
+        assertThat(policy.requiresApproval()).isTrue();
+    }
+
+    @Test
+    void keepsServiceStartModeChangesApprovalProtected() {
+        NodeToolPolicy policy = NodeToolPolicyCatalog.policyFor("system.service.set_start_mode");
+
+        assertThat(policy.riskLevel()).isEqualTo(RiskLevel.HIGH);
+        assertThat(policy.enabledByDefault()).isTrue();
+        assertThat(policy.requiresApproval()).isTrue();
+    }
+
+    @Test
+    void keepsOsProcessTerminationApprovalProtected() {
+        NodeToolPolicy policy = NodeToolPolicyCatalog.policyFor("system.os_process.terminate");
+
+        assertThat(policy.riskLevel()).isEqualTo(RiskLevel.HIGH);
+        assertThat(policy.enabledByDefault()).isTrue();
+        assertThat(policy.requiresApproval()).isTrue();
+    }
+
+    @Test
+    void keepsOsProcessQueryApprovalProtectedBecauseItReadsSystemInventory() {
+        NodeToolPolicy policy = NodeToolPolicyCatalog.policyFor("system.os_process.query");
+
+        assertThat(policy.riskLevel()).isEqualTo(RiskLevel.HIGH);
+        assertThat(policy.enabledByDefault()).isTrue();
+        assertThat(policy.requiresApproval()).isTrue();
+    }
+
+    @Test
+    void keepsPrivilegeQueryReadOnlyAndEnabledByDefault() {
+        NodeToolPolicy policy = NodeToolPolicyCatalog.policyFor("system.privilege.query");
+
+        assertThat(policy.riskLevel()).isEqualTo(RiskLevel.LOW);
+        assertThat(policy.enabledByDefault()).isTrue();
+        assertThat(policy.requiresApproval()).isFalse();
+    }
+
+    @Test
+    void keepsUninstallPreflightReadOnlyAndEnabledByDefault() {
+        NodeToolPolicy policy = NodeToolPolicyCatalog.policyFor("system.uninstall.preflight");
+
+        assertThat(policy.riskLevel()).isEqualTo(RiskLevel.LOW);
+        assertThat(policy.enabledByDefault()).isTrue();
+        assertThat(policy.requiresApproval()).isFalse();
+    }
+
+    @Test
+    void keepsUninstallExecuteApprovalProtected() {
+        NodeToolPolicy policy = NodeToolPolicyCatalog.policyFor("system.uninstall.execute");
+
+        assertThat(policy.riskLevel()).isEqualTo(RiskLevel.HIGH);
+        assertThat(policy.enabledByDefault()).isTrue();
+        assertThat(policy.requiresApproval()).isTrue();
+    }
+
+    @Test
     void failsClosedForAnUnknownNodeCapability() {
         NodeToolPolicy policy = NodeToolPolicyCatalog.policyFor("system.unknown.operation");
 
@@ -70,6 +160,22 @@ class NodeToolPolicyCatalogTest {
         assertThat(policy.riskLevel()).isEqualTo(RiskLevel.LOW);
         assertThat(policy.enabledByDefault()).isTrue();
         assertThat(policy.requiresApproval()).isFalse();
+    }
+
+    @Test
+    void keepsSystemManagedProcessToolsApprovalProtected() {
+        for (String toolName : java.util.List.of(
+                "system.process.start",
+                "system.process.status",
+                "system.process.logs",
+                "system.process.wait_http",
+                "system.process.stop")) {
+            NodeToolPolicy policy = NodeToolPolicyCatalog.policyFor(toolName);
+
+            assertThat(policy.riskLevel()).isEqualTo(RiskLevel.HIGH);
+            assertThat(policy.enabledByDefault()).isTrue();
+            assertThat(policy.requiresApproval()).isTrue();
+        }
     }
 
     @Test

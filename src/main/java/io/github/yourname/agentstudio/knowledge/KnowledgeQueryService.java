@@ -101,6 +101,7 @@ public class KnowledgeQueryService {
 
     @Transactional(readOnly = true)
     public EvidenceBundle search(KnowledgeSearchCommand command, ActorContext actor) {
+        // 先限制返回数量，再解析租户可见的知识库 ID，避免查询层被客户端输入无限放大。
         int limit = command.limit() <= 0 ? 5 : Math.min(command.limit(), 20);
         List<String> ids = resolveKnowledgeBaseIds(command.knowledgeBaseIds(), actor);
         if (ids.isEmpty()) {
@@ -121,6 +122,7 @@ public class KnowledgeQueryService {
                 .map(chunk -> score(chunk, terms, queryVector.orElse(null)))
                 .filter(scored -> scored.lexicalScore() > 0 || scored.vectorScore() > 0)
                 .toList();
+        // 关键词分数和向量分数分别排名，再使用 RRF 融合，避免某一类分数的量纲支配结果。
         Map<KnowledgeChunkEntity, Integer> lexicalRanks = ranks(candidates, ScoredChunk::lexicalScore);
         Map<KnowledgeChunkEntity, Integer> vectorRanks = ranks(candidates, ScoredChunk::vectorScore);
         double vectorWeight = embeddings.vectorWeight();

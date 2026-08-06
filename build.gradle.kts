@@ -30,6 +30,7 @@ dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-webmvc")
 	implementation("org.springframework.boot:spring-boot-starter-websocket")
 	implementation("org.springframework.modulith:spring-modulith-starter-core:2.1.0")
+	implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:3.1.0")
 	implementation("com.fasterxml.jackson.core:jackson-databind")
 	implementation("com.fasterxml.jackson.dataformat:jackson-dataformat-yaml")
 	implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")

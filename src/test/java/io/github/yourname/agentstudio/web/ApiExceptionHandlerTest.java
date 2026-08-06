@@ -2,6 +2,7 @@ package io.github.yourname.agentstudio.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import io.github.yourname.agentstudio.conversation.ConversationArchivedException;
 import io.github.yourname.agentstudio.skill.CompatibilityReport;
 import io.github.yourname.agentstudio.skill.SkillCompatibilityException;
 import org.junit.jupiter.api.Test;
@@ -19,5 +20,13 @@ class ApiExceptionHandlerTest {
 
         assertThat(response.getStatus()).isEqualTo(422);
         assertThat(response.getProperties()).containsEntry("code", "SKILL_INCOMPATIBLE").containsEntry("report", report);
+    }
+
+    @Test
+    void exposesArchivedConversationConflictsAsStructuredConflict() {
+        var response = new ApiExceptionHandler().conversationArchived(new ConversationArchivedException("conversation-1"));
+
+        assertThat(response.getStatus()).isEqualTo(409);
+        assertThat(response.getProperties()).containsEntry("code", "CONVERSATION_ARCHIVED");
     }
 }

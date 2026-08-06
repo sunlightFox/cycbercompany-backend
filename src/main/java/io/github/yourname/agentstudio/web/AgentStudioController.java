@@ -32,7 +32,9 @@ import io.github.yourname.agentstudio.execution.ExecutionSettingsService;
 import io.github.yourname.agentstudio.execution.UpdateExecutionSettingsCommand;
 import io.github.yourname.agentstudio.mcp.CreateMcpConnectionCommand;
 import io.github.yourname.agentstudio.mcp.CallMcpToolCommand;
+import io.github.yourname.agentstudio.mcp.ImportMcpConnectionsCommand;
 import io.github.yourname.agentstudio.mcp.InstallNpmMcpServerCommand;
+import io.github.yourname.agentstudio.mcp.InstallMcpRepositoryCommand;
 import io.github.yourname.agentstudio.mcp.McpConnectionService;
 import io.github.yourname.agentstudio.mcp.McpRepositoryService;
 import io.github.yourname.agentstudio.mcp.SearchMcpRepositoriesCommand;
@@ -56,6 +58,9 @@ import io.github.yourname.agentstudio.skill.SkillCatalog;
 import io.github.yourname.agentstudio.skill.SkillExperienceService;
 import io.github.yourname.agentstudio.skill.SkillPreflightCommand;
 import io.github.yourname.agentstudio.skill.SkillRepositoryService;
+import io.github.yourname.agentstudio.skill.SkillHubSkillService;
+import io.github.yourname.agentstudio.skill.SkillHubSkillView;
+import io.github.yourname.agentstudio.skill.SkillRepositoryView;
 import io.github.yourname.agentstudio.skill.UpdateSkillContentCommand;
 import io.github.yourname.agentstudio.skill.UpdateSkillCommand;
 import io.github.yourname.agentstudio.tool.ToolCatalog;
@@ -92,6 +97,13 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * 后端 REST API 的聚合入口。
+ *
+ * <p>这个类故意只做“边界层”的事：解析 HTTP 参数、创建 ActorContext、调用业务服务、
+ * 设置响应状态。它看起来方法很多，是因为本项目采用模块化单体和一个 API 前缀；
+ * 真正的业务规则仍然分散在 conversation、orchestration、knowledge、node 等模块。
+ */
 @RestController
 @RequestMapping("/api/v1")
 class AgentStudioController {
@@ -110,6 +122,7 @@ class AgentStudioController {
     private final SkillExperienceService skillExperience;
     private final SkillRepositoryService skillRepositories;
     private final ClawHubSkillService clawHubSkills;
+    private final SkillHubSkillService skillHubSkills;
     private final McpConnectionService mcpConnections;
     private final McpRepositoryService mcpRepositories;
     private final NodeService nodes;
@@ -145,6 +158,7 @@ class AgentStudioController {
             SkillExperienceService skillExperience,
             SkillRepositoryService skillRepositories,
             ClawHubSkillService clawHubSkills,
+            SkillHubSkillService skillHubSkills,
             McpConnectionService mcpConnections,
             McpRepositoryService mcpRepositories,
             NodeService nodes,
@@ -170,6 +184,7 @@ class AgentStudioController {
         this.skillExperience = skillExperience;
         this.skillRepositories = skillRepositories;
         this.clawHubSkills = clawHubSkills;
+        this.skillHubSkills = skillHubSkills;
         this.mcpConnections = mcpConnections;
         this.mcpRepositories = mcpRepositories;
         this.nodes = nodes;
@@ -194,6 +209,11 @@ class AgentStudioController {
     @GetMapping("/conversations/{id}")
     Object getConversation(@PathVariable String id, HttpServletRequest request) {
         return conversations.get(id, actors.current(request));
+    }
+
+    @PostMapping("/conversations/{id}/archive")
+    Object archiveConversation(@PathVariable String id, HttpServletRequest request) {
+        return conversations.archive(id, actors.current(request));
     }
 
     @PostMapping(path = "/conversations/{id}/attachments", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -276,7 +296,10 @@ class AgentStudioController {
             @RequestBody(required = false) BootstrapLocalExecutorCommand command,
             HttpServletRequest request) {
         if (!canBootstrapLocalExecutor(request, allowLocalProxy)) {
-            throw new IllegalArgumentException("The local executor may only be provisioned from this computer.");
+            throw new IllegalArgumentException(
+                    "The local executor may only be provisioned from this computer. "
+                            + "Use the local launcher on the same machine, or set app.security.allow-local-proxy=true "
+                            + "only behind a trusted loopback proxy.");
         }
         return nodes.bootstrapLocalExecutor(command, actors.current(request));
     }
@@ -341,6 +364,8 @@ class AgentStudioController {
 
     @GetMapping("/tools")
     Object listTools(HttpServletRequest request) {
+        // 前端看到的是三类工具的并集：后端内置工具、已启用 MCP 工具、在线节点工具。
+        // 真正创建 Run 时还会再经过 ToolRouter 的 Agent 白名单和 Run 选择交集过滤。
         return Stream.concat(
                 Stream.concat(tools.list().stream(), mcpConnections.enabledRegisteredTools().stream()),
                 nodes.enabledRegisteredTools(actors.current(request)).stream()).toList();
@@ -410,12 +435,17 @@ class AgentStudioController {
 
     @GetMapping("/skill-repositories")
     Object listCuratedSkillRepositories() {
-        return skillRepositories.curated();
+        return skillHubSkills.search(null, 100).stream().map(AgentStudioController::asRepositoryView).toList();
     }
 
     @PostMapping("/skill-repositories/search")
     Object searchSkillRepositories(@RequestBody SearchSkillRepositoriesCommand command) {
-        return skillRepositories.search(command);
+        return skillHubSkills.search(command.query(), command.limit()).stream().map(AgentStudioController::asRepositoryView).toList();
+    }
+
+    private static SkillRepositoryView asRepositoryView(SkillHubSkillView skill) {
+        return new SkillRepositoryView(skill.id(), skill.name(), skill.description(), skill.url(), "latest",
+                (int) Math.min(Integer.MAX_VALUE, skill.downloads()), "SKILLHUB");
     }
 
     @GetMapping("/skill-registries/clawhub/search")
@@ -454,6 +484,25 @@ class AgentStudioController {
     @ResponseStatus(HttpStatus.CREATED)
     Object installNpmMcpConnection(@Valid @RequestBody InstallNpmMcpServerCommand command) {
         return mcpConnections.installNpm(command);
+    }
+
+    @PostMapping("/mcp-connections/install")
+    @ResponseStatus(HttpStatus.CREATED)
+    Object installMcpRepository(@Valid @RequestBody InstallMcpRepositoryCommand command) {
+        if (command.repositoryId() == null || command.repositoryId().isBlank()) {
+            throw new IllegalArgumentException("repositoryId must reference an MCPMarket server.");
+        }
+        // Resolve the endpoint from MCPMarket every time; a client cannot substitute another source.
+        String endpoint = mcpRepositories.installableEndpoint(command.repositoryId());
+        command = new InstallMcpRepositoryCommand(command.id(), command.repositoryId(), command.name(),
+                command.description(), endpoint, command.transportType(), command.env(), command.enabled(), command.refreshTools());
+        return mcpConnections.installRepository(command);
+    }
+
+    @PostMapping("/mcp-connections/import-json")
+    @ResponseStatus(HttpStatus.CREATED)
+    Object importMcpConnections(@Valid @RequestBody ImportMcpConnectionsCommand command) {
+        return mcpConnections.importJson(command);
     }
 
     @GetMapping("/mcp-connections/{id}")
@@ -572,6 +621,11 @@ class AgentStudioController {
     ResponseEntity<Void> deleteNode(@PathVariable String id, HttpServletRequest request) {
         nodes.delete(id, actors.current(request));
         return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/nodes/{id}/disconnect")
+    Object disconnectNode(@PathVariable String id, HttpServletRequest request) {
+        return nodes.disconnect(id, actors.current(request));
     }
 
     @PostMapping("/nodes/{id}/credentials/rotate")
@@ -770,6 +824,7 @@ class AgentStudioController {
     @PostMapping("/runs")
     @ResponseStatus(HttpStatus.ACCEPTED)
     Object createRun(@Valid @RequestBody CreateRunCommand command, HttpServletRequest request) {
+        // 返回 202 表示“任务已入队”，不是“模型已经回答完”。答案通过 /runs/{id}/events 的 SSE 推送。
         return runCommands.create(command, actors.current(request));
     }
 
@@ -847,6 +902,7 @@ class AgentStudioController {
             HttpServletRequest request) throws IOException {
         var actor = actors.current(request);
         var emitter = new SseEmitter(0L);
+        // SSE 支持断线续传：客户端带 Last-Event-ID 时，先补发遗漏事件，再注册实时推送。
         for (var event : runEvents.replay(id, lastEventId == null ? 0 : lastEventId, actor)) {
             emitter.send(SseEmitter.event().id(Long.toString(event.sequence())).name(event.type().name()).data(event));
             if (runEvents.isTerminal(event.type())) {

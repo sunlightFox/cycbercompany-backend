@@ -50,6 +50,82 @@ class ShellToolTest {
     }
 
     @Test
+    void rejectsLikelyLongRunningDevServersBeforeStartingShell() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-node-shell-dev-server");
+        ShellTool tool = new ShellTool(workspace);
+
+        var result = tool.run(Map.of("command", "npm run dev", "timeoutSeconds", 120));
+
+        assertFalse(result.success());
+        assertTrue(result.errorMessage().contains("long-running development server"));
+        assertTrue(result.errorMessage().contains("process.start"));
+    }
+
+    @Test
+    void rejectsCommonExecWrappedDevServersBeforeStartingShell() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-node-shell-dev-server");
+        ShellTool tool = new ShellTool(workspace);
+
+        assertFalse(tool.run(Map.of("command", "npx vite preview", "timeoutSeconds", 120)).success());
+        assertFalse(tool.run(Map.of("command", "npm exec vite dev", "timeoutSeconds", 120)).success());
+        assertFalse(tool.run(Map.of("command", "pnpm exec next dev", "timeoutSeconds", 120)).success());
+    }
+
+    @Test
+    void rejectsWindowsCommandShimDevServersBeforeStartingShell() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-node-shell-dev-server");
+        ShellTool tool = new ShellTool(workspace);
+
+        assertFalse(tool.run(Map.of("command", "npm.cmd run dev", "timeoutSeconds", 120)).success());
+        assertFalse(tool.run(Map.of("command", "npx.cmd vite preview", "timeoutSeconds", 120)).success());
+        assertFalse(tool.run(Map.of("command", "pnpm.exe exec next dev", "timeoutSeconds", 120)).success());
+    }
+
+    @Test
+    void rejectsCommonNodeWatcherWrappersBeforeStartingShell() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-node-shell-dev-server");
+        ShellTool tool = new ShellTool(workspace);
+
+        assertFalse(tool.run(Map.of("command", "npm run preview", "timeoutSeconds", 120)).success());
+        assertFalse(tool.run(Map.of("command", "npm run watch", "timeoutSeconds", 120)).success());
+        assertFalse(tool.run(Map.of("command", "npm run storybook", "timeoutSeconds", 120)).success());
+        assertFalse(tool.run(Map.of("command", "nodemon server.js", "timeoutSeconds", 120)).success());
+        assertFalse(tool.run(Map.of("command", "ts-node-dev src/index.ts", "timeoutSeconds", 120)).success());
+        assertFalse(tool.run(Map.of("command", "python -m gunicorn app:app", "timeoutSeconds", 120)).success());
+        assertFalse(tool.run(Map.of("command", "python -m flask run", "timeoutSeconds", 120)).success());
+        assertFalse(tool.run(Map.of("command", "docker compose up", "timeoutSeconds", 120)).success());
+        assertFalse(tool.run(Map.of(
+                "command", "docker compose -f deploy/docker-compose.yml up --build",
+                "timeoutSeconds", 120)).success());
+        assertFalse(tool.run(Map.of("command", "docker-compose up", "timeoutSeconds", 120)).success());
+    }
+
+    @Test
+    void rejectsCmdStartWrappersBeforeStartingShell() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-node-shell-dev-server");
+        ShellTool tool = new ShellTool(workspace);
+
+        var result = tool.run(Map.of("command", "cmd /c start npm run dev", "timeoutSeconds", 120));
+
+        assertFalse(result.success());
+        assertTrue(result.errorMessage().contains("long-running development server"));
+        assertTrue(result.errorMessage().contains("process.start"));
+    }
+
+    @Test
+    void rejectsCommonShellBackgroundingWrappersBeforeStartingShell() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-node-shell-dev-server");
+        ShellTool tool = new ShellTool(workspace);
+
+        assertFalse(tool.run(Map.of("command", "Start-Job { npm run dev }", "timeoutSeconds", 120)).success());
+        assertFalse(tool.run(Map.of("command", "Start-Process npm -ArgumentList 'run dev'", "timeoutSeconds", 120)).success());
+        assertFalse(tool.run(Map.of("command", "nohup python app.py", "timeoutSeconds", 120)).success());
+        assertFalse(tool.run(Map.of("command", "python app.py &", "timeoutSeconds", 120)).success());
+        assertFalse(tool.run(Map.of("command", "disown npm run dev", "timeoutSeconds", 120)).success());
+        assertFalse(tool.run(Map.of("command", "setsid npm run dev", "timeoutSeconds", 120)).success());
+    }
+
+    @Test
     void systemAccessAcceptsAWorkingDirectoryOutsideTheWorkspace() throws Exception {
         Path workspace = Files.createTempDirectory("agent-studio-node-shell");
         Path outside = Files.createTempDirectory("agent-studio-node-system-shell");
@@ -60,6 +136,23 @@ class ShellToolTest {
         assertTrue(result.success());
         assertEquals("system", result.result().get("workingDirectoryScope"));
         assertFalse(result.result().toString().contains(outside.toRealPath().toString()));
+    }
+
+    @Test
+    void acceptsDetachedDockerComposeAsShortLivedShellCommand() throws Exception {
+        Path workspace = Files.createTempDirectory("agent-studio-node-shell-compose");
+        ShellTool tool = new ShellTool(workspace);
+
+        var result = tool.run(Map.of("command", "docker compose up -d --build", "timeoutSeconds", 5));
+
+        assertFalse(result.errorMessage() != null
+                && result.errorMessage().contains("long-running development server"));
+        var withFile = tool.run(Map.of(
+                "command", "docker compose -f deploy/docker-compose.yml up -d --build",
+                "timeoutSeconds", 5));
+
+        assertFalse(withFile.errorMessage() != null
+                && withFile.errorMessage().contains("long-running development server"));
     }
 
     @Test

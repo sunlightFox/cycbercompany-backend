@@ -172,6 +172,18 @@ class NodeServiceCodingEvidenceTest {
     }
 
     @Test
+    void treatsSystemManagedLoopbackReadinessAsHttpVerificationEvidence() {
+        NodeToolInvocationEntity waitHttp = successful("system.process.wait_http", "{\"processId\":\"proc-a\",\"url\":\"http://127.0.0.1:8080/health\"}");
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(waitHttp));
+
+        CodingRunEvidenceView evidence = service().codingEvidence("run-a", ACTOR);
+
+        assertThat(evidence.verificationTools()).containsExactly("system.process.wait_http");
+        assertThat(evidence.commandVerifications()).containsExactly("http");
+    }
+
+    @Test
     void recognizesAConventionalPlainJavaTestMainAsTestEvidence() {
         NodeToolInvocationEntity plainJavaTest = successful("shell.run", "{\"command\":\"java TaxCalculatorTest\"}");
         NodeToolInvocationEntity ordinaryJavaProgram = successful("shell.run", "{\"command\":\"java TaxCalculator\"}");
@@ -204,6 +216,22 @@ class NodeServiceCodingEvidenceTest {
         when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
                 .thenReturn(List.of(unrelatedReady));
         assertThat(service().codingEvidence("run-a", ACTOR).managedProcessReady()).isFalse();
+    }
+
+    @Test
+    void linksSystemManagedHttpReadinessToTheProcessStartedByTheSameRun() {
+        NodeToolInvocationEntity started = successful("system.process.start", "{}");
+        started.succeed("{\"processId\":\"proc-current-run\"}", NOW);
+        NodeToolInvocationEntity ready = successful(
+                "system.process.wait_http",
+                "{\"processId\":\"proc-current-run\",\"url\":\"http://127.0.0.1:8080/health\"}");
+        when(invocations.findByTenantIdAndRunIdOrderByCreatedAtAsc(ACTOR.tenantId(), "run-a"))
+                .thenReturn(List.of(started, ready));
+
+        CodingRunEvidenceView evidence = service().codingEvidence("run-a", ACTOR);
+
+        assertThat(evidence.managedProcessReady()).isTrue();
+        assertThat(evidence.managedProcessReadyAfterLastProjectChange()).isTrue();
     }
 
     @Test

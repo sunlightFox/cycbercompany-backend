@@ -10,6 +10,7 @@ import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -43,6 +44,7 @@ public final class ManagedProcessTool implements AutoCloseable {
     private static final int MAX_HTTP_REQUEST_MILLIS = 2_000;
 
     private final Path workspaceRoot;
+    private final boolean systemAccess;
     private final Map<String, ManagedProcess> processes = new ConcurrentHashMap<>();
     /**
      * 此客户端没有 Cookie、认证头或自动重定向配置。探测只使用 GET，并丢弃响应体，
@@ -54,11 +56,16 @@ public final class ManagedProcessTool implements AutoCloseable {
             .build();
 
     public ManagedProcessTool(Path workspaceRoot) {
+        this(workspaceRoot, false);
+    }
+
+    public ManagedProcessTool(Path workspaceRoot, boolean systemAccess) {
         try {
             if (workspaceRoot == null || !Files.isDirectory(workspaceRoot)) {
                 throw new IllegalArgumentException("Workspace must be an existing directory: " + workspaceRoot);
             }
             this.workspaceRoot = workspaceRoot.toRealPath();
+            this.systemAccess = systemAccess;
         } catch (IOException ex) {
             throw new IllegalArgumentException("Cannot resolve workspace: " + workspaceRoot, ex);
         }
@@ -76,18 +83,31 @@ public final class ManagedProcessTool implements AutoCloseable {
             return ToolExecutionResult.failure(
                     "process.start manages the command itself; do not use Start-Process, nohup, or a trailing '&'.");
         }
+        String cwdArgument = value(arguments, "cwd");
+        String stdoutPathArgument = value(arguments, "stdoutPath");
+        String stderrPathArgument = value(arguments, "stderrPath");
+        String placeholderError = WindowsToolArgumentPolicy.placeholderError(cwdArgument, "cwd");
+        if (placeholderError == null) {
+            placeholderError = WindowsToolArgumentPolicy.placeholderError(stdoutPathArgument, "stdoutPath");
+        }
+        if (placeholderError == null) {
+            placeholderError = WindowsToolArgumentPolicy.placeholderError(stderrPathArgument, "stderrPath");
+        }
+        if (placeholderError != null) {
+            return ToolExecutionResult.failure(placeholderError);
+        }
         long activeProcesses = processes.values().stream().filter(process -> process.process().isAlive()).count();
         if (activeProcesses >= MAX_PROCESSES) {
             return ToolExecutionResult.failure("Too many managed processes. Stop an existing process first.");
         }
 
         try {
-            Path cwd = resolveDirectory(value(arguments, "cwd"));
+            Path cwd = resolveDirectory(cwdArgument);
             String processId = "proc_" + UUID.randomUUID();
             Path logs = workspaceRoot.resolve(".agent-studio").resolve("processes");
             Files.createDirectories(logs);
-            Path stdout = resolveOutputPath(value(arguments, "stdoutPath"), logs.resolve(processId + ".out.log"));
-            Path stderr = resolveOutputPath(value(arguments, "stderrPath"), logs.resolve(processId + ".err.log"));
+            Path stdout = resolveOutputPath(stdoutPathArgument, logs.resolve(processId + ".out.log"));
+            Path stderr = resolveOutputPath(stderrPathArgument, logs.resolve(processId + ".err.log"));
             Files.createDirectories(stdout.getParent());
             Files.createDirectories(stderr.getParent());
 
@@ -99,6 +119,8 @@ public final class ManagedProcessTool implements AutoCloseable {
             ManagedProcess managed = new ManagedProcess(processId, command, cwd, stdout, stderr, process, Instant.now());
             processes.put(processId, managed);
             return ToolExecutionResult.success(snapshot(managed));
+        } catch (IllegalArgumentException ex) {
+            return ToolExecutionResult.failure(ex.getMessage());
         } catch (Exception ex) {
             // 启动异常可能拼接了本机目录、可执行文件或命令行；调用方只需知道本次未启动，
             // 详细错误由节点本地日志和受权限保护的调用记录保留。
@@ -284,7 +306,10 @@ public final class ManagedProcessTool implements AutoCloseable {
         result.put("active", process.isAlive());
         // processId 是节点创建的不可猜测句柄，足以作为 status/logs/stop/wait_http 的后续参数。
         // 不返回系统 PID、命令和绝对路径，避免模型上下文、运行审计摘要或最终回答泄露本机环境细节。
-        result.put("workingDirectory", workspaceRelative(managed.cwd()));
+        result.put("workingDirectoryScope", managed.cwd().startsWith(workspaceRoot) ? "workspace" : "system");
+        if (managed.cwd().startsWith(workspaceRoot)) {
+            result.put("workingDirectory", workspaceRelative(managed.cwd()));
+        }
         result.put("startedAt", managed.startedAt().toString());
         if (!process.isAlive()) {
             result.put("exitCode", process.exitValue());
@@ -314,20 +339,19 @@ public final class ManagedProcessTool implements AutoCloseable {
         }
         candidate = candidate.normalize();
         if (!Files.isDirectory(candidate)) {
-            throw new IllegalArgumentException("Working directory does not exist: " + candidate);
+            throw new IllegalArgumentException("Working directory does not exist or is inaccessible.");
         }
         Path real = candidate.toRealPath();
-        if (!real.startsWith(workspaceRoot)) {
+        if (!systemAccess && !real.startsWith(workspaceRoot)) {
             throw new IllegalArgumentException("Working directory must stay inside the configured workspace.");
         }
         return real;
     }
 
     private Path resolveOutputPath(String requested, Path fallback) {
-        if (requested == null || requested.isBlank()) {
-            return fallback;
-        }
-        Path candidate = Path.of(requested);
+        Path candidate = requested == null || requested.isBlank()
+                ? fallback
+                : Path.of(requested);
         if (!candidate.isAbsolute()) {
             candidate = workspaceRoot.resolve(candidate);
         }
@@ -335,12 +359,35 @@ public final class ManagedProcessTool implements AutoCloseable {
         if (!candidate.startsWith(workspaceRoot)) {
             throw new IllegalArgumentException("Log path must stay inside the configured workspace.");
         }
+        Path parent = candidate.getParent();
+        if (parent == null) {
+            throw new IllegalArgumentException("Log path must have a parent directory.");
+        }
+        try {
+            if (Files.exists(candidate, LinkOption.NOFOLLOW_LINKS)
+                    && !candidate.toRealPath().startsWith(workspaceRoot)) {
+                throw new IllegalArgumentException("Log path must stay inside the configured workspace.");
+            }
+            Path realParent = Files.exists(parent)
+                    ? parent.toRealPath()
+                    : parent.toAbsolutePath().normalize().getParent().toRealPath()
+                            .resolve(parent.getFileName()).normalize();
+            if (!realParent.startsWith(workspaceRoot)) {
+                throw new IllegalArgumentException("Log path must stay inside the configured workspace.");
+            }
+        } catch (IOException ex) {
+            throw new IllegalArgumentException("Cannot resolve log path parent.", ex);
+        }
         return candidate;
     }
 
     private static boolean startsDetachedProcess(String command) {
         String normalized = command.toLowerCase(Locale.ROOT).trim();
         return normalized.contains("start-process")
+                || normalized.contains("start-job")
+                || normalized.contains("disown")
+                || normalized.contains("setsid")
+                || normalized.matches("^(?:cmd(?:\\.exe)?\\s+/c\\s+)?start(?:\\s+|$).*")
                 || normalized.contains("nohup ")
                 || normalized.endsWith(" &");
     }

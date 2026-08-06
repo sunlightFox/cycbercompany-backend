@@ -4,15 +4,22 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import java.time.Instant;
 
+/** 租户范围内的一组知识文档。 */
 @Entity(name = "knowledge_base")
 public class KnowledgeBaseEntity {
 
     @Id
+    /** 知识库 ID。 */
     private String id;
+    /** 数据归属租户，所有查询都必须使用它过滤。 */
     private String tenantId;
+    /** 知识库名称。 */
     private String name;
+    /** 知识库说明。 */
     private String description;
+    /** 创建时间。 */
     private Instant createdAt;
+    /** 最近一次修改展示信息的时间。 */
     private Instant updatedAt;
 
     protected KnowledgeBaseEntity() {

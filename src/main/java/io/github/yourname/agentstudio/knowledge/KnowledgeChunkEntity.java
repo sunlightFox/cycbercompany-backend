@@ -7,19 +7,33 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Column;
 import java.time.Instant;
 
+/**
+ * 文档切分后的最小检索单元。
+ *
+ * <p>检索通常返回 chunk，而不是整篇文档。chunk 保留 documentId、sourceName 和 chunkIndex，
+ * 这样模型回答时可以把证据定位回具体文档。
+ */
 @Entity(name = "knowledge_chunk")
 public class KnowledgeChunkEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
+    /** 数据库自增主键。 */
     private Long id;
+    /** 租户 ID，防止跨租户检索。 */
     private String tenantId;
+    /** 所属知识库。 */
     private String knowledgeBaseId;
+    /** 所属文档。 */
     private String documentId;
+    /** 原始来源名称，例如文件名。 */
     private String sourceName;
+    /** 文档内容摘要，用于判断来源版本。 */
     private String contentHash;
+    /** chunk 在文档中的顺序，从 0 开始。 */
     private int chunkIndex;
     @Column(length = 10_000)
+    /** 实际参与关键词检索和模型上下文拼接的文本。 */
     private String content;
     /**
      * chunk 的 embedding 向量，使用逗号分隔的 double 字符串做第一版持久化。
@@ -28,7 +42,9 @@ public class KnowledgeChunkEntity {
      * 可以把这个字段迁移成真正的 vector 列或外部向量索引。
      */
     @Column(length = 200_000)
+    /** 可选的序列化向量；没有 Embedding 配置时可以为空。 */
     private String embeddingVector;
+    /** chunk 创建时间。 */
     private Instant createdAt;
 
     protected KnowledgeChunkEntity() {
