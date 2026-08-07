@@ -232,6 +232,31 @@ class RunCommandSystemPromptTest {
     }
 
     @Test
+    void explicitLocalProjectPathGetsTheSameControlledDevelopmentToolSet() {
+        assertThat(RunCommandService.requestsLocalProject(
+                "Please fix the backend project at D:\\ai\\spring-agent-studio-backend and run its tests."))
+                .isTrue();
+        assertThat(RunCommandService.requestsLocalProject(
+                "请在 C:\\workspace\\shop-api 项目中修复登录接口并运行测试"))
+                .isTrue();
+        assertThat(RunCommandService.requestsLocalProject(
+                "Fix the login endpoint in this project and run its tests."))
+                .isTrue();
+        assertThat(RunCommandService.requestsLocalProject(
+                "修复当前项目的登录接口并运行测试"))
+                .isTrue();
+        assertThat(RunCommandService.requestsLocalProject(
+                "Explain how to fix the project at D:\\ai\\spring-agent-studio-backend."))
+                .isFalse();
+        assertThat(RunCommandService.requestsLocalProject(
+                "How should I fix this project?"))
+                .isFalse();
+        assertThat(RunCommandService.requestsLocalProject(
+                "Run the tests for the project, but do not access any local files."))
+                .isFalse();
+    }
+
+    @Test
     void windowsSystemRequestsGetStructuredRemediationTools() {
         assertThat(RunCommandService.requestsWindowsSystemOperation(
                 "Uninstall the Windows software package Tencent.QQ after stopping QQPCRTP service and QQPCTray.exe"))

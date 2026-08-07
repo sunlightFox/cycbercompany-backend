@@ -48,6 +48,9 @@ springdoc:
         - /api/v1/conversations/**
         - /api/v1/models/**
         - /api/v1/agents/**
+        - /api/v2/agents/**
+        - /api/v2/memories/**
+        - /api/v2/personas/**
         - /api/v1/tools/**
         - /api/v1/tool-approvals/**
         - /api/v1/approval-modes

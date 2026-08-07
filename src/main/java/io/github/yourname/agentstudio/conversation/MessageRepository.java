@@ -5,4 +5,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface MessageRepository extends JpaRepository<MessageEntity, Long> {
     List<MessageEntity> findByConversationIdAndTenantIdOrderByCreatedAtAsc(String conversationId, String tenantId);
+
+    java.util.Optional<MessageEntity> findFirstByConversationIdAndTenantIdOrderByCreatedAtDesc(
+            String conversationId, String tenantId);
 }

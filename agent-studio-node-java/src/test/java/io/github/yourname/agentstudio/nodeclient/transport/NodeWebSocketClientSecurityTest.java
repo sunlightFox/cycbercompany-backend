@@ -55,6 +55,8 @@ class NodeWebSocketClientSecurityTest {
         NodeWebSocketClient client = new NodeWebSocketClient(
                 new ObjectMapper().findAndRegisterModules(), HttpClient.newHttpClient(), config, SystemInfo.current());
         FakeWebSocket socket = new FakeWebSocket();
+        List<Boolean> connectionEvents = new ArrayList<>();
+        client.setConnectionObserver(connectionEvents::add);
 
         client.onOpen(socket);
         client.onText(socket, new ObjectMapper().findAndRegisterModules().writeValueAsString(
@@ -70,6 +72,7 @@ class NodeWebSocketClientSecurityTest {
 
         assertEquals(WebSocket.NORMAL_CLOSURE, socket.closeStatus);
         assertEquals("stop now", socket.closeReason);
+        assertEquals(List.of(true, false), connectionEvents);
     }
 
     @Test

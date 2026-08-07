@@ -330,9 +330,12 @@ class RunCommandServiceApprovalResumeTest {
                 run.modelProfileId(),
                 "sha256:model",
                 run.agentId(),
+                "agent-version-1",
+                "sha256:manifest",
                 "Agent prompt",
                 "sha256:prompt",
                 "node:*",
+                "{}",
                 List.of(),
                 "sha256:skills",
                 "sha256:instructions",
@@ -353,7 +356,10 @@ class RunCommandServiceApprovalResumeTest {
                 ACTOR.tenantId(),
                 ACTOR.userId(),
                 ACTOR.roles(),
-                ACTOR.scopes());
+                ACTOR.scopes(),
+                List.of(),
+                "",
+                "{}");
         String json = mapper.writeValueAsString(spec);
         byte[] digest = MessageDigest.getInstance("SHA-256").digest(json.getBytes(StandardCharsets.UTF_8));
         run.bindRunSpec(json, "sha256:" + HexFormat.of().formatHex(digest));

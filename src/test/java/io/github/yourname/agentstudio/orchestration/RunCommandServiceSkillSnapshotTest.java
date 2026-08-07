@@ -14,6 +14,8 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.yourname.agentstudio.agent.AgentCatalog;
 import io.github.yourname.agentstudio.agent.AgentDefinitionView;
+import io.github.yourname.agentstudio.agent.AgentRuntimeDefinition;
+import io.github.yourname.agentstudio.agent.AgentRuntimeDefinitionService;
 import io.github.yourname.agentstudio.config.AppProperties;
 import io.github.yourname.agentstudio.conversation.ConversationAttachmentService;
 import io.github.yourname.agentstudio.conversation.ConversationService;
@@ -23,6 +25,11 @@ import io.github.yourname.agentstudio.model.ModelGateway;
 import io.github.yourname.agentstudio.model.ModelCapability;
 import io.github.yourname.agentstudio.model.ModelProfileView;
 import io.github.yourname.agentstudio.model.ProviderType;
+import io.github.yourname.agentstudio.memory.MemoryRetrievalService;
+import io.github.yourname.agentstudio.memory.MemoryCandidateService;
+import io.github.yourname.agentstudio.memory.MemorySnapshot;
+import io.github.yourname.agentstudio.memory.MemoryType;
+import io.github.yourname.agentstudio.persona.UserPersonaContext;
 import io.github.yourname.agentstudio.node.NodeService;
 import io.github.yourname.agentstudio.node.NodeConnectionView;
 import io.github.yourname.agentstudio.node.NodeDetailView;
@@ -315,6 +322,110 @@ class RunCommandServiceSkillSnapshotTest {
     }
 
     @Test
+    void createPinsPublishedAgentVersionManifestAndMemoryPolicyInRunSpecV2() throws Exception {
+        AgentRuntimeDefinitionService runtimeDefinitions = mock(AgentRuntimeDefinitionService.class);
+        MemoryRetrievalService memoryRetrieval = mock(MemoryRetrievalService.class);
+        MemoryCandidateService memoryCandidates = mock(MemoryCandidateService.class);
+        String memoryPolicy = "{\"mode\":\"PERSONALIZED\",\"longTerm\":{\"enabled\":true,\"topK\":3}}";
+        when(runtimeDefinitions.resolve("agent-1", ACTOR.tenantId(), ACTOR.userId())).thenReturn(new AgentRuntimeDefinition(
+                "agent-1",
+                "agent-version-7",
+                "sha256:manifest-v7",
+                "Published V2 prompt",
+                "sha256:prompt-v7",
+                "git.diff",
+                "model-1",
+                List.of(),
+                List.of("kb-agent"),
+                List.of("mcp-agent"),
+                memoryPolicy,
+                true));
+        service.configureAgentRuntimeDefinitions(runtimeDefinitions);
+        service.configureMemoryRetrieval(memoryRetrieval);
+        service.configureMemoryCandidates(memoryCandidates);
+        when(conversations.personaContext("conversation-1", ACTOR)).thenReturn(new UserPersonaContext(
+                "persona-1", "Developer", "Senior developer context", "{\"language\":\"zh-CN\"}"));
+        when(memoryRetrieval.retrieve(
+                        "agent-1", "persona-1", "Review the project", memoryPolicy, ACTOR))
+                .thenReturn(List.of(new MemorySnapshot(
+                        "memory-1", MemoryType.PROCEDURAL, "Prefer focused changes.", 1.0, 0.9, null)));
+        when(skills.resolveForRun(List.of())).thenReturn(List.of());
+        when(skills.compileInstructions(List.of())).thenReturn("");
+        when(knowledge.resolveKnowledgeBaseIds(List.of("kb-agent"), ACTOR)).thenReturn(List.of("kb-agent"));
+
+        service.create(command(List.of()), ACTOR);
+
+        ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(runs).save(runCaptor.capture());
+        RunSpec spec = new ObjectMapper().findAndRegisterModules()
+                .readValue(runCaptor.getValue().runSpecJson(), RunSpec.class);
+        assertThat(spec.version()).isEqualTo(2);
+        assertThat(spec.agentVersionId()).isEqualTo("agent-version-7");
+        assertThat(spec.agentManifestDigest()).isEqualTo("sha256:manifest-v7");
+        assertThat(spec.agentMemoryPolicySnapshot()).contains("PERSONALIZED");
+        assertThat(spec.agentSystemPrompt()).isEqualTo("Published V2 prompt");
+        assertThat(spec.knowledgeBaseIds()).containsExactly("kb-agent");
+        assertThat(spec.mcpConnectionIds()).containsExactly("mcp-agent");
+        assertThat(spec.memorySnapshots()).singleElement().satisfies(memory -> {
+            assertThat(memory.id()).isEqualTo("memory-1");
+            assertThat(memory.content()).isEqualTo("Prefer focused changes.");
+        });
+        assertThat(spec.userPersonaId()).isEqualTo("persona-1");
+        assertThat(spec.userPersonaSnapshotJson()).contains("Developer").contains("zh-CN");
+        verify(agents, never()).get("agent-1");
+
+        AgentRunEntity persisted = runCaptor.getValue();
+        when(runs.findById(persisted.id())).thenReturn(Optional.of(persisted));
+        when(runs.findByIdAndTenantId(persisted.id(), ACTOR.tenantId())).thenReturn(Optional.of(persisted));
+        when(conversations.history("conversation-1", ACTOR)).thenReturn(List.of());
+        when(modelGateway.complete(any())).thenReturn(new ModelGateway.ModelAnswer(
+                "done", 10, 2, "test-model"));
+        queuedWorker.run();
+
+        ArgumentCaptor<ModelGateway.ModelCompletionRequest> modelRequest =
+                ArgumentCaptor.forClass(ModelGateway.ModelCompletionRequest.class);
+        verify(modelGateway).complete(modelRequest.capture());
+        assertThat(modelRequest.getValue().messages().getFirst().content())
+                .contains("Selected user persona")
+                .contains("Senior developer context")
+                .contains("Recalled memory")
+                .contains("Prefer focused changes.");
+        verify(memoryCandidates).capture(
+                "agent-1",
+                "persona-1",
+                "conversation-1",
+                persisted.id(),
+                "Review the project",
+                memoryPolicy,
+                ACTOR);
+    }
+
+    @Test
+    void createRejectsCapabilitiesOutsidePublishedAgentVersion() {
+        AgentRuntimeDefinitionService runtimeDefinitions = mock(AgentRuntimeDefinitionService.class);
+        when(runtimeDefinitions.resolve("agent-1", ACTOR.tenantId(), ACTOR.userId())).thenReturn(new AgentRuntimeDefinition(
+                "agent-1",
+                "agent-version-7",
+                "sha256:manifest-v7",
+                "Published V2 prompt",
+                "sha256:prompt-v7",
+                "git.diff",
+                "model-1",
+                List.of("review-skill"),
+                List.of("kb-agent"),
+                List.of("mcp-agent"),
+                "{\"mode\":\"CONVERSATION\"}",
+                true));
+        service.configureAgentRuntimeDefinitions(runtimeDefinitions);
+
+        assertThatThrownBy(() -> service.create(command(List.of("unbound-skill")), ACTOR))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("not bound to the published Agent version")
+                .hasMessageContaining("unbound-skill");
+        verify(runs, never()).save(any());
+    }
+
+    @Test
     void selectedNodeGreetingUsesDynamicToolLoopWithoutForcingANativeToolCall() {
         ResolvedToolBinding nodeBinding = new ResolvedToolBinding(
                 "node:node-1:browser.open",
@@ -481,6 +592,43 @@ class RunCommandServiceSkillSnapshotTest {
                 .doesNotContain("computer:*")
                 .contains("system.desktop.organize.list")
                 .contains("system.desktop.set_wallpaper")
+                .contains("\"executionMode\":\"NODE_INTERACTION\"");
+    }
+
+    @Test
+    void createRoutesAnExplicitLocalProjectPathToTheReadyNode() {
+        ResolvedToolBinding binding = new ResolvedToolBinding(
+                "node:node-system:system.fs.list",
+                "tool_system_fs_list",
+                "system.fs.list",
+                "node",
+                "system.fs.list",
+                "List one local project directory",
+                RiskLevel.MEDIUM,
+                true,
+                Map.of("type", "object"),
+                Map.of("nodeId", "node-system"));
+        when(nodes.resolveComputerControlNodeId(ACTOR)).thenReturn("node-system");
+        when(skills.resolveForRun(List.of())).thenReturn(List.of());
+        when(skills.compileInstructions(List.of())).thenReturn("");
+        when(nodes.get("node-system", ACTOR)).thenReturn(new NodeDetailView(
+                new NodeConnectionView(
+                        "node-system", "My PC", "host", "Windows", "amd64", "test", NodeKind.REGISTERED, null,
+                        Map.of(), Set.of(), true, NodeStatus.ONLINE, null, null, null),
+                List.of()));
+        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of(binding));
+
+        service.create(new CreateRunCommand(
+                "conversation-1", "Fix the backend project at D:\\ai\\spring-agent-studio-backend and run its tests.",
+                "model-1", "agent-1", List.of(), List.of(), List.of(), List.of(), null, null), ACTOR);
+
+        ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(nodes).resolveComputerControlNodeId(ACTOR);
+        verify(runs).save(runCaptor.capture());
+        assertThat(runCaptor.getValue().runSpecJson())
+                .contains("node-system")
+                .contains("system.fs.list")
+                .contains("system.process.start")
                 .contains("\"executionMode\":\"NODE_INTERACTION\"");
     }
 

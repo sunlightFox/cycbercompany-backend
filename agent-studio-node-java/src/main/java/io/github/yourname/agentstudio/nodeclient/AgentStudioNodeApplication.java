@@ -34,7 +34,10 @@ public class AgentStudioNodeApplication {
             return;
         }
 
-        String command = args[0];
+        // jpackage prepends command-line arguments supplied by the user before its configured
+        // default arguments. Treat an option-first invocation as the packaged GUI command so a
+        // support/deployment shortcut can override --server, --workspace, or --config.
+        String command = commandFor(args);
         Map<String, String> options = CliArgs.parse(args);
         NodeConfigStore configStore = new NodeConfigStore(objectMapper, configPath(options));
         if ("register".equals(command)) {
@@ -126,7 +129,16 @@ public class AgentStudioNodeApplication {
             NodeConfigStore configStore,
             ObjectMapper objectMapper,
             HttpClient httpClient) throws Exception {
-        provisionLocal(options, configStore, objectMapper, httpClient);
+        // The loopback launcher uses this headless command. Match the packaged GUI's
+        // bounded bootstrap recovery so a just-restarted backend does not turn an
+        // otherwise automatic local task into an immediate user-visible failure.
+        BootstrapRetryPolicy.execute(
+                () -> provisionLocal(options, configStore, objectMapper, httpClient),
+                () -> Thread.currentThread().isInterrupted(),
+                nextAttempt -> System.err.println(
+                        "Local control plane is not ready; retrying bootstrap "
+                                + nextAttempt + "/" + BootstrapRetryPolicy.MAX_ATTEMPTS + "..."),
+                Thread::sleep);
         start(options, configStore, objectMapper, httpClient);
     }
 
@@ -173,6 +185,13 @@ public class AgentStudioNodeApplication {
 
     private static String firstNonBlank(String first, String second) {
         return first != null && !first.isBlank() ? first : (second != null && !second.isBlank() ? second : null);
+    }
+
+    static String commandFor(String[] args) {
+        if (args == null || args.length == 0) {
+            throw new IllegalArgumentException("A node command is required.");
+        }
+        return args[0].startsWith("--") ? "gui" : args[0];
     }
 
     private static Map<String, String> optionsWith(Map<String, String> options, String key1, String value1,

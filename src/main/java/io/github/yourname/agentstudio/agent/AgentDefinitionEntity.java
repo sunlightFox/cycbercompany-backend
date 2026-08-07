@@ -82,4 +82,29 @@ public class AgentDefinitionEntity {
         this.description = description;
         this.systemPrompt = systemPrompt;
     }
+
+    /** A blank value intentionally delegates model selection to the global default. */
+    public void updateDefaultModelProfileId(String defaultModelProfileId) {
+        this.defaultModelProfileId = defaultModelProfileId == null || defaultModelProfileId.isBlank()
+                ? null
+                : defaultModelProfileId.trim();
+    }
+
+    public void updatePublishedSnapshot(
+            String name,
+            String description,
+            String systemPrompt,
+            String defaultModelProfileId,
+            String toolAllowList) {
+        this.name = name;
+        this.description = description;
+        this.systemPrompt = systemPrompt;
+        this.defaultModelProfileId = defaultModelProfileId;
+        this.toolAllowList = toolAllowList;
+        this.enabled = true;
+    }
+
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+    }
 }

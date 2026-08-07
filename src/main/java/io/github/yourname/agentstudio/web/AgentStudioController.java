@@ -6,6 +6,7 @@ import io.github.yourname.agentstudio.agent.UpdateAgentCommand;
 import io.github.yourname.agentstudio.conversation.ConversationAttachmentService;
 import io.github.yourname.agentstudio.conversation.ConversationService;
 import io.github.yourname.agentstudio.conversation.CreateConversationCommand;
+import io.github.yourname.agentstudio.conversation.SelectConversationPersonaCommand;
 import io.github.yourname.agentstudio.knowledge.CreateKnowledgeBaseCommand;
 import io.github.yourname.agentstudio.knowledge.IngestDocumentCommand;
 import io.github.yourname.agentstudio.knowledge.KnowledgeCommandService;
@@ -90,6 +91,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestPart;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
@@ -209,6 +211,39 @@ class AgentStudioController {
     @GetMapping("/conversations/{id}")
     Object getConversation(@PathVariable String id, HttpServletRequest request) {
         return conversations.get(id, actors.current(request));
+    }
+
+    @GetMapping("/conversations")
+    Object listConversations(
+            @RequestParam(defaultValue = "32") int limit,
+            @RequestParam(defaultValue = "false") boolean includeArchived,
+            HttpServletRequest request) {
+        return conversations.list(limit, includeArchived, actors.current(request));
+    }
+
+    @GetMapping("/conversations/search")
+    Object searchConversations(
+            @RequestParam String query,
+            @RequestParam(defaultValue = "20") int limit,
+            @RequestParam(defaultValue = "true") boolean includeArchived,
+            HttpServletRequest request) {
+        return conversations.search(query, limit, includeArchived, actors.current(request));
+    }
+
+    @PatchMapping("/conversations/{id}")
+    Object renameConversation(
+            @PathVariable String id,
+            @Valid @RequestBody io.github.yourname.agentstudio.conversation.RenameConversationCommand command,
+            HttpServletRequest request) {
+        return conversations.rename(id, command, actors.current(request));
+    }
+
+    @PatchMapping("/conversations/{id}/persona")
+    Object selectConversationPersona(
+            @PathVariable String id,
+            @Valid @RequestBody SelectConversationPersonaCommand command,
+            HttpServletRequest request) {
+        return conversations.selectPersona(id, command, actors.current(request));
     }
 
     @PostMapping("/conversations/{id}/archive")

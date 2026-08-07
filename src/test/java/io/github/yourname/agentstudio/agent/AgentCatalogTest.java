@@ -36,21 +36,35 @@ class AgentCatalogTest {
     }
 
     @Test
-    void updatesOnlyUserEditableBasicInfoAndPersona() {
+    void updatesBasicInfoAndAnExplicitDefaultModelOverride() {
         AgentDefinitionRepository repository = mock(AgentDefinitionRepository.class);
         AgentDefinitionEntity existing = agent("employee-1", "Old name", "Old description", "Old persona");
         when(repository.findById("employee-1")).thenReturn(Optional.of(existing));
         when(repository.save(existing)).thenReturn(existing);
 
         AgentDefinitionView updated = new AgentCatalog(repository).update(
-                "employee-1", new UpdateAgentCommand("  New name ", "  New description ", "  New persona "));
+                "employee-1", new UpdateAgentCommand(
+                        "  New name ", "  New description ", "  New persona ", " model-review "));
 
         verify(repository).save(existing);
         assertThat(updated.name()).isEqualTo("New name");
         assertThat(updated.description()).isEqualTo("New description");
         assertThat(updated.systemPrompt()).isEqualTo("New persona");
-        assertThat(existing.defaultModelProfileId()).isEqualTo("model-default");
+        assertThat(existing.defaultModelProfileId()).isEqualTo("model-review");
         assertThat(existing.toolAllowList()).isEqualTo("knowledge_search");
+    }
+
+    @Test
+    void clearsTheAgentModelOverrideWhenTheEditorChoosesTheGlobalDefault() {
+        AgentDefinitionRepository repository = mock(AgentDefinitionRepository.class);
+        AgentDefinitionEntity existing = agent("employee-1", "Old name", "Old description", "Old persona");
+        when(repository.findById("employee-1")).thenReturn(Optional.of(existing));
+        when(repository.save(existing)).thenReturn(existing);
+
+        new AgentCatalog(repository).update(
+                "employee-1", new UpdateAgentCommand("New name", "New description", "New persona", ""));
+
+        assertThat(existing.defaultModelProfileId()).isNull();
     }
 
     private static AgentDefinitionEntity agent(String id, String name, String description, String prompt) {

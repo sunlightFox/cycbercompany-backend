@@ -17,8 +17,10 @@ public class ConversationEntity {
     private String title;
     /** 会话创建时间。 */
     private Instant createdAt;
+    private Instant lastActivityAt;
     /** 归档时间；为空表示仍可写入。 */
     private Instant archivedAt;
+    private String userPersonaId;
 
     protected ConversationEntity() {
     }
@@ -28,6 +30,7 @@ public class ConversationEntity {
         this.tenantId = tenantId;
         this.title = title;
         this.createdAt = createdAt;
+        this.lastActivityAt = createdAt;
     }
 
     public void archive(Instant now) {
@@ -36,10 +39,24 @@ public class ConversationEntity {
         }
     }
 
+    public void recordActivity(Instant now) {
+        lastActivityAt = now;
+    }
+
+    public void rename(String title) {
+        this.title = title;
+    }
+
+    public void selectPersona(String personaId) {
+        this.userPersonaId = personaId;
+    }
+
     public String id() { return id; }
     public String tenantId() { return tenantId; }
     public String title() { return title; }
     public Instant createdAt() { return createdAt; }
+    public Instant lastActivityAt() { return lastActivityAt == null ? createdAt : lastActivityAt; }
     public boolean archived() { return archivedAt != null; }
     public Instant archivedAt() { return archivedAt; }
+    public String userPersonaId() { return userPersonaId; }
 }

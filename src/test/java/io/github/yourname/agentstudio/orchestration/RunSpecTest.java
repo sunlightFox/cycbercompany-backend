@@ -2,6 +2,8 @@ package io.github.yourname.agentstudio.orchestration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -11,7 +13,7 @@ import org.junit.jupiter.api.Test;
 class RunSpecTest {
 
     @Test
-    void treatsNullEntriesInPersistedCollectionsAsOmitted() {
+    void treatsNullEntriesInPersistedCollectionsAsOmitted() throws Exception {
         List<String> knowledgeBaseIds = new ArrayList<>();
         knowledgeBaseIds.add("kb-1");
         knowledgeBaseIds.add(null);
@@ -32,9 +34,12 @@ class RunSpecTest {
                 "model-1",
                 "model-rev-1",
                 "agent-1",
+                "agent-version-1",
+                "sha256:manifest",
                 "system prompt",
                 "sha256:agent",
                 "*",
+                "{}",
                 List.of(),
                 "sha256:skills",
                 "sha256:skill-instructions",
@@ -55,11 +60,27 @@ class RunSpecTest {
                 "tenant",
                 "user",
                 roles,
-                scopes);
+                scopes,
+                List.of(),
+                "",
+                "{}");
 
         assertThat(spec.knowledgeBaseIds()).containsExactly("kb-1");
         assertThat(spec.requestedToolNames()).containsExactly("system.shell.run");
         assertThat(spec.actor().roles()).containsExactly("LOCAL_USER");
         assertThat(spec.actor().scopes()).containsExactly("agent:run");
+
+        ObjectMapper mapper = new ObjectMapper();
+        ObjectNode persistedV1 = mapper.valueToTree(spec);
+        persistedV1.put("version", 1);
+        persistedV1.remove("agentVersionId");
+        persistedV1.remove("agentManifestDigest");
+        persistedV1.remove("agentMemoryPolicySnapshot");
+        RunSpec restoredV1 = mapper.treeToValue(persistedV1, RunSpec.class);
+
+        assertThat(RunSpec.supports(restoredV1.version())).isTrue();
+        assertThat(restoredV1.agentVersionId()).isEmpty();
+        assertThat(restoredV1.agentManifestDigest()).isEmpty();
+        assertThat(restoredV1.agentMemoryPolicySnapshot()).isEqualTo("{}");
     }
 }

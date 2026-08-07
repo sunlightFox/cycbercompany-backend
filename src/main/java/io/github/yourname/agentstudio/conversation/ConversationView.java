@@ -10,6 +10,7 @@ public record ConversationView(
         Instant createdAt,
         boolean archived,
         Instant archivedAt,
+        String personaId,
         List<MessageView> messages) {
 
     public static ConversationView from(ConversationEntity entity, List<MessageView> messages) {
@@ -19,6 +20,7 @@ public record ConversationView(
                 entity.createdAt(),
                 entity.archived(),
                 entity.archivedAt(),
+                entity.userPersonaId(),
                 messages);
     }
 }

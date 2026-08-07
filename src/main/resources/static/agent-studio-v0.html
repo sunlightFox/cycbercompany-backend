@@ -1,0 +1,813 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Agent Studio v0</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --page: #f7f7f5;
+      --surface: #ffffff;
+      --surface-subtle: #f1f1ee;
+      --surface-hover: #ecece8;
+      --text: #171717;
+      --muted: #686863;
+      --quiet: #92928c;
+      --border: #e3e3de;
+      --border-strong: #cecec7;
+      --accent: #2563eb;
+      --accent-soft: #edf3ff;
+      --success: #16803d;
+      --success-soft: #edf8f0;
+      --warning: #b76500;
+      --warning-soft: #fff6e8;
+      --danger: #c3322b;
+      --nav-width: 68px;
+      --catalog-width: 292px;
+      --step-width: 210px;
+      --content-max: 780px;
+      --control-height: 38px;
+      --space-row: 16px;
+      --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      background: var(--page);
+      color: var(--text);
+      font: 15px/1.5 "Segoe UI Variable", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+      letter-spacing: 0;
+      overflow: hidden;
+    }
+    button, input, textarea, select { font: inherit; letter-spacing: 0; }
+    button { color: inherit; }
+    button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: var(--nav-width) var(--catalog-width) minmax(0, 1fr);
+      width: 100vw;
+      height: 100vh;
+      min-width: 0;
+      background: var(--surface);
+      transition: grid-template-columns 180ms var(--ease);
+    }
+
+    .rail {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 8px;
+      background: #202221;
+      color: #f4f4f1;
+      border-right: 1px solid #303230;
+    }
+    .product-mark {
+      display: grid;
+      place-items: center;
+      width: 40px;
+      height: 40px;
+      margin-bottom: 12px;
+      border: 1px solid #4b4e4b;
+      border-radius: 6px;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .rail-button {
+      display: grid;
+      place-items: center;
+      width: 44px;
+      height: 44px;
+      padding: 0;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: #b9bcb7;
+      cursor: pointer;
+      font-size: 11px;
+      transition: background 130ms var(--ease), color 130ms var(--ease);
+    }
+    .rail-button:hover { background: #303230; color: #fff; }
+    .rail-button.active { background: #f4f4f1; color: #202221; }
+    .rail-spacer { flex: 1; }
+
+    .catalog {
+      min-width: 0;
+      background: var(--page);
+      border-right: 1px solid var(--border);
+      overflow: hidden;
+    }
+    .catalog-head {
+      display: grid;
+      gap: 12px;
+      padding: 18px 16px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    .catalog-title-row, .editor-head, .section-title-row, .field-head, .action-row,
+    .agent-topline, .step-row, .check-row, .drawer-head, .modal-head {
+      display: flex;
+      align-items: center;
+    }
+    .catalog-title-row { justify-content: space-between; gap: 12px; }
+    .catalog-title-row h1 { margin: 0; font-size: 17px; line-height: 1.3; }
+    .icon-button {
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      border: 1px solid var(--border-strong);
+      border-radius: 5px;
+      background: var(--surface);
+      cursor: pointer;
+      transition: background 130ms var(--ease), border-color 130ms var(--ease);
+    }
+    .icon-button:hover { background: var(--surface-hover); border-color: #b9b9b2; }
+    .search {
+      width: 100%;
+      height: 36px;
+      padding: 0 10px;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      background: var(--surface);
+      color: var(--text);
+    }
+    .catalog-filter {
+      display: flex;
+      gap: 4px;
+      padding: 10px 12px 6px;
+    }
+    .filter-button {
+      height: 30px;
+      padding: 0 9px;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .filter-button.active { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+    .agent-list { padding: 6px 8px 20px; overflow: auto; height: calc(100vh - 139px); }
+    .agent-item {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 36px minmax(0, 1fr);
+      gap: 10px;
+      padding: 10px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+      transition: background 130ms var(--ease), border-color 130ms var(--ease);
+    }
+    .agent-item:hover { background: var(--surface-subtle); }
+    .agent-item.active { background: var(--surface); border-color: var(--border); }
+    .avatar {
+      display: grid;
+      place-items: center;
+      width: 36px;
+      height: 36px;
+      border-radius: 6px;
+      background: #dde7fb;
+      color: #1e4f9f;
+      font-weight: 700;
+      font-size: 13px;
+    }
+    .avatar.green { background: #dfeee3; color: #176035; }
+    .avatar.gray { background: #e6e6e1; color: #575750; }
+    .agent-copy { min-width: 0; }
+    .agent-topline { justify-content: space-between; gap: 8px; }
+    .agent-name { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .agent-desc { margin-top: 3px; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--warning); }
+    .dot.live { background: var(--success); }
+
+    .workspace { display: grid; grid-template-rows: 65px minmax(0, 1fr); min-width: 0; background: var(--surface); }
+    .editor-head {
+      justify-content: space-between;
+      gap: 24px;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--border);
+    }
+    .editor-identity { min-width: 0; }
+    .editor-title-line { display: flex; align-items: center; gap: 9px; min-width: 0; }
+    .editor-title { margin: 0; font-size: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .status-chip {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 24px;
+      padding: 2px 7px;
+      border: 1px solid #e8c792;
+      border-radius: 5px;
+      background: var(--warning-soft);
+      color: #8a4d00;
+      font-size: 12px;
+    }
+    .editor-subtitle { margin-top: 2px; color: var(--muted); font-size: 12px; }
+    .action-row { gap: 8px; flex: 0 0 auto; }
+    .button {
+      min-height: 36px;
+      padding: 0 13px;
+      border: 1px solid var(--border-strong);
+      border-radius: 5px;
+      background: var(--surface);
+      cursor: pointer;
+      font-weight: 600;
+      transition: background 130ms var(--ease), border-color 130ms var(--ease), color 130ms var(--ease);
+    }
+    .button:hover { background: var(--surface-hover); }
+    .button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+    .button.primary:hover { background: #1d55cc; }
+    .button:disabled { cursor: not-allowed; opacity: .48; }
+    .button.loading { color: var(--muted); pointer-events: none; }
+
+    .editor-body { display: grid; grid-template-columns: var(--step-width) minmax(0, 1fr); min-height: 0; }
+    .steps {
+      padding: 20px 12px;
+      border-right: 1px solid var(--border);
+      background: #fbfbfa;
+      overflow: auto;
+    }
+    .steps-label { padding: 0 10px 10px; color: var(--quiet); font-size: 12px; }
+    .step-button {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 40px;
+      padding: 6px 10px;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--muted);
+      text-align: left;
+      cursor: pointer;
+    }
+    .step-button:hover { background: var(--surface-hover); color: var(--text); }
+    .step-button.active { background: var(--accent-soft); color: #174da8; font-weight: 650; }
+    .step-number {
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      flex: 0 0 auto;
+      border: 1px solid var(--border-strong);
+      border-radius: 50%;
+      background: var(--surface);
+      font-size: 11px;
+    }
+    .step-button.active .step-number { border-color: var(--accent); background: var(--accent); color: white; }
+    .step-meta { margin-left: auto; color: var(--quiet); font-size: 11px; }
+
+    .canvas { min-width: 0; overflow: auto; background: var(--surface); }
+    .form-page { width: min(100%, calc(var(--content-max) + 64px)); margin: 0 auto; padding: 34px 32px 80px; }
+    .page-kicker { color: var(--accent); font-size: 12px; font-weight: 700; }
+    .page-title { margin: 7px 0 6px; font-size: 24px; line-height: 1.25; text-wrap: pretty; }
+    .page-description { max-width: 650px; margin: 0 0 30px; color: var(--muted); text-wrap: pretty; }
+    .form-section { padding: 0 0 28px; margin: 0 0 28px; border-bottom: 1px solid var(--border); }
+    .form-section:last-child { border-bottom: 0; }
+    .section-title-row { justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+    .section-title { margin: 0; font-size: 16px; }
+    .section-hint { color: var(--quiet); font-size: 12px; }
+    .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-row) 16px; }
+    .field { display: grid; gap: 7px; min-width: 0; }
+    .field.full { grid-column: 1 / -1; }
+    .field-head { justify-content: space-between; gap: 12px; }
+    .field label { font-weight: 600; font-size: 13px; }
+    .field-help { color: var(--quiet); font-size: 12px; font-weight: 400; }
+    .field input, .field textarea, .field select {
+      width: 100%;
+      min-height: var(--control-height);
+      padding: 8px 10px;
+      border: 1px solid var(--border-strong);
+      border-radius: 5px;
+      background: var(--surface);
+      color: var(--text);
+      transition: border-color 130ms var(--ease), box-shadow 130ms var(--ease);
+    }
+    .field textarea { min-height: 88px; resize: vertical; }
+    .field input:hover, .field textarea:hover, .field select:hover { border-color: #adada6; }
+    .field input:focus, .field textarea:focus, .field select:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,.11); }
+    .tag-editor { display: flex; flex-wrap: wrap; gap: 7px; min-height: 44px; padding: 6px; border: 1px solid var(--border-strong); border-radius: 5px; }
+    .tag { display: inline-flex; align-items: center; gap: 6px; padding: 3px 7px; border-radius: 4px; background: var(--surface-subtle); font-size: 13px; }
+    .tag button { padding: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+    .tag-add { padding: 3px 6px; border: 0; background: transparent; color: var(--accent); cursor: pointer; }
+    .choice-list { display: grid; gap: 8px; }
+    .choice-row, .toggle-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      padding: 13px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .choice-row:last-child, .toggle-row:last-child { border-bottom: 0; }
+    .choice-title { font-weight: 600; }
+    .choice-desc { margin-top: 2px; color: var(--muted); font-size: 13px; text-wrap: pretty; }
+    .switch { position: relative; width: 38px; height: 22px; flex: 0 0 auto; }
+    .switch input { position: absolute; opacity: 0; }
+    .switch span { position: absolute; inset: 0; border-radius: 11px; background: var(--border-strong); cursor: pointer; transition: background 150ms var(--ease); }
+    .switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform 150ms var(--ease); }
+    .switch input:checked + span { background: var(--accent); }
+    .switch input:checked + span::after { transform: translateX(16px); }
+    .switch input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .placeholder {
+      display: grid;
+      place-items: center;
+      min-height: 180px;
+      padding: 24px;
+      border: 1px dashed var(--border-strong);
+      border-radius: 6px;
+      background: #fbfbfa;
+      color: var(--muted);
+      text-align: center;
+    }
+    .placeholder strong { display: block; margin-bottom: 5px; color: var(--text); }
+
+    .mobile-menu { display: none; }
+    .backdrop { position: fixed; inset: 0; z-index: 30; background: rgba(18,20,19,.32); opacity: 0; pointer-events: none; transition: opacity 180ms var(--ease); }
+    .backdrop.open { opacity: 1; pointer-events: auto; }
+    .drawer {
+      position: fixed;
+      z-index: 40;
+      top: 0;
+      right: 0;
+      width: min(480px, 100vw);
+      height: 100vh;
+      padding: 22px;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      box-shadow: -16px 0 40px rgba(20,24,22,.10);
+      transform: translateX(100%);
+      transition: transform 210ms var(--ease);
+    }
+    .drawer.open { transform: translateX(0); }
+    .drawer.mobile-nav { left: 0; right: auto; transform: translateX(-100%); }
+    .drawer.mobile-nav.open { transform: translateX(0); }
+    .drawer-head, .modal-head { justify-content: space-between; gap: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+    .drawer-head h2, .modal-head h2 { margin: 0; font-size: 18px; }
+    .test-thread { display: grid; gap: 18px; padding: 22px 0; }
+    .test-message { max-width: 88%; padding: 10px 12px; border-radius: 6px; background: var(--surface-subtle); }
+    .test-message.agent { padding: 0; background: transparent; }
+    .test-label { margin-bottom: 4px; color: var(--quiet); font-size: 11px; }
+    .sandbox-note { padding: 10px 12px; border: 1px solid #e8c792; border-radius: 5px; background: var(--warning-soft); color: #744000; font-size: 13px; }
+
+    .modal-wrap { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 20px; opacity: 0; pointer-events: none; transition: opacity 180ms var(--ease); }
+    .modal-wrap.open { opacity: 1; pointer-events: auto; }
+    .modal {
+      width: min(560px, 100%);
+      max-height: 84vh;
+      overflow: auto;
+      padding: 22px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--surface);
+      box-shadow: 0 24px 70px rgba(20,24,22,.18);
+      transform: translateY(6px);
+      transition: transform 180ms var(--ease);
+    }
+    .modal-wrap.open .modal { transform: translateY(0); }
+    .check-list { margin: 18px 0; }
+    .check-row { gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+    .check-mark { display: grid; place-items: center; width: 21px; height: 21px; border-radius: 50%; background: var(--success-soft); color: var(--success); font-size: 12px; font-weight: 800; }
+    .check-mark.pending { background: var(--warning-soft); color: var(--warning); }
+
+    .tweaks-toggle { position: fixed; z-index: 70; right: 18px; bottom: 18px; box-shadow: 0 8px 24px rgba(20,24,22,.10); }
+    .tweaks {
+      position: fixed;
+      z-index: 69;
+      right: 18px;
+      bottom: 64px;
+      width: 250px;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--surface);
+      box-shadow: 0 18px 50px rgba(20,24,22,.14);
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(6px);
+      transition: opacity 160ms var(--ease), transform 160ms var(--ease);
+    }
+    .tweaks.open { opacity: 1; pointer-events: auto; transform: translateY(0); }
+    .tweaks h2 { margin: 0 0 12px; font-size: 14px; }
+    .tweak-label { display: block; margin: 12px 0 6px; color: var(--muted); font-size: 12px; }
+    .segmented { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 3px; border-radius: 6px; background: var(--surface-subtle); }
+    .segmented button { min-height: 30px; padding: 3px 6px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; }
+    .segmented button.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(20,24,22,.09); }
+    .assumptions { margin: 12px 0 0; padding: 10px 0 0 18px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+    .assumptions li { margin: 4px 0; }
+
+    body[data-layout="focus"] { --catalog-width: 224px; --step-width: 186px; --content-max: 720px; }
+    body[data-layout="wide"] { --catalog-width: 336px; --step-width: 232px; --content-max: 900px; }
+    body[data-density="compact"] { --control-height: 34px; --space-row: 11px; }
+
+    @media (max-width: 1100px) {
+      :root { --catalog-width: 240px; --step-width: 184px; }
+      .editor-head { padding: 0 16px; }
+      .form-page { padding-inline: 24px; }
+    }
+    @media (max-width: 820px) {
+      body { overflow: auto; }
+      .app { display: block; min-height: 100vh; height: auto; }
+      .rail, .catalog, .steps { display: none; }
+      .workspace { min-height: 100vh; }
+      .editor-head { position: sticky; top: 0; z-index: 10; height: 62px; background: var(--surface); gap: 10px; }
+      .mobile-menu { display: grid; }
+      .editor-subtitle, .status-chip, .action-row .button:not(.primary) { display: none; }
+      .editor-title { font-size: 16px; }
+      .editor-body { display: block; }
+      .form-page { padding: 24px 18px 96px; }
+      .page-title { font-size: 22px; }
+      .form-grid { grid-template-columns: 1fr; }
+      .field.full { grid-column: auto; }
+      .drawer { width: 100vw; }
+    }
+    @media (max-width: 480px) {
+      .editor-head { padding: 0 12px; }
+      .button.primary { padding: 0 10px; }
+      .section-title-row { align-items: flex-start; flex-direction: column; gap: 4px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body data-layout="balanced" data-density="comfortable">
+  <main class="app">
+    <nav class="rail" aria-label="主导航">
+      <div class="product-mark" aria-label="Agent Studio">AS</div>
+      <button class="rail-button" type="button" title="工作台">工作台</button>
+      <button class="rail-button active" type="button" title="智能体">智能体</button>
+      <button class="rail-button" type="button" title="记忆">记忆</button>
+      <button class="rail-button" type="button" title="能力">能力</button>
+      <div class="rail-spacer"></div>
+      <button class="rail-button" type="button" title="设置">设置</button>
+    </nav>
+
+    <aside class="catalog" aria-label="智能体列表">
+      <div class="catalog-head">
+        <div class="catalog-title-row">
+          <h1>智能体</h1>
+          <button class="icon-button" id="newAgentButton" type="button" title="新建智能体" aria-label="新建智能体">＋</button>
+        </div>
+        <input class="search" id="agentSearch" type="search" placeholder="搜索名称或标签" aria-label="搜索智能体">
+      </div>
+      <div class="catalog-filter" aria-label="筛选智能体">
+        <button class="filter-button active" type="button">全部</button>
+        <button class="filter-button" type="button">草稿</button>
+        <button class="filter-button" type="button">已发布</button>
+      </div>
+      <div class="agent-list" id="agentList">
+        <button class="agent-item active" type="button" data-name="代码审查员" data-desc="发现真实缺陷并给出可执行建议">
+          <span class="avatar">代</span>
+          <span class="agent-copy">
+            <span class="agent-topline"><span class="agent-name">代码审查员</span><span class="dot" title="有未发布改动"></span></span>
+            <span class="agent-desc">研发 · 草稿有改动</span>
+          </span>
+        </button>
+        <button class="agent-item" type="button" data-name="知识库助手" data-desc="根据团队资料回答问题并标注依据">
+          <span class="avatar green">知</span>
+          <span class="agent-copy">
+            <span class="agent-topline"><span class="agent-name">知识库助手</span><span class="dot live" title="已发布"></span></span>
+            <span class="agent-desc">知识 · 已发布</span>
+          </span>
+        </button>
+        <button class="agent-item" type="button" data-name="项目协调员" data-desc="整理任务、风险和待确认事项">
+          <span class="avatar gray">项</span>
+          <span class="agent-copy">
+            <span class="agent-topline"><span class="agent-name">项目协调员</span><span class="dot live" title="已发布"></span></span>
+            <span class="agent-desc">协作 · 已发布</span>
+          </span>
+        </button>
+      </div>
+    </aside>
+
+    <section class="workspace" aria-label="智能体编辑器">
+      <header class="editor-head">
+        <button class="icon-button mobile-menu" id="mobileMenuButton" type="button" aria-label="打开导航" title="打开导航">≡</button>
+        <div class="editor-identity">
+          <div class="editor-title-line">
+            <h2 class="editor-title" id="editorAgentName">代码审查员</h2>
+            <span class="status-chip"><span class="dot"></span>未发布改动</span>
+          </div>
+          <div class="editor-subtitle" id="editorAgentDescription">发现真实缺陷并给出可执行建议</div>
+        </div>
+        <div class="action-row">
+          <button class="button" id="testButton" type="button">测试</button>
+          <button class="button primary" id="saveButton" type="button">保存草稿</button>
+          <button class="icon-button" id="publishButton" type="button" title="发布检查" aria-label="发布检查">⋯</button>
+        </div>
+      </header>
+
+      <div class="editor-body">
+        <nav class="steps" aria-label="配置步骤">
+          <div class="steps-label">配置流程</div>
+          <button class="step-button active" type="button" data-step="basic"><span class="step-number">1</span><span>基础信息</span><span class="step-meta">完成</span></button>
+          <button class="step-button" type="button" data-step="persona"><span class="step-number">2</span><span>人设</span><span class="step-meta">完成</span></button>
+          <button class="step-button" type="button" data-step="capability"><span class="step-number">3</span><span>能力与工具</span><span class="step-meta">3</span></button>
+          <button class="step-button" type="button" data-step="knowledge"><span class="step-number">4</span><span>知识</span><span class="step-meta">1</span></button>
+          <button class="step-button" type="button" data-step="memory"><span class="step-number">5</span><span>记忆</span><span class="step-meta">关闭</span></button>
+          <button class="step-button" type="button" data-step="safety"><span class="step-number">6</span><span>安全边界</span><span class="step-meta">保守</span></button>
+          <button class="step-button" type="button" data-step="evaluation"><span class="step-number">7</span><span>测试评估</span><span class="step-meta">待运行</span></button>
+          <button class="step-button" type="button" data-step="publish"><span class="step-number">8</span><span>发布</span></button>
+        </nav>
+
+        <div class="canvas" id="canvas">
+          <div class="form-page">
+            <div class="page-kicker" id="pageKicker">步骤 1 / 8</div>
+            <h1 class="page-title" id="pageTitle">先让人一眼认出它</h1>
+            <p class="page-description" id="pageDescription">这些信息会出现在智能体列表和选择器中。保持简短，具体说明它擅长解决什么问题。</p>
+
+            <div id="basicContent">
+              <section class="form-section">
+                <div class="section-title-row">
+                  <h2 class="section-title">身份</h2>
+                  <span class="section-hint">用户可见</span>
+                </div>
+                <div class="form-grid">
+                  <div class="field">
+                    <label for="displayName">名称</label>
+                    <input id="displayName" value="代码审查员">
+                  </div>
+                  <div class="field">
+                    <label for="category">分类</label>
+                    <select id="category"><option>研发</option><option>知识</option><option>协作</option><option>自定义</option></select>
+                  </div>
+                  <div class="field full">
+                    <label for="description">一句话说明</label>
+                    <textarea id="description">审查代码变更，优先发现会影响正确性、安全性和可维护性的问题。</textarea>
+                  </div>
+                  <div class="field full">
+                    <div class="field-head"><label>标签</label><span class="field-help">便于搜索和分类</span></div>
+                    <div class="tag-editor"><span class="tag">代码 <button type="button" aria-label="移除代码标签">×</button></span><span class="tag">审查 <button type="button" aria-label="移除审查标签">×</button></span><span class="tag">安全 <button type="button" aria-label="移除安全标签">×</button></span><button class="tag-add" type="button">＋ 添加</button></div>
+                  </div>
+                </div>
+              </section>
+              <section class="form-section">
+                <div class="section-title-row"><h2 class="section-title">头像</h2><span class="section-hint">[头像资源占位]</span></div>
+                <div class="placeholder"><div><strong>选择内置头像或上传图片</strong>v0 暂不制作头像素材，避免用临时图形代替正式资产。</div></div>
+              </section>
+            </div>
+
+            <div id="personaContent" hidden>
+              <section class="form-section">
+                <div class="section-title-row"><h2 class="section-title">角色定位</h2><span class="section-hint">决定它如何思考和表达</span></div>
+                <div class="form-grid">
+                  <div class="field"><label for="role">它是谁</label><input id="role" value="高级代码审查员"></div>
+                  <div class="field"><label for="audience">为谁服务</label><input id="audience" value="熟悉工程实践的软件开发者"></div>
+                  <div class="field full"><label for="mission">核心目标</label><textarea id="mission">在不扩大变更范围的前提下，帮助团队尽早发现真实缺陷并给出可执行的修复建议。</textarea></div>
+                </div>
+              </section>
+              <section class="form-section">
+                <div class="section-title-row"><h2 class="section-title">行为边界</h2><span class="section-hint">比语气更重要</span></div>
+                <div class="choice-list">
+                  <div class="choice-row"><div><div class="choice-title">只报告有证据的问题</div><div class="choice-desc">不把风格偏好描述为缺陷。</div></div><button class="icon-button" type="button" aria-label="编辑边界">编辑</button></div>
+                  <div class="choice-row"><div><div class="choice-title">默认保持只读</div><div class="choice-desc">除非明确授权，否则不修改代码。</div></div><button class="icon-button" type="button" aria-label="编辑边界">编辑</button></div>
+                  <button class="button" type="button">＋ 添加边界</button>
+                </div>
+              </section>
+            </div>
+
+            <div id="memoryContent" hidden>
+              <section class="form-section">
+                <div class="section-title-row"><h2 class="section-title">记忆方式</h2><span class="section-hint">默认保护用户隐私</span></div>
+                <div class="choice-list">
+                  <div class="toggle-row"><div><div class="choice-title">长期记忆</div><div class="choice-desc">保存用户确认过的偏好、事实和工作方式。</div></div><label class="switch"><input id="memoryToggle" type="checkbox"><span></span></label></div>
+                  <div class="toggle-row"><div><div class="choice-title">每条记忆需确认</div><div class="choice-desc">智能体只提出候选内容，由用户决定是否保存。</div></div><label class="switch"><input type="checkbox" checked disabled><span></span></label></div>
+                </div>
+              </section>
+              <section class="form-section" id="memoryOptions" hidden>
+                <div class="section-title-row"><h2 class="section-title">召回策略</h2><span class="section-hint">高级策略保持折叠</span></div>
+                <div class="form-grid">
+                  <div class="field"><label for="retrieval">检索方式</label><select id="retrieval"><option>混合检索</option><option>关键词</option><option>语义</option></select></div>
+                  <div class="field"><label for="topk">最多召回</label><select id="topk"><option>3 条</option><option>5 条</option><option>8 条</option></select></div>
+                </div>
+              </section>
+            </div>
+
+            <div id="placeholderContent" hidden>
+              <section class="form-section">
+                <div class="placeholder"><div><strong id="placeholderTitle">[模块结构占位]</strong><span id="placeholderText">这一阶段只验证入口、顺序与信息密度，完整组件将在 v0 确认后实现。</span></div></div>
+              </section>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="backdrop" id="backdrop"></div>
+
+  <aside class="drawer" id="testDrawer" aria-hidden="true" aria-label="测试智能体">
+    <div class="drawer-head"><div><h2>测试草稿</h2><div class="editor-subtitle">不会调用工具、记忆或知识库</div></div><button class="icon-button" data-close type="button" aria-label="关闭测试">×</button></div>
+    <div class="test-thread">
+      <div class="sandbox-note">安全沙箱：本次测试不会保存对话，也不会产生运行记录。</div>
+      <div class="test-message"><div class="test-label">你</div>帮我审查当前改动，先说你会关注什么。</div>
+      <div class="test-message agent"><div class="test-label">代码审查员</div>我会先确认变更范围，再检查正确性、安全性和行为回归。当前是无工具草稿测试，因此我不会读取真实仓库。</div>
+      <div class="field"><label for="testInput">继续测试</label><textarea id="testInput" placeholder="输入一条测试消息"></textarea></div>
+      <button class="button primary" type="button">发送测试</button>
+    </div>
+  </aside>
+
+  <aside class="drawer mobile-nav" id="mobileNavDrawer" aria-hidden="true" aria-label="移动端导航">
+    <div class="drawer-head"><h2>智能体配置</h2><button class="icon-button" data-close type="button" aria-label="关闭导航">×</button></div>
+    <div style="padding:18px 0">
+      <div class="steps-label">当前智能体</div>
+      <button class="agent-item active" type="button">
+        <span class="avatar">代</span>
+        <span class="agent-copy"><span class="agent-name">代码审查员</span><span class="agent-desc">研发 · 草稿有改动</span></span>
+      </button>
+      <div class="steps-label" style="margin-top:18px">配置流程</div>
+      <button class="step-button active" type="button" data-mobile-step="basic"><span class="step-number">1</span><span>基础信息</span></button>
+      <button class="step-button" type="button" data-mobile-step="persona"><span class="step-number">2</span><span>人设</span></button>
+      <button class="step-button" type="button" data-mobile-step="capability"><span class="step-number">3</span><span>能力与工具</span></button>
+      <button class="step-button" type="button" data-mobile-step="knowledge"><span class="step-number">4</span><span>知识</span></button>
+      <button class="step-button" type="button" data-mobile-step="memory"><span class="step-number">5</span><span>记忆</span></button>
+      <button class="step-button" type="button" data-mobile-step="safety"><span class="step-number">6</span><span>安全边界</span></button>
+      <button class="step-button" type="button" data-mobile-step="evaluation"><span class="step-number">7</span><span>测试评估</span></button>
+      <button class="step-button" type="button" data-mobile-step="publish"><span class="step-number">8</span><span>发布</span></button>
+    </div>
+  </aside>
+
+  <div class="modal-wrap" id="publishModal" role="dialog" aria-modal="true" aria-labelledby="publishTitle">
+    <div class="modal">
+      <div class="modal-head"><h2 id="publishTitle">发布前检查</h2><button class="icon-button" data-close type="button" aria-label="关闭发布检查">×</button></div>
+      <div class="check-list">
+        <div class="check-row"><span class="check-mark">✓</span><span>身份和人设配置完整</span></div>
+        <div class="check-row"><span class="check-mark">✓</span><span>工具权限符合安全边界</span></div>
+        <div class="check-row"><span class="check-mark pending">!</span><span>需要运行发布评估</span></div>
+      </div>
+      <div class="action-row"><button class="button" data-close type="button">稍后处理</button><button class="button primary" type="button">运行评估</button></div>
+    </div>
+  </div>
+
+  <div class="modal-wrap" id="newAgentModal" role="dialog" aria-modal="true" aria-labelledby="newAgentTitle">
+    <div class="modal">
+      <div class="modal-head"><h2 id="newAgentTitle">新建智能体</h2><button class="icon-button" data-close type="button" aria-label="关闭新建窗口">×</button></div>
+      <div class="form-grid" style="margin-top:18px">
+        <div class="field full"><label for="newAgentName">名称</label><input id="newAgentName" placeholder="例如：合同审核助手"></div>
+        <div class="field full"><label for="creationMode">从哪里开始</label><select id="creationMode"><option>从空白开始</option><option>复制现有智能体</option><option>从模板开始</option></select></div>
+      </div>
+      <div class="action-row" style="justify-content:flex-end;margin-top:20px"><button class="button" data-close type="button">取消</button><button class="button primary" type="button">创建草稿</button></div>
+    </div>
+  </div>
+
+  <button class="button tweaks-toggle" id="tweaksToggle" type="button" aria-expanded="false">Tweaks</button>
+  <aside class="tweaks" id="tweaksPanel" aria-label="原型调整">
+    <h2>Tweaks</h2>
+    <span class="tweak-label">布局</span>
+    <div class="segmented" id="layoutControl">
+      <button class="active" type="button" data-value="balanced">平衡</button>
+      <button type="button" data-value="focus">聚焦</button>
+      <button type="button" data-value="wide">宽屏</button>
+    </div>
+    <span class="tweak-label">密度</span>
+    <div class="segmented" id="densityControl" style="grid-template-columns:repeat(2,1fr)">
+      <button class="active" type="button" data-value="comfortable">舒适</button>
+      <button type="button" data-value="compact">紧凑</button>
+    </div>
+    <ul class="assumptions">
+      <li>核心用户在笔记本上频繁配置智能体</li>
+      <li>基础表单优先，高级 Manifest 延后出现</li>
+      <li>发布前必须通过可解释的检查</li>
+    </ul>
+  </aside>
+
+  <script>
+    const stepCopy = {
+      basic: ["步骤 1 / 8", "先让人一眼认出它", "这些信息会出现在智能体列表和选择器中。保持简短，具体说明它擅长解决什么问题。"],
+      persona: ["步骤 2 / 8", "定义角色，而不是堆提示词", "明确它是谁、服务谁、承担什么责任，以及绝不应该越过哪些边界。"],
+      capability: ["步骤 3 / 8", "只给完成工作需要的能力", "组合模型、工具、Skill 和协作者。高风险能力需要明确审批策略。"],
+      knowledge: ["步骤 4 / 8", "连接可信的知识来源", "选择允许检索的知识库，并控制范围、引用和更新方式。"],
+      memory: ["步骤 5 / 8", "决定它可以记住什么", "默认只使用当前对话。长期记忆始终由用户确认，并与用户及角色隔离。"],
+      safety: ["步骤 6 / 8", "把权限边界变成明确规则", "选择审批强度、失败处理方式，以及输入输出的安全约束。"],
+      evaluation: ["步骤 7 / 8", "发布前用真实场景验证", "运行与当前草稿摘要绑定的评估，避免修改配置后沿用旧结果。"],
+      publish: ["步骤 8 / 8", "发布一个不可变版本", "确认变更摘要、可见范围和评估结果。已发布版本不会被后续编辑覆盖。"]
+    };
+    const placeholderCopy = {
+      capability: ["[能力选择器占位]", "模型、工具、Skill、MCP 和协作者将在这里按类别选择。"],
+      knowledge: ["[知识库选择器占位]", "这里展示已授权知识库、引用策略和检索范围。"],
+      safety: ["[安全策略占位]", "这里展示审批预设、失败策略与关键权限摘要。"],
+      evaluation: ["[评估报告占位]", "这里展示评估套件、通过率、失败用例与重新运行入口。"],
+      publish: ["[版本发布占位]", "这里展示变更摘要、可见范围、版本说明与最终发布动作。"]
+    };
+
+    const byId = (id) => document.getElementById(id);
+    const backdrop = byId("backdrop");
+    const canvas = byId("canvas");
+
+    function openLayer(element) {
+      element.classList.add("open");
+      element.setAttribute("aria-hidden", "false");
+      backdrop.classList.add("open");
+    }
+    function closeLayers() {
+      document.querySelectorAll(".drawer.open, .modal-wrap.open").forEach((element) => {
+        element.classList.remove("open");
+        element.setAttribute("aria-hidden", "true");
+      });
+      backdrop.classList.remove("open");
+    }
+
+    document.querySelectorAll(".step-button").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll(".step-button").forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        const step = button.dataset.step;
+        const copy = stepCopy[step];
+        byId("pageKicker").textContent = copy[0];
+        byId("pageTitle").textContent = copy[1];
+        byId("pageDescription").textContent = copy[2];
+        byId("basicContent").hidden = step !== "basic";
+        byId("personaContent").hidden = step !== "persona";
+        byId("memoryContent").hidden = step !== "memory";
+        byId("placeholderContent").hidden = ["basic", "persona", "memory"].includes(step);
+        if (placeholderCopy[step]) {
+          byId("placeholderTitle").textContent = placeholderCopy[step][0];
+          byId("placeholderText").textContent = placeholderCopy[step][1];
+        }
+        canvas.scrollTop = 0;
+      });
+    });
+
+    document.querySelectorAll(".agent-item").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll(".agent-item").forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        byId("editorAgentName").textContent = button.dataset.name;
+        byId("editorAgentDescription").textContent = button.dataset.desc;
+        byId("displayName").value = button.dataset.name;
+      });
+    });
+
+    byId("agentSearch").addEventListener("input", (event) => {
+      const query = event.target.value.trim().toLowerCase();
+      document.querySelectorAll(".agent-item").forEach((item) => {
+        item.hidden = !item.textContent.toLowerCase().includes(query);
+      });
+    });
+
+    byId("memoryToggle").addEventListener("change", (event) => {
+      byId("memoryOptions").hidden = !event.target.checked;
+      const memoryStep = document.querySelector('[data-step="memory"] .step-meta');
+      memoryStep.textContent = event.target.checked ? "已开启" : "关闭";
+    });
+
+    byId("saveButton").addEventListener("click", (event) => {
+      const button = event.currentTarget;
+      button.textContent = "保存中…";
+      button.classList.add("loading");
+      setTimeout(() => {
+        button.textContent = "已保存";
+        button.classList.remove("loading");
+        setTimeout(() => { button.textContent = "保存草稿"; }, 1200);
+      }, 650);
+    });
+
+    byId("testButton").addEventListener("click", () => openLayer(byId("testDrawer")));
+    byId("publishButton").addEventListener("click", () => openLayer(byId("publishModal")));
+    byId("newAgentButton").addEventListener("click", () => openLayer(byId("newAgentModal")));
+    byId("mobileMenuButton").addEventListener("click", () => openLayer(byId("mobileNavDrawer")));
+    document.querySelectorAll("[data-mobile-step]").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelector(`[data-step="${button.dataset.mobileStep}"]`).click();
+        closeLayers();
+      });
+    });
+    backdrop.addEventListener("click", closeLayers);
+    document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", closeLayers));
+    document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeLayers(); });
+
+    const tweaksToggle = byId("tweaksToggle");
+    const tweaksPanel = byId("tweaksPanel");
+    tweaksToggle.addEventListener("click", () => {
+      const open = tweaksPanel.classList.toggle("open");
+      tweaksToggle.setAttribute("aria-expanded", String(open));
+    });
+    function bindSegmented(id, attribute) {
+      byId(id).querySelectorAll("button").forEach((button) => {
+        button.addEventListener("click", () => {
+          byId(id).querySelectorAll("button").forEach((item) => item.classList.remove("active"));
+          button.classList.add("active");
+          document.body.dataset[attribute] = button.dataset.value;
+        });
+      });
+    }
+    bindSegmented("layoutControl", "layout");
+    bindSegmented("densityControl", "density");
+  </script>
+</body>
+</html>

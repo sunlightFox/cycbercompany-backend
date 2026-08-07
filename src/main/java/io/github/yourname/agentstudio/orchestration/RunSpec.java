@@ -1,6 +1,7 @@
 package io.github.yourname.agentstudio.orchestration;
 
 import io.github.yourname.agentstudio.security.ActorContext;
+import io.github.yourname.agentstudio.memory.MemorySnapshot;
 import io.github.yourname.agentstudio.skill.SkillRunBinding;
 import io.github.yourname.agentstudio.skill.SkillAnalysis;
 import io.github.yourname.agentstudio.skill.CompatibilityReport;
@@ -24,9 +25,12 @@ public record RunSpec(
         String modelProfileId,
         String modelCapabilityRevision,
         String agentId,
+        String agentVersionId,
+        String agentManifestDigest,
         String agentSystemPrompt,
         String agentPromptDigest,
         String agentToolAllowList,
+        String agentMemoryPolicySnapshot,
         List<SkillRunBinding> skillBindings,
         String skillSnapshotDigest,
         String skillInstructionsDigest,
@@ -47,10 +51,13 @@ public record RunSpec(
         String tenantId,
         String userId,
         Set<String> actorRoles,
-        Set<String> actorScopes) {
+        Set<String> actorScopes,
+        List<MemorySnapshot> memorySnapshots,
+        String userPersonaId,
+        String userPersonaSnapshotJson) {
 
-    // executionMode is optional on the wire so existing version-1 RunSpecs remain readable.
-    public static final int CURRENT_VERSION = 1;
+    public static final int CURRENT_VERSION = 2;
+    public static final int MIN_SUPPORTED_VERSION = 1;
 
     public RunSpec {
         skillBindings = copy(skillBindings);
@@ -62,8 +69,18 @@ public record RunSpec(
         attachmentIds = copy(attachmentIds);
         actorRoles = copy(actorRoles);
         actorScopes = copy(actorScopes);
+        memorySnapshots = copy(memorySnapshots);
+        userPersonaId = userPersonaId == null ? "" : userPersonaId;
+        userPersonaSnapshotJson = userPersonaSnapshotJson == null || userPersonaSnapshotJson.isBlank()
+                ? "{}"
+                : userPersonaSnapshotJson;
         attachmentContext = attachmentContext == null ? "" : attachmentContext;
+        agentVersionId = agentVersionId == null ? "" : agentVersionId;
+        agentManifestDigest = agentManifestDigest == null ? "" : agentManifestDigest;
         agentToolAllowList = agentToolAllowList == null ? "" : agentToolAllowList;
+        agentMemoryPolicySnapshot = agentMemoryPolicySnapshot == null || agentMemoryPolicySnapshot.isBlank()
+                ? "{}"
+                : agentMemoryPolicySnapshot;
         approvalMode = ApprovalMode.from(approvalMode).wireValue();
         executionMode = executionMode == null
                 ? RunExecutionMode.fromPersisted(nodeId, userText, workingDirectory, requestedToolNames)
@@ -102,6 +119,10 @@ public record RunSpec(
             }
         }
         return sanitized.isEmpty() ? List.of() : List.copyOf(sanitized);
+    }
+
+    public static boolean supports(int version) {
+        return version >= MIN_SUPPORTED_VERSION && version <= CURRENT_VERSION;
     }
 
     private static <T> Set<T> copy(Set<T> values) {

@@ -180,7 +180,7 @@ public class NodeService {
     @Transactional
     public RegisterNodeResult bootstrapLocalExecutor(BootstrapLocalExecutorCommand command, ActorContext actor) {
         if (!executionMode(actor).usesManagedLocalExecutor()) {
-            throw new IllegalStateException("This installation is configured for registered nodes only.");
+            throw new IllegalArgumentException("This installation is configured for registered nodes only.");
         }
         Instant now = Instant.now();
         String secret = "ns_" + randomToken(48);

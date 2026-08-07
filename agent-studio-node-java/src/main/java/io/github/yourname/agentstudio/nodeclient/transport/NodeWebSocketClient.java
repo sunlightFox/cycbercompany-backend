@@ -40,6 +40,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 /**
  * 节点 WebSocket 客户端。
@@ -82,6 +83,7 @@ public class NodeWebSocketClient implements WebSocket.Listener {
     private volatile String sessionId;
     private volatile long fencingToken;
     private volatile long heartbeatIntervalSeconds = 20;
+    private volatile Consumer<Boolean> connectionObserver = ignored -> { };
 
     public NodeWebSocketClient(ObjectMapper objectMapper, HttpClient httpClient, NodeConfig config, SystemInfo systemInfo) {
         this(objectMapper, httpClient, config, systemInfo, null);
@@ -146,6 +148,7 @@ public class NodeWebSocketClient implements WebSocket.Listener {
                 disconnected.await();
             } catch (Exception ex) {
                 System.err.println("WebSocket connection failed: " + ex.getMessage());
+                notifyConnectionObserver(false);
             }
             if (!stopping) {
                 System.out.println("Reconnecting in " + retrySeconds + " seconds.");
@@ -156,9 +159,18 @@ public class NodeWebSocketClient implements WebSocket.Listener {
         toolRegistry.close();
     }
 
+    /**
+     * Reports whether the server has accepted this node connection. Opening a WebSocket alone is
+     * not sufficient: the server must first authenticate the node and send {@code node.accepted}.
+     */
+    public void setConnectionObserver(Consumer<Boolean> observer) {
+        this.connectionObserver = observer == null ? ignored -> { } : observer;
+    }
+
     /** Stops reconnects and releases the active node connection and local tool resources. */
     public void stop() {
         stopping = true;
+        notifyConnectionObserver(false);
         cancelHeartbeat();
         WebSocket socket = webSocket;
         if (socket != null) {
@@ -224,6 +236,7 @@ public class NodeWebSocketClient implements WebSocket.Listener {
                 this.heartbeatIntervalSeconds = Math.max(1, payload.path("heartbeatIntervalSeconds").asLong(20));
                 sendCapabilities();
                 startHeartbeat();
+                notifyConnectionObserver(true);
             } else if ("tool.invoke".equals(type)) {
                 handleDispatch(payload, envelope.traceId());
             } else if ("tool.status".equals(type)) {
@@ -255,6 +268,7 @@ public class NodeWebSocketClient implements WebSocket.Listener {
         System.out.println("WebSocket closed: " + statusCode + " " + reason);
         cancelHeartbeat();
         incomingMessage.clear();
+        notifyConnectionObserver(false);
         disconnected.countDown();
         return null;
     }
@@ -264,6 +278,7 @@ public class NodeWebSocketClient implements WebSocket.Listener {
         System.err.println("WebSocket error: " + error.getMessage());
         cancelHeartbeat();
         incomingMessage.clear();
+        notifyConnectionObserver(false);
         disconnected.countDown();
     }
 
@@ -290,6 +305,7 @@ public class NodeWebSocketClient implements WebSocket.Listener {
     private void shutdownFromServer(WebSocket socket, String reason) {
         System.out.println("Server requested node shutdown.");
         stopping = true;
+        notifyConnectionObserver(false);
         closeClientResources();
         try {
             socket.sendClose(WebSocket.NORMAL_CLOSURE,
@@ -306,6 +322,14 @@ public class NodeWebSocketClient implements WebSocket.Listener {
         toolRegistry.close();
         scheduler.shutdownNow();
         toolExecutor.shutdownNow();
+    }
+
+    private void notifyConnectionObserver(boolean connected) {
+        try {
+            connectionObserver.accept(connected);
+        } catch (RuntimeException ignored) {
+            // A desktop status observer must never disrupt the node protocol loop.
+        }
     }
 
     private void sendCapabilities() throws Exception {

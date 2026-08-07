@@ -15,8 +15,8 @@ import java.awt.Insets;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.net.http.HttpClient;
-import java.nio.file.Path;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import javax.swing.BorderFactory;
@@ -260,18 +260,30 @@ final class NodeClientWindow {
         showStatus(registered ? "正在连接" : "正在注册", "请稍候...", BLUE);
         worker = Thread.ofVirtual().name("agent-studio-node-gui").start(() -> {
             try {
-                if (!Files.exists(configStore.path())) {
-                    AgentStudioNodeApplication.provisionLocal(options, configStore, objectMapper, httpClient);
-                    registered = true;
-                    SwingUtilities.invokeLater(() -> showStatus("注册成功", "正在连接服务端...", GREEN));
-                } else {
+                // A damaged or user-bound protected config must not prevent an explicit
+                // Start action from rebuilding this managed-local companion. Only a config
+                // that was successfully loaded is safe to synchronize before replacement.
+                if (registered) {
                     synchronizeSelectedWorkspace(options);
                 }
+                // Local bootstrap deliberately runs on every start. It restores the companion
+                // after a control-plane data reset or a credential rotation, and refreshes the
+                // node credential before the WebSocket reconnect loop begins.
+                provisionLocalWithRetry(options);
+                registered = true;
+                SwingUtilities.invokeLater(() -> showStatus("正在连接", "正在验证本机执行器...", BLUE));
                 AgentStudioNodeApplication.start(
                         options, configStore, objectMapper, httpClient, client -> {
                             activeClient = client;
+                            client.setConnectionObserver(connected -> SwingUtilities.invokeLater(() -> {
+                                if (connected) {
+                                    showStatus("运行中", "本机执行器已连接，正在等待任务", GREEN);
+                                } else if (!stopping) {
+                                    showStatus("正在重连", "与服务端的连接暂时中断，正在恢复...", BLUE);
+                                }
+                            }));
                             SwingUtilities.invokeLater(() ->
-                                    showStatus("运行中", "节点正在连接并等待服务端任务", GREEN));
+                                    showStatus("正在连接", "正在验证本机执行器...", BLUE));
                         });
                 SwingUtilities.invokeLater(this::showStopped);
             } catch (InterruptedException ex) {
@@ -282,7 +294,7 @@ final class NodeClientWindow {
                     if (stopping) {
                         showStopped();
                     } else {
-                        showStatus("启动失败", conciseMessage(ex), RED);
+                        showStatus("启动失败", startupFailureDetail(ex), RED);
                         resetButton();
                     }
                 });
@@ -291,6 +303,50 @@ final class NodeClientWindow {
                 worker = null;
             }
         });
+    }
+
+    private void provisionLocalWithRetry(Map<String, String> options) throws Exception {
+        BootstrapRetryPolicy.execute(
+                () -> {
+                AgentStudioNodeApplication.provisionLocal(options, configStore, objectMapper, httpClient);
+                },
+                () -> stopping,
+                nextAttempt -> {
+                SwingUtilities.invokeLater(() -> showStatus(
+                        "等待服务端",
+                        "控制面尚未就绪，正在重试 " + nextAttempt + "/" + BootstrapRetryPolicy.MAX_ATTEMPTS + "...",
+                        BLUE));
+                },
+                Thread::sleep);
+    }
+
+    static int retryDelayMillis(int attempt) {
+        return BootstrapRetryPolicy.delayMillis(attempt);
+    }
+
+    static boolean isTransientStartupFailure(Throwable error) {
+        return BootstrapRetryPolicy.isTransientFailure(error);
+    }
+
+    static String startupFailureDetail(Throwable error) {
+        String message = conciseMessage(error);
+        String normalized = message.toLowerCase(java.util.Locale.ROOT);
+        if (normalized.contains("http 401") || normalized.contains("http 403")) {
+            return "服务端需要身份验证。请为当前 Windows 用户配置 AGENT_STUDIO_API_TOKEN 后重试。";
+        }
+        if (normalized.contains("registered nodes only")) {
+            return "当前服务端要求使用受管节点。请联系管理员完成节点注册。";
+        }
+        if (normalized.contains("workspace must be an existing directory")) {
+            return "工作目录不可用。请重新选择一个仍存在的项目目录。";
+        }
+        if (normalized.contains("access is denied") || normalized.contains("permission denied")) {
+            return "本地配置目录不可写。请检查当前 Windows 用户对配置目录的权限后重试。";
+        }
+        if (normalized.matches(".*http [5][0-9][0-9].*")) {
+            return "服务端暂时不可用，请稍后重试。";
+        }
+        return message;
     }
 
     private void stopNode(boolean updateUi) {
@@ -341,8 +397,9 @@ final class NodeClientWindow {
 
     static boolean shouldAutoStart(Map<String, String> options, boolean registered) {
         // A generic installer cannot know the user's project. First launch must let the user
-        // confirm the workspace; later launches can reconnect without another prompt.
-        return registered && booleanOption(options, "auto-start");
+        // confirm the workspace; later launches reconnect without another prompt. Deployment
+        // shortcuts can still deliberately suppress this with --no-auto-start.
+        return registered && !booleanOption(options, "no-auto-start");
     }
 
     static Map<String, String> resolvedOptions(Map<String, String> configured) {

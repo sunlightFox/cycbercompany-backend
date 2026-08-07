@@ -186,6 +186,25 @@ $env:JAVA_HOME = 'C:\Program Files\Java\jdk-21'
 Use `-Type msi` to create an installer with Start menu and desktop shortcuts. Pass `-ManualStart`
 when the user should explicitly press Start on every launch.
 
+The packaging script produces a versioned MSI or app-image ZIP, a SHA-256 sidecar, and a JSON
+release manifest containing the package hash, byte size, source commit, and Authenticode status.
+Use an explicit release version and verify the exact downloaded artifact before distribution:
+
+```powershell
+.\scripts\package-node-windows.ps1 -Type msi -Version 1.2.3 -Server http://127.0.0.1:8080 -Workspace D:\work\my-project
+.\scripts\verify-node-windows-package.ps1 -Artifact .\build\windows-node\AgentStudioNode-1.2.3.msi -Manifest .\build\windows-node\AgentStudioNode-1.2.3-windows.manifest.json
+```
+
+Code signing is opt-in because the signing certificate must remain in the release environment,
+not the repository. When the Windows SDK signing tools and certificate are available, add
+`-SigningCertificateThumbprint <thumbprint>` (and optionally `-TimestampUrl <https-url>`). The
+script signs first, then hashes the finished artifact; release verification can enforce the signer
+with `-RequireSigned` for MSI files.
+
+MSI creation additionally requires WiX Toolset v3 (`candle.exe` and `light.exe`) on `PATH`; the
+script checks that dependency before starting the Gradle build so a release machine fails early
+with a direct remediation message.
+
 Docker Compose deployment files keep the executor service behind the `local-executor`
 profile; use `docker compose --profile local-executor up -d` only when you explicitly
 want the bundled executor service to start with the server.

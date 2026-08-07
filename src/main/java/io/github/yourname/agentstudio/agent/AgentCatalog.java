@@ -62,6 +62,9 @@ public class AgentCatalog {
                 command.name().trim(),
                 normalizeDescription(command.description()),
                 command.systemPrompt().trim());
+        if (command.defaultModelProfileId() != null) {
+            agent.updateDefaultModelProfileId(command.defaultModelProfileId());
+        }
         return AgentDefinitionView.from(repository.save(agent));
     }
 

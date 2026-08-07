@@ -10,7 +10,11 @@ final class CliArgs {
 
     static Map<String, String> parse(String[] args) {
         Map<String, String> result = new HashMap<>();
-        for (int i = 1; i < args.length; i++) {
+        // The packaged launcher places user-supplied options before its configured `gui`
+        // argument. Parse from the first option in that form, while retaining the normal
+        // command-first CLI convention.
+        int firstOption = args.length > 0 && args[0].startsWith("--") ? 0 : 1;
+        for (int i = firstOption; i < args.length; i++) {
             String current = args[i];
             if (!current.startsWith("--")) {
                 continue;

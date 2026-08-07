@@ -11,6 +11,7 @@ import java.util.EnumSet;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
+import org.springframework.core.annotation.Order;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
@@ -20,6 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
  * 依赖哪些配置。逻辑通过“存在则复用，不存在才创建”保证重复启动不会制造重复记录。
  */
 @Component
+@Order(0)
 class DataSeeder implements ApplicationRunner {
 
     static final String DEFAULT_ASSISTANT_ID = "default-assistant";

@@ -3,6 +3,7 @@ package io.github.yourname.agentstudio.conversation;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -62,5 +63,49 @@ class ConversationServiceTest {
         service.append(entity.id(), MessageRole.ASSISTANT, "done", "run-1", ACTOR);
 
         verify(messages).save(any());
+        verify(conversations).save(entity);
+    }
+
+    @Test
+    void listReturnsCompactHistorySortedByRepositoryAndExcludesArchivedByDefault() {
+        ConversationRepository conversations = mock(ConversationRepository.class);
+        MessageRepository messages = mock(MessageRepository.class);
+        Instant earlier = Instant.parse("2026-08-01T08:00:00Z");
+        Instant later = Instant.parse("2026-08-01T09:00:00Z");
+        ConversationEntity newest = new ConversationEntity("conversation-2", ACTOR.tenantId(), "Newest", earlier);
+        newest.recordActivity(later);
+        ConversationEntity oldest = new ConversationEntity("conversation-1", ACTOR.tenantId(), "Oldest", earlier);
+        when(conversations.findHistory(eq(ACTOR.tenantId()), eq(false), any())).thenReturn(List.of(newest, oldest));
+        when(messages.findFirstByConversationIdAndTenantIdOrderByCreatedAtDesc("conversation-2", ACTOR.tenantId()))
+                .thenReturn(Optional.of(new MessageEntity(ACTOR.tenantId(), "conversation-2", MessageRole.USER,
+                        "Latest message", null, later)));
+        when(messages.findFirstByConversationIdAndTenantIdOrderByCreatedAtDesc("conversation-1", ACTOR.tenantId()))
+                .thenReturn(Optional.empty());
+        ConversationService service = new ConversationService(conversations, messages);
+
+        var result = service.list(32, false, ACTOR);
+
+        assertThat(result).extracting(ConversationSummaryView::id).containsExactly("conversation-2", "conversation-1");
+        assertThat(result.getFirst().lastActivityAt()).isEqualTo(later);
+        assertThat(result.getFirst().lastMessagePreview()).isEqualTo("Latest message");
+        verify(conversations).findHistory(eq(ACTOR.tenantId()), eq(false), any());
+    }
+
+    @Test
+    void searchIncludesArchivedConversationsAndCapsRequestedLimit() {
+        ConversationRepository conversations = mock(ConversationRepository.class);
+        MessageRepository messages = mock(MessageRepository.class);
+        ConversationEntity archived = new ConversationEntity("conversation-1", ACTOR.tenantId(), "Release notes", Instant.now());
+        archived.archive(Instant.now());
+        when(conversations.searchHistory(eq(ACTOR.tenantId()), eq("release"), eq(true), any())).thenReturn(List.of(archived));
+        when(messages.findFirstByConversationIdAndTenantIdOrderByCreatedAtDesc(archived.id(), ACTOR.tenantId()))
+                .thenReturn(Optional.empty());
+        ConversationService service = new ConversationService(conversations, messages);
+
+        var result = service.search(" release ", 1_000, true, ACTOR);
+
+        assertThat(result).singleElement().extracting(ConversationSummaryView::archived).isEqualTo(true);
+        verify(conversations).searchHistory(eq(ACTOR.tenantId()), eq("release"), eq(true),
+                org.mockito.ArgumentMatchers.argThat((org.springframework.data.domain.Pageable page) -> page.getPageSize() == 100));
     }
 }

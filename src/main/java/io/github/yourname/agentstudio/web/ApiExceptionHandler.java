@@ -1,5 +1,11 @@
 package io.github.yourname.agentstudio.web;
 
+import io.github.yourname.agentstudio.agent.AgentManifestValidationException;
+import io.github.yourname.agentstudio.agent.AgentIdentityRevisionConflictException;
+import io.github.yourname.agentstudio.agent.AgentEvaluationRequiredException;
+import io.github.yourname.agentstudio.memory.MemoryRevisionConflictException;
+import io.github.yourname.agentstudio.persona.UserPersonaRevisionConflictException;
+import io.github.yourname.agentstudio.agent.AgentRevisionConflictException;
 import io.github.yourname.agentstudio.conversation.ConversationArchivedException;
 import io.github.yourname.agentstudio.node.NodeToolApprovalConflictException;
 import io.github.yourname.agentstudio.execution.ExecutionModeChangeNotAllowedException;
@@ -16,6 +22,68 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 @RestControllerAdvice
 class ApiExceptionHandler {
+
+    @ExceptionHandler(AgentManifestValidationException.class)
+    ProblemDetail agentManifestInvalid(AgentManifestValidationException ex) {
+        var detail = ProblemDetail.forStatusAndDetail(HttpStatus.UNPROCESSABLE_CONTENT, ex.getMessage());
+        detail.setProperty("code", "AGENT_MANIFEST_INVALID");
+        detail.setProperty("errors", ex.errors());
+        detail.setProperty("timestamp", Instant.now().toString());
+        return detail;
+    }
+
+    @ExceptionHandler(AgentEvaluationRequiredException.class)
+    ProblemDetail agentEvaluationRequired(AgentEvaluationRequiredException ex) {
+        var detail = ProblemDetail.forStatusAndDetail(HttpStatus.UNPROCESSABLE_CONTENT, ex.getMessage());
+        detail.setProperty("code", "AGENT_EVALUATION_REQUIRED");
+        detail.setProperty("problems", ex.problems());
+        detail.setProperty("timestamp", Instant.now().toString());
+        return detail;
+    }
+
+    @ExceptionHandler(AgentRevisionConflictException.class)
+    ProblemDetail agentRevisionConflict(AgentRevisionConflictException ex) {
+        var detail = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+        detail.setProperty("code", "AGENT_REVISION_CONFLICT");
+        detail.setProperty("versionId", ex.versionId());
+        detail.setProperty("expectedRevision", ex.expectedRevision());
+        detail.setProperty("actualRevision", ex.actualRevision());
+        detail.setProperty("timestamp", Instant.now().toString());
+        return detail;
+    }
+
+    @ExceptionHandler(AgentIdentityRevisionConflictException.class)
+    ProblemDetail agentIdentityRevisionConflict(AgentIdentityRevisionConflictException ex) {
+        var detail = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+        detail.setProperty("code", "AGENT_IDENTITY_REVISION_CONFLICT");
+        detail.setProperty("agentId", ex.agentId());
+        detail.setProperty("expectedRevision", ex.expectedRevision());
+        detail.setProperty("actualRevision", ex.actualRevision());
+        detail.setProperty("timestamp", Instant.now().toString());
+        return detail;
+    }
+
+    @ExceptionHandler(MemoryRevisionConflictException.class)
+    ProblemDetail memoryRevisionConflict(MemoryRevisionConflictException ex) {
+        var detail = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+        detail.setProperty("code", "MEMORY_REVISION_CONFLICT");
+        detail.setProperty("memoryId", ex.memoryId());
+        detail.setProperty("expectedRevision", ex.expectedRevision());
+        detail.setProperty("actualRevision", ex.actualRevision());
+        detail.setProperty("timestamp", Instant.now().toString());
+        return detail;
+    }
+
+    @ExceptionHandler(UserPersonaRevisionConflictException.class)
+    ProblemDetail userPersonaRevisionConflict(UserPersonaRevisionConflictException ex) {
+        var detail = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+        detail.setProperty("code", "USER_PERSONA_REVISION_CONFLICT");
+        detail.setProperty("personaId", ex.personaId());
+        detail.setProperty("expectedRevision", ex.expectedRevision());
+        detail.setProperty("actualRevision", ex.actualRevision());
+        detail.setProperty("timestamp", Instant.now().toString());
+        return detail;
+    }
 
     @ExceptionHandler(SkillCompatibilityException.class)
     ProblemDetail skillCompatibility(SkillCompatibilityException ex) {
