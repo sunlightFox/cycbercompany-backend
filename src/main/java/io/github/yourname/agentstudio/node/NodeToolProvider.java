@@ -91,7 +91,9 @@ public class NodeToolProvider implements ToolProvider {
                     ? timeoutSeconds(scopedArguments)
                     : request.timeoutSeconds();
             CallNodeToolCommand command = new CallNodeToolCommand(scopedArguments, timeoutSeconds);
-            NodeToolCallResult result = request.approvalMode().bypassesApproval(request.binding())
+            boolean approvalGranted = request.approvalMode().bypassesApproval(request.binding())
+                    || (request.approvalId() != null && !request.approvalId().isBlank());
+            NodeToolCallResult result = approvalGranted
                     ? nodes.callToolForRun(
                             request.runId(),
                             request.toolCallId(),

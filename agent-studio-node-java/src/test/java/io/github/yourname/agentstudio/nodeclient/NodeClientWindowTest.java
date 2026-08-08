@@ -5,6 +5,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.io.IOException;
 import java.net.ConnectException;
 import java.nio.file.AccessDeniedException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -12,6 +15,41 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class NodeClientWindowTest {
+
+    @Test
+    void managesOnlyItsOwnCurrentUserStartupEntry() throws Exception {
+        Path startupFolder = Files.createTempDirectory("agent-studio-startup");
+        Path executable = Files.createTempFile("agent-studio-node", ".exe");
+        WindowsLoginStartup startup = new WindowsLoginStartup(startupFolder, executable);
+
+        assertThat(startup.isEnabled()).isFalse();
+        startup.setEnabled(true);
+        assertThat(startup.isEnabled()).isTrue();
+        assertThat(Files.readString(startup.startupFile(), StandardCharsets.UTF_16LE))
+                .contains("Agent Studio managed login startup")
+                .contains(executable.toAbsolutePath().normalize().toString())
+                .contains("--background");
+
+        startup.setEnabled(false);
+        assertThat(Files.exists(startup.startupFile())).isFalse();
+    }
+
+    @Test
+    void refusesToOverwriteOrDeleteAnUnmanagedStartupEntry() throws Exception {
+        Path startupFolder = Files.createTempDirectory("agent-studio-startup-unmanaged");
+        WindowsLoginStartup startup = new WindowsLoginStartup(
+                startupFolder, Files.createTempFile("agent-studio-node", ".exe"));
+        String foreignEntry = "@echo off\r\nstart another-app.exe\r\n";
+        Files.writeString(startup.startupFile(), foreignEntry, StandardCharsets.UTF_16LE);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> startup.setEnabled(true))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("not managed by Agent Studio");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> startup.setEnabled(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("not managed by Agent Studio");
+        assertThat(Files.readString(startup.startupFile(), StandardCharsets.UTF_16LE)).isEqualTo(foreignEntry);
+    }
 
     @Test
     void optionFirstPackagedInvocationUsesGuiMode() {
@@ -63,6 +101,13 @@ class NodeClientWindowTest {
         assertThat(NodeClientWindow.shouldAutoStart(Map.of("auto-start", "true"), true)).isTrue();
         assertThat(NodeClientWindow.shouldAutoStart(Map.of(), true)).isTrue();
         assertThat(NodeClientWindow.shouldAutoStart(Map.of("no-auto-start", "true"), true)).isFalse();
+        assertThat(NodeClientWindow.runsInBackground(Map.of("background", "true"))).isTrue();
+        assertThat(NodeClientWindow.runsInBackground(Map.of())).isFalse();
+        assertThat(NodeClientWindow.shouldReprovisionOnStart(Map.of("background", "true"), true)).isFalse();
+        assertThat(NodeClientWindow.shouldReprovisionOnStart(Map.of("background", "true"), false)).isTrue();
+        assertThat(NodeClientWindow.shouldReprovisionOnStart(Map.of(), true)).isTrue();
+        assertThat(NodeClientWindow.canConfigureLoginStartup(false)).isFalse();
+        assertThat(NodeClientWindow.canConfigureLoginStartup(true)).isTrue();
     }
 
     @Test
@@ -92,7 +137,10 @@ class NodeClientWindowTest {
     @Test
     void translatesStartupErrorsIntoActions() {
         assertThat(NodeClientWindow.startupFailureDetail(
-                        new IllegalStateException("Local executor provisioning failed: HTTP 401 unauthorized")))
+                new IllegalStateException("Another Agent Studio node process is already running for this config")))
+                .contains("\u5df2\u5728\u8fd0\u884c");
+        assertThat(NodeClientWindow.startupFailureDetail(
+                new IllegalStateException("Local executor provisioning failed: HTTP 401 unauthorized")))
                 .contains("AGENT_STUDIO_API_TOKEN");
         assertThat(NodeClientWindow.startupFailureDetail(
                         new IllegalStateException("This installation is configured for registered nodes only.")))

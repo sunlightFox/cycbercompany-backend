@@ -30,7 +30,7 @@ class MemoryRetrievalServiceTest {
                 "lexical", "Uses JUnit for project tests.", "0.0,1.0", now);
         when(repository.search(
                         eq("tenant"), eq("user"), eq("agent"), eq(null),
-                        eq(null), eq(MemoryStatus.CONFIRMED.name()), eq(null), any()))
+                        eq(false), eq(null), eq(MemoryStatus.CONFIRMED.name()), eq(null), any(Instant.class), any()))
                 .thenReturn(List.of(lexical, semantic));
         when(embeddings.embedForSearch("junit tests")).thenReturn(Optional.of(new double[] {1, 0}));
         ActorContext actor = new ActorContext("tenant", "user", Set.of(), Set.of());

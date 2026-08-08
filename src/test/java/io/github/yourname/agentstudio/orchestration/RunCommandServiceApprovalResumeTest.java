@@ -74,11 +74,13 @@ class RunCommandServiceApprovalResumeTest {
                 "approval-1",
                 "call-1",
                 mapper.writeValueAsString(persistedMessages),
+                "[{\"chunkId\":42,\"documentId\":\"doc-1\",\"knowledgeBaseId\":\"kb-1\",\"sourceName\":\"Operations guide\",\"chunkIndex\":1,\"quote\":\"Use after approval.\",\"score\":0.9}]",
+                "[]",
                 Instant.now());
         when(continuations.findByRunIdAndTenantId(run.id(), ACTOR.tenantId())).thenReturn(Optional.of(continuation));
         when(runs.findByIdAndTenantId(run.id(), ACTOR.tenantId())).thenReturn(Optional.of(run));
-        when(codingLoop.resume(eq(run.id()), eq("model-1"), any(), any(), eq(ACTOR), any()))
-                .thenReturn("Server started and verified.");
+        when(codingLoop.resume(eq(run.id()), eq("model-1"), any(), any(), eq(ACTOR), any(), any(), any()))
+                .thenReturn("Server started and verified. [K1]");
         when(nodes.codingEvidence(run.id(), ACTOR)).thenReturn(verifiedEvidence());
 
         NodeToolApprovalView approval = new NodeToolApprovalView(
@@ -109,13 +111,16 @@ class RunCommandServiceApprovalResumeTest {
         verify(events).publish(run.id(), RunEventType.RUN_RESUMED, "approvalId=approval-1", ACTOR);
         ArgumentCaptor<List<ModelGateway.ModelMessage>> restored = ArgumentCaptor.forClass(List.class);
         verify(codingLoop, timeout(2_000)).resume(
-                eq(run.id()), eq("model-1"), any(), restored.capture(), eq(ACTOR), any());
+                eq(run.id()), eq("model-1"), any(), restored.capture(), eq(ACTOR), any(), any(), any());
         assertThat(restored.getValue()).anyMatch(message ->
                 "tool".equals(message.role())
                         && "call-1".equals(message.toolCallId())
                         && message.content().contains("SUCCEEDED"));
         verify(conversations, timeout(2_000)).append(
-                "conversation-1", MessageRole.ASSISTANT, "Server started and verified.", run.id(), ACTOR);
+                "conversation-1", MessageRole.ASSISTANT, "Server started and verified. [K1]", run.id(), ACTOR);
+        verify(events, timeout(2_000)).publish(
+                eq(run.id()), eq(RunEventType.RETRIEVAL_SOURCES),
+                org.mockito.ArgumentMatchers.contains("knowledge-42"), eq(ACTOR));
         assertThat(run.status()).isEqualTo(RunStatus.SUCCEEDED);
     }
 
@@ -249,7 +254,8 @@ class RunCommandServiceApprovalResumeTest {
         verify(events).publish(
                 run.id(), RunEventType.FINAL_ANSWER,
                 "Tool execution was rejected. The requested command was not run.", ACTOR);
-        verify(codingLoop, org.mockito.Mockito.never()).resume(any(), any(), any(), any(), any(), any());
+        verify(codingLoop, org.mockito.Mockito.never()).resume(
+                any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -336,6 +342,7 @@ class RunCommandServiceApprovalResumeTest {
                 "sha256:prompt",
                 "node:*",
                 "{}",
+                List.of(),
                 List.of(),
                 "sha256:skills",
                 "sha256:instructions",

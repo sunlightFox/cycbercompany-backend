@@ -111,17 +111,27 @@ public class AgentStudioNodeApplication {
             ObjectMapper objectMapper,
             HttpClient httpClient,
             java.util.function.Consumer<NodeWebSocketClient> clientReady) throws Exception {
-        NodeConfig config = configStore.load();
         try (NodeProcessLock ignored = NodeProcessLock.acquire(configStore.path())) {
-            NodeWebSocketClient client = new NodeWebSocketClient(
-                    objectMapper,
-                    httpClient,
-                    config,
-                    SystemInfo.current(),
-                    optionalDesktopRoot(options.get("desktop-root")));
-            clientReady.accept(client);
-            client.startBlocking();
+            startWithAcquiredProcessLock(options, configStore, objectMapper, httpClient, clientReady);
         }
+    }
+
+    /** Starts a node while its caller holds the identity lock across provisioning and connection. */
+    static void startWithAcquiredProcessLock(
+            Map<String, String> options,
+            NodeConfigStore configStore,
+            ObjectMapper objectMapper,
+            HttpClient httpClient,
+            java.util.function.Consumer<NodeWebSocketClient> clientReady) throws Exception {
+        NodeConfig config = configStore.load();
+        NodeWebSocketClient client = new NodeWebSocketClient(
+                objectMapper,
+                httpClient,
+                config,
+                SystemInfo.current(),
+                optionalDesktopRoot(options.get("desktop-root")));
+        clientReady.accept(client);
+        client.startBlocking();
     }
 
     private static void startLocal(
@@ -132,14 +142,16 @@ public class AgentStudioNodeApplication {
         // The loopback launcher uses this headless command. Match the packaged GUI's
         // bounded bootstrap recovery so a just-restarted backend does not turn an
         // otherwise automatic local task into an immediate user-visible failure.
-        BootstrapRetryPolicy.execute(
-                () -> provisionLocal(options, configStore, objectMapper, httpClient),
-                () -> Thread.currentThread().isInterrupted(),
-                nextAttempt -> System.err.println(
-                        "Local control plane is not ready; retrying bootstrap "
-                                + nextAttempt + "/" + BootstrapRetryPolicy.MAX_ATTEMPTS + "..."),
-                Thread::sleep);
-        start(options, configStore, objectMapper, httpClient);
+        try (NodeProcessLock ignored = NodeProcessLock.acquire(configStore.path())) {
+            BootstrapRetryPolicy.execute(
+                    () -> provisionLocal(options, configStore, objectMapper, httpClient),
+                    () -> Thread.currentThread().isInterrupted(),
+                    nextAttempt -> System.err.println(
+                            "Local control plane is not ready; retrying bootstrap "
+                                    + nextAttempt + "/" + BootstrapRetryPolicy.MAX_ATTEMPTS + "..."),
+                    Thread::sleep);
+            startWithAcquiredProcessLock(options, configStore, objectMapper, httpClient, ignoredClient -> { });
+        }
     }
 
     static void provisionLocal(

@@ -7,5 +7,7 @@ public enum RiskLevel {
     /** 可能改变用户数据，但范围有限的操作。 */
     MEDIUM,
     /** 执行命令、删除文件或控制系统等高影响操作。 */
-    HIGH
+    HIGH,
+    /** Irreversible or security-critical operations that need the strictest policy. */
+    CRITICAL
 }

@@ -245,9 +245,19 @@ query rewrite
 
 复杂 DAG 继续属于 Workflow，不塞进基础角色编辑器。Agent Manifest 只保存允许委派的目标和条件。
 
+当前实现状态：
+
+- `AS_TOOL` 已可执行。主 Agent 通过结构化工具调用决定是否咨询绑定专家，专家只接收聚焦任务，
+  不继承主 Agent 的工具、知识库、MCP、记忆或审批上下文；结果返回主 Agent 核对和汇总。
+- 协作者必须对发布者可见、处于启用状态并已有发布版本。草稿验证、发布和 Run 创建都会检查这些条件。
+- 每个 Run 最多执行 4 次专家咨询，且不递归调用协作者，避免循环委派和失控的模型调用成本。
+- `HANDOFF` 已可执行。一个 Agent 最多绑定一个 HANDOFF 专家，且不能与 `AS_TOOL` 混用。运行时跳过主 Agent
+  路由和结果汇总，由目标专家使用已发布版本快照直接完成当前 Run；开始、模型调用和完成事件进入统一审计时间线。
+  当前语义是“当前任务执行权转交”，不会永久修改 Conversation 绑定的 Agent，后续 Run 仍按会话当前配置创建。
+
 ### 7.3 运行快照
 
-`RunSpec v2` 在现有字段上增加：
+`RunSpec v3` 在现有字段上增加：
 
 - `agentVersionId`、`agentManifestDigest`。
 - `compiledPromptDigest`。
@@ -255,6 +265,7 @@ query rewrite
 - `userPersonaId`、不可变 `userPersonaSnapshotJson`。
 - `capabilityBindingRevision`。
 - `runtimePolicySnapshot`、`safetyPolicySnapshot`。
+- `collaboratorBindings`，包含目标 Agent 的版本、Manifest digest、编译提示词、模型、模式和触发条件快照。
 
 Run 永不读取“当前最新 Agent”继续执行；恢复时仍使用创建时快照。
 
@@ -337,6 +348,7 @@ GET    /api/v2/memories?agentId=&personaId=&type=&status=&query=&limit=
 POST   /api/v2/memories
 PATCH  /api/v2/memories/{memoryId}
 POST   /api/v2/memories/{memoryId}/confirm
+POST   /api/v2/memories/{memoryId}/reject
 DELETE /api/v2/memories/{memoryId}
 POST   /api/v2/memories/clear
 
@@ -364,12 +376,12 @@ Conversation、Message、Run、Checkpoint 或记忆记录，不读取知识库�
 ### 9.2 后续接口
 
 ```text
-GET    /api/v2/memories?personaId=&semanticQuery=&scope=
-POST   /api/v2/memories/{memoryId}/reject
+GET    /api/v2/memories?semanticQuery=&scope=
 ```
 
-当前治理接口已支持画像作用域，以及 `KEYWORD | SEMANTIC | HYBRID` 检索；未配置 Embedding 时自动退回关键词。
-后续增加候选拒绝接口和面向大规模数据的独立向量存储。
+当前治理接口已支持 `agentId`、`personaId`、类型、状态和文本关键词筛选，以及候选确认、拒绝、修正、删除和清空。
+运行时召回支持画像作用域和 `KEYWORD | SEMANTIC | HYBRID` 策略；未配置 Embedding 时自动退回关键词。
+后续为治理列表增加显式语义查询和更通用的作用域表达，并为大规模数据引入独立向量存储。
 后续更新接口沿用 ETag 或 `expectedRevision` 做乐观锁。发布接口返回最终版本摘要；行为测试通过后再将评测报告纳入发布响应。
 
 ## 10. 校验与评测
@@ -426,7 +438,9 @@ POST   /api/v2/memories/{memoryId}/reject
 
 ### Phase 4：协作 Agent 与模板市场
 
-- 上线 agent-as-tool、handoff 和模板复制。
+- 已上线可编辑角色蓝图、agent-as-tool 和单目标 handoff。
+- handoff 已具备发布校验、不可变运行快照、直接执行和审计事件；永久会话归属迁移仍不属于当前语义。
+- 模板市场仍属于后续阶段；当前蓝图是本地内置、应用后完全可编辑的安全起点。
 - 复杂流程继续使用独立 Workflow 编辑器。
 
 ## 12. 首版验收标准

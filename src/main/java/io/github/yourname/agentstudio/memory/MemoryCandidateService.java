@@ -73,8 +73,8 @@ public class MemoryCandidateService {
         } catch (IllegalArgumentException prohibited) {
             return Optional.empty();
         }
-        if (memories.existsByTenantIdAndUserIdAndAgentIdAndContentIgnoreCaseAndStatusNot(
-                actor.tenantId(), actor.userId(), agentId, content, MemoryStatus.REJECTED.name())) {
+        if (memories.existsByTenantIdAndUserIdAndAgentIdAndPersonaIdAndContentIgnoreCaseAndStatusNot(
+                actor.tenantId(), actor.userId(), agentId, personaId, content, MemoryStatus.REJECTED.name())) {
             return Optional.empty();
         }
 

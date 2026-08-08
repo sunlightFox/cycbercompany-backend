@@ -12,6 +12,7 @@ import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.UUID;
+import java.util.List;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -91,6 +92,13 @@ public class ArtifactService {
         ensureInside(storageRoot, path);
         if (!Files.isRegularFile(path)) throw new IllegalStateException("Artifact content is missing: " + id);
         return new ArtifactDownload(ArtifactView.from(entity), path);
+    }
+
+    @Transactional(readOnly = true)
+    public List<ArtifactView> listRunArtifacts(String runId, ActorContext actor) {
+        if (runId == null || runId.isBlank()) return List.of();
+        return repository.findByRunIdAndTenantIdOrderByCreatedAtAsc(runId, actor.tenantId())
+                .stream().map(ArtifactView::from).toList();
     }
 
     private static StoredFile copyAndDigest(InputStream input, Path output) throws IOException {

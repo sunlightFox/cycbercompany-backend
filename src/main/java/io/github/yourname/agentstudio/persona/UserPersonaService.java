@@ -2,6 +2,7 @@ package io.github.yourname.agentstudio.persona;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.yourname.agentstudio.memory.MemoryItemRepository;
 import io.github.yourname.agentstudio.security.ActorContext;
 import java.time.Instant;
 import java.util.List;
@@ -16,10 +17,13 @@ public class UserPersonaService {
     private static final int MAX_ATTRIBUTES_JSON_LENGTH = 16000;
 
     private final UserPersonaRepository personas;
+    private final MemoryItemRepository memories;
     private final ObjectMapper objectMapper;
 
-    public UserPersonaService(UserPersonaRepository personas, ObjectMapper objectMapper) {
+    public UserPersonaService(
+            UserPersonaRepository personas, MemoryItemRepository memories, ObjectMapper objectMapper) {
         this.personas = personas;
+        this.memories = memories;
         this.objectMapper = objectMapper;
     }
 
@@ -86,6 +90,7 @@ public class UserPersonaService {
     public void delete(String id, ActorContext actor) {
         UserPersonaEntity target = requireOwned(id, actor);
         boolean wasDefault = target.defaultPersona();
+        memories.deleteForUser(actor.tenantId(), actor.userId(), null, id, false);
         personas.delete(target);
         personas.flush();
         if (wasDefault) {

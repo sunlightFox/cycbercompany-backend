@@ -328,10 +328,11 @@ public class NodeService {
                         .anyMatch(tool -> tool.enabled() && tool.name().startsWith("system.")))
                 .toList();
         if (candidates.isEmpty()) {
-            throw new IllegalArgumentException(
-                    mode == ExecutionMode.NODES_ONLY
-                            ? "Computer control requires one connected node with enabled system tools."
-                            : "Local computer control is not ready. Start the local executor, then retry.");
+            if (mode == ExecutionMode.NODES_ONLY) {
+                throw new IllegalArgumentException(
+                        "Computer control requires one connected node with enabled system tools.");
+            }
+            throw new LocalComputerControlNotReadyException();
         }
         if (candidates.size() > 1) {
             throw new IllegalArgumentException(

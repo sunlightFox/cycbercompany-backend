@@ -96,14 +96,27 @@ public class ToolRouter {
         if (provider == null) {
             throw new IllegalArgumentException("Tool provider is not available: " + request.binding().providerId());
         }
-        // P1 先把 MCP 纳入通用审批。Node 的直接 API 仍保留原审批实体，P3 协议迁移时再统一历史入口。
-        if (("mcp".equals(request.binding().providerId())
-                || "skill-authoring".equals(request.binding().providerId()))
-                && request.approvalMode().requiresApproval(request.binding())
-                && (request.approvalId() == null || request.approvalId().isBlank())) {
+        AgentApprovalPolicy.Decision agentDecision = request.agentApprovalPolicy().decisionFor(request.binding());
+        boolean alreadyApproved = request.approvalId() != null && !request.approvalId().isBlank();
+        if (agentDecision == AgentApprovalPolicy.Decision.DENY && !alreadyApproved) {
+            return new ToolProviderResult(
+                    "DENIED",
+                    false,
+                    Map.of(
+                            "code", "AGENT_POLICY_DENIED",
+                            "riskLevel", request.binding().riskLevel().name(),
+                            "tool", request.binding().logicalName()),
+                    "The Agent approval policy denies this "
+                            + request.binding().riskLevel().name().toLowerCase(Locale.ROOT)
+                            + "-risk operation.",
+                    null);
+        }
+        boolean requiresApproval = agentDecision == AgentApprovalPolicy.Decision.ASK
+                || request.approvalMode().requiresApproval(request.binding());
+        if (requiresApproval && !alreadyApproved) {
             if (approvals == null) {
                 return new ToolProviderResult(
-                        "FAILED", false, Map.of(), "MCP tool approval service is unavailable.", null);
+                        "FAILED", false, Map.of(), "Tool approval service is unavailable.", null);
             }
             ToolApprovalView approval = approvals.request(request);
             return new ToolProviderResult(

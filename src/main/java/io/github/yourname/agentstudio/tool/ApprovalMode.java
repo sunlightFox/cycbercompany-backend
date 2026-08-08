@@ -65,7 +65,9 @@ public enum ApprovalMode {
             return true;
         }
         if (this == AUTO_APPROVE) {
-            return binding != null && binding.riskLevel() != RiskLevel.HIGH;
+            return binding != null
+                    && binding.riskLevel() != null
+                    && binding.riskLevel().ordinal() < RiskLevel.HIGH.ordinal();
         }
         return false;
     }

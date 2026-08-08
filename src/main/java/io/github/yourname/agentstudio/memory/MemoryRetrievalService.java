@@ -50,11 +50,12 @@ public class MemoryRetrievalService {
         double[] queryVector = "KEYWORD".equals(retrievalMode) || normalizedQuery.isBlank()
                 ? null
                 : embeddings.embedForSearch(normalizedQuery).orElse(null);
+        Instant now = Instant.now();
         return memories.search(
-                        actor.tenantId(), actor.userId(), agentId, null, null, MemoryStatus.CONFIRMED.name(), null,
+                        actor.tenantId(), actor.userId(), agentId, null, false, null, MemoryStatus.CONFIRMED.name(), null, now,
                         PageRequest.of(0, 100)).stream()
                 .filter(item -> item.personaId() == null || item.personaId().equals(personaId))
-                .filter(item -> item.expiresAt() == null || item.expiresAt().isAfter(Instant.now()))
+                .filter(item -> item.expiresAt() == null || item.expiresAt().isAfter(now))
                 .map(item -> score(item, normalizedQuery, queryTerms, queryVector, retrievalMode))
                 .filter(scored -> normalizedQuery.isBlank() || scored.score() >= minRelevance)
                 .sorted(Comparator.comparingDouble(Scored::score).reversed()

@@ -24,6 +24,7 @@ $configDir = Join-Path $env:USERPROFILE ".agent-studio-node"
 $configPath = Join-Path $configDir "local-executor.json"
 $listener = [System.Net.HttpListener]::new()
 $listener.Prefixes.Add("http://127.0.0.1:$Port/")
+$script:startupProcess = $null
 
 function Write-JsonResponse {
     param($Context, [int]$StatusCode, $Payload)
@@ -38,6 +39,11 @@ function Write-JsonResponse {
     }
     $Context.Response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
     $Context.Response.Headers.Add("Access-Control-Allow-Headers", "Content-Type, Accept")
+    if ($StatusCode -eq 204) {
+        $Context.Response.ContentLength64 = 0
+        $Context.Response.Close()
+        return
+    }
     $Context.Response.ContentLength64 = $bytes.Length
     $Context.Response.OutputStream.Write($bytes, 0, $bytes.Length)
     $Context.Response.Close()
@@ -112,6 +118,22 @@ function Test-NodeOnline {
     } catch {
     }
     return $false
+}
+
+function Get-StartupProcess {
+    if ($null -eq $script:startupProcess) {
+        return $null
+    }
+    try {
+        if ($script:startupProcess.HasExited) {
+            $script:startupProcess = $null
+            return $null
+        }
+        return $script:startupProcess
+    } catch {
+        $script:startupProcess = $null
+        return $null
+    }
 }
 
 function Resolve-Workspace {
@@ -196,6 +218,8 @@ try {
                         Write-JsonResponse $context 405 @{ error = "Use GET for launcher health." }
                         continue
                     }
+                    $online = Test-NodeOnline
+                    $startupProcess = if ($online) { $null } else { Get-StartupProcess }
                     Write-JsonResponse $context 200 @{
                         service = "agent-studio-local-executor-launcher"
                         pid = $PID
@@ -204,7 +228,9 @@ try {
                         workspace = $Workspace
                         projectRoot = $ProjectRoot
                         available = $true
-                        online = (Test-NodeOnline)
+                        online = $online
+                        starting = $null -ne $startupProcess
+                        startupPid = if ($null -ne $startupProcess) { $startupProcess.Id } else { $null }
                         elevated = (Test-AgentStudioAdministrator)
                     }
                     continue
@@ -225,12 +251,26 @@ try {
                         }
                         continue
                     }
+                    $startupProcess = Get-StartupProcess
+                    if ($null -ne $startupProcess) {
+                        Write-JsonResponse $context 202 @{
+                            started = $false
+                            starting = $true
+                            online = $false
+                            elevated = (Test-AgentStudioAdministrator)
+                            pid = $startupProcess.Id
+                            message = "Local executor is already starting."
+                        }
+                        continue
+                    }
                     $nodeWorkspace = Resolve-Workspace $request.workspace
                     $process = Start-LocalNode $nodeWorkspace
+                    $script:startupProcess = $process
                     Write-JsonResponse $context 202 @{
                         started = $true
+                        starting = $true
                         online = $false
-                        elevated = $true
+                        elevated = (Test-AgentStudioAdministrator)
                         pid = $process.Id
                         message = "Local executor is starting with an administrator token."
                     }

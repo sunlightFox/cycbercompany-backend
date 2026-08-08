@@ -45,6 +45,7 @@ import io.github.yourname.agentstudio.mcp.UpsertMcpToolCommand;
 import io.github.yourname.agentstudio.orchestration.CreateRunCommand;
 import io.github.yourname.agentstudio.orchestration.ConversationQueueQueryService;
 import io.github.yourname.agentstudio.orchestration.RunCommandService;
+import io.github.yourname.agentstudio.orchestration.RunAuditService;
 import io.github.yourname.agentstudio.orchestration.RunEventPublisher;
 import io.github.yourname.agentstudio.orchestration.RunQueryService;
 import io.github.yourname.agentstudio.orchestration.RunWorkflowCheckpointService;
@@ -134,6 +135,7 @@ class AgentStudioController {
     private final KnowledgeSettingsService knowledgeSettings;
     private final RunCommandService runCommands;
     private final RunQueryService runQueries;
+    private final RunAuditService runAudits;
     private final RunWorkflowCheckpointService workflowCheckpoints;
     private final ConversationQueueQueryService conversationQueues;
     private final RunEventPublisher runEvents;
@@ -170,6 +172,7 @@ class AgentStudioController {
             KnowledgeSettingsService knowledgeSettings,
             RunCommandService runCommands,
             RunQueryService runQueries,
+            RunAuditService runAudits,
             RunWorkflowCheckpointService workflowCheckpoints,
             ConversationQueueQueryService conversationQueues,
             RunEventPublisher runEvents,
@@ -196,6 +199,7 @@ class AgentStudioController {
         this.knowledgeSettings = knowledgeSettings;
         this.runCommands = runCommands;
         this.runQueries = runQueries;
+        this.runAudits = runAudits;
         this.workflowCheckpoints = workflowCheckpoints;
         this.conversationQueues = conversationQueues;
         this.runEvents = runEvents;
@@ -895,6 +899,11 @@ class AgentStudioController {
     @GetMapping("/runs/{id}")
     Object getRun(@PathVariable String id, HttpServletRequest request) {
         return runQueries.get(id, actors.current(request));
+    }
+
+    @GetMapping("/runs/{id}/audit")
+    Object getRunAudit(@PathVariable String id, HttpServletRequest request) {
+        return runAudits.get(id, actors.current(request));
     }
 
     @GetMapping("/runs/{id}/workflow")

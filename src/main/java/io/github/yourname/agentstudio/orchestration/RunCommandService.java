@@ -3,6 +3,7 @@ package io.github.yourname.agentstudio.orchestration;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.yourname.agentstudio.agent.AgentCatalog;
+import io.github.yourname.agentstudio.agent.AgentCollaboratorRuntimeDefinition;
 import io.github.yourname.agentstudio.agent.AgentRuntimeDefinition;
 import io.github.yourname.agentstudio.agent.AgentRuntimeDefinitionService;
 import io.github.yourname.agentstudio.config.AppProperties;
@@ -37,6 +38,7 @@ import io.github.yourname.agentstudio.tool.WebSearchResult;
 import io.github.yourname.agentstudio.tool.WebSearchTrace;
 import io.github.yourname.agentstudio.tool.CodingWorkspaceScope;
 import io.github.yourname.agentstudio.tool.ApprovalMode;
+import io.github.yourname.agentstudio.tool.AgentApprovalPolicy;
 import io.github.yourname.agentstudio.tool.ResolvedToolBinding;
 import io.github.yourname.agentstudio.tool.ToolDiscoveryRequest;
 import io.github.yourname.agentstudio.tool.ToolInvocationRequest;
@@ -226,12 +228,32 @@ public class RunCommandService {
         if (!model.enabled()) {
             throw new IllegalArgumentException("Model profile is disabled: " + modelId);
         }
+        if (agent.collaborators().stream().anyMatch(AgentCollaboratorRuntimeDefinition::asTool)
+                && !model.capabilities().contains(ModelCapability.TOOLS)) {
+            throw new IllegalArgumentException(
+                    "The primary model must support tool calling when AS_TOOL collaborators are configured: "
+                            + modelId);
+        }
+        for (AgentCollaboratorRuntimeDefinition collaborator : agent.collaborators()) {
+            if (!collaborator.supported()) {
+                throw new IllegalArgumentException(
+                        "Unsupported collaborator mode for Agent: "
+                                + collaborator.agentId());
+            }
+            String collaboratorModelId = blankToDefault(collaborator.defaultModelProfileId(), modelId);
+            var collaboratorModel = models.get(collaboratorModelId);
+            if (!collaboratorModel.enabled()
+                    || !collaboratorModel.capabilities().contains(ModelCapability.TEXT)) {
+                throw new IllegalArgumentException(
+                        "Collaborator Agent requires an enabled text model: " + collaborator.agentId());
+            }
+        }
         if (executionMode.usesNativeToolLoop()
                 && !model.capabilities().contains(ModelCapability.TOOLS)) {
             throw new IllegalArgumentException("Selected model does not support native tool calling: " + modelId);
         }
         String runId = UUID.randomUUID().toString();
-        List<ResolvedToolBinding> toolBindings = toolRouter.resolve(
+        List<ResolvedToolBinding> resolvedToolBindings = toolRouter.resolve(
                 new ToolDiscoveryRequest(
                         runId,
                         command.nodeId(),
@@ -241,6 +263,10 @@ public class RunCommandService {
                         actor),
                 command.toolNames(),
                 agent.toolAllowList());
+        List<ResolvedToolBinding> toolBindings = resolvedToolBindings.stream()
+                .filter(binding -> agent.approvalPolicy().decisionFor(binding)
+                        != io.github.yourname.agentstudio.tool.AgentApprovalPolicy.Decision.DENY)
+                .toList();
         if (executionMode.usesNativeToolLoop()
                 && toolBindings.stream().noneMatch(binding -> "node".equals(binding.providerId()))) {
             throw new IllegalArgumentException(
@@ -266,9 +292,11 @@ public class RunCommandService {
                 "agentAllowList", agent.toolAllowList(),
                 "agentVersionId", agent.agentVersionId(),
                 "agentManifestDigest", agent.agentManifestDigest(),
+                "collaborators", agent.collaborators(),
                 "requestedTools", command.toolNames() == null ? List.of() : command.toolNames(),
                 "requestedSandboxLabels", command.nodeLabels() == null ? List.of() : command.nodeLabels(),
                 "approvalMode", approvalMode.wireValue(),
+                "agentApprovalPolicy", agent.approvalPolicy(),
                 "executionMode", executionMode.name())));
         RunSpec runSpec = new RunSpec(
                 RunSpec.CURRENT_VERSION,
@@ -283,6 +311,8 @@ public class RunCommandService {
                 agentPromptDigest,
                 agent.toolAllowList(),
                 agent.memoryPolicyJson(),
+                agent.approvalPolicy(),
+                agent.collaborators(),
                 skillBindings,
                 skillSnapshotDigest,
                 skillInstructionsDigest,
@@ -485,6 +515,8 @@ public class RunCommandService {
     private void execute(String runId, RunSpec spec, ActorContext actor) {
         CreateRunCommand command = spec.commandSnapshot();
         String attachmentContext = spec.attachmentContext();
+        EvidenceBundle evidence = new EvidenceBundle(List.of());
+        List<WebSearchResult> webResults = List.of();
         try {
             CodingWorkspaceScope workspaceScope = CodingWorkspaceScope.from(command.workingDirectory());
             AgentRunEntity run = runs.findByIdAndTenantId(runId, actor.tenantId()).orElseThrow();
@@ -508,23 +540,27 @@ public class RunCommandService {
             }
             // 预检索与模型工具调用使用同一份 RunSpec binding。这样 Agent/Run 没有授权的
             // knowledge_search、web_search 或 MCP 工具，不会因为“自动检索”路径而被绕过。
-            boolean webSearchRequested = shouldSearchWeb(command, spec.toolBindings());
+            ApprovalMode runApprovalMode = ApprovalMode.from(spec.approvalMode());
+            boolean webSearchRequested = shouldSearchWeb(
+                    command, spec.toolBindings(), runApprovalMode, spec.agentApprovalPolicySnapshot());
             publishProgress(runId,
                     webSearchRequested ? "正在检索知识库和网页信息。" : "正在检查可用上下文并准备回答。",
                     actor);
-            EvidenceBundle evidence = suppressAutomaticKnowledgeForCurrentWebRequest(command, webSearchRequested)
+            evidence = suppressAutomaticKnowledgeForCurrentWebRequest(command, webSearchRequested)
                     ? new EvidenceBundle(List.of())
-                    : invokeKnowledgeRetrieval(spec.toolBindings(), command.text(), runId, workspaceScope, actor);
+                    : invokeKnowledgeRetrieval(
+                            spec.toolBindings(), command.text(), runId, workspaceScope, actor,
+                            runApprovalMode, spec.agentApprovalPolicySnapshot());
 
             String webQuery = webSearchQuery(command.text());
             String webRetrievalNote = "";
             String webRetrievalTrace = "";
-            List<WebSearchResult> webResults = List.of();
             List<McpToolCallResult> mcpResults = List.of();
             if (webSearchRequested) {
                 try {
                     WebSearchResponse response = invokeWebRetrieval(
-                            spec.toolBindings(), webQuery, runId, workspaceScope, actor);
+                            spec.toolBindings(), webQuery, runId, workspaceScope, actor,
+                            runApprovalMode, spec.agentApprovalPolicySnapshot());
                     webResults = response.results();
                     List<WebSearchResult> verifiedCurrentResults = webResults.stream()
                             .filter(RunCommandService::isVerifiedWebResult)
@@ -555,7 +591,9 @@ public class RunCommandService {
                         webQuery.isBlank() ? command.text() : webQuery,
                         runId,
                         workspaceScope,
-                        actor);
+                        actor,
+                        runApprovalMode,
+                        spec.agentApprovalPolicySnapshot());
             }
             events.publish(
                     runId,
@@ -601,29 +639,27 @@ public class RunCommandService {
                                 messages,
                                 actor,
                                 workspaceScope,
-                                approvalMode)
-                        : approvalMode == ApprovalMode.ON_REQUEST
-                                ? codingAgentLoop.execute(
-                                        runId,
-                                        run.modelProfileId(),
-                                        spec.toolBindings(),
-                                        messages,
-                                        actor,
-                                        workspaceScope)
-                                : codingAgentLoop.execute(
-                                        runId,
-                                        run.modelProfileId(),
-                                        spec.toolBindings(),
-                                        messages,
-                                        actor,
-                                        workspaceScope,
-                                        approvalMode));
+                                approvalMode,
+                                spec.agentApprovalPolicySnapshot())
+                        : codingAgentLoop.execute(
+                                runId,
+                                run.modelProfileId(),
+                                spec.toolBindings(),
+                                messages,
+                                actor,
+                                workspaceScope,
+                                approvalMode,
+                                spec.agentApprovalPolicySnapshot()));
                 events.publish(runId, RunEventType.STEP_COMPLETED, agentStep, actor);
+            } else if (!spec.collaboratorBindings().isEmpty()) {
+                answerContent = executeCollaborativeConversation(
+                        runId, run.modelProfileId(), messages, spec.collaboratorBindings(), command, actor);
             } else {
                 var request = new ModelGateway.ModelCompletionRequest(run.modelProfileId(), messages);
                 // Provider delta 不是可信的用户文本。过滤器会跨 delta 保存标签前缀，只有确认
                 // 属于普通文本后才发布 TOKEN_DELTA；完整响应仍会在下面经过最终清理。
                 ModelGateway.ModelAnswer answer;
+                long startedNanos = System.nanoTime();
                 if (modelGateway.supportsStreaming()) {
                     StreamingOutputFilter filter = new StreamingOutputFilter(token ->
                             events.publish(runId, RunEventType.TOKEN_DELTA, token, actor));
@@ -633,6 +669,9 @@ public class RunCommandService {
                 } else {
                     answer = modelGateway.complete(request);
                 }
+                RunModelUsage.publish(
+                        events, objectMapper, runId, "conversation", run.modelProfileId(),
+                        answer, startedNanos, actor);
                 answerContent = sanitizeModelOutput(answer.content());
             }
             publishProgress(runId, "正在整理最终回答。", actor);
@@ -650,7 +689,8 @@ public class RunCommandService {
             events.publish(runId, RunEventType.STEP_COMPLETED, "single-agent", actor);
             events.publish(runId, RunEventType.FINAL_ANSWER, answerContent, actor);
         } catch (CodingApprovalRequiredException approvalRequired) {
-            suspendForApproval(runId, command.nodeId(), command.workingDirectory(), approvalRequired, actor);
+            suspendForApproval(runId, command.nodeId(), command.workingDirectory(), approvalRequired, actor,
+                    evidence, webResults);
         } catch (Exception ex) {
             failUnlessCancelled(runId, ex, actor);
         }
@@ -709,6 +749,8 @@ public class RunCommandService {
         }
 
         List<ModelGateway.ModelMessage> messages = deserializeMessages(continuation.messagesJson());
+        EvidenceBundle continuationEvidence = deserializeEvidence(continuation.evidenceJson());
+        List<WebSearchResult> continuationWebResults = deserializeWebResults(continuation.webResultsJson());
         messages.add(ModelGateway.ModelMessage.toolResult(approval.toolCallId(), approvalResult(decision)));
         continuations.delete(continuation);
         run.resume();
@@ -720,7 +762,7 @@ public class RunCommandService {
         var queueKey = new ConversationRunQueue.QueueKey(actor.tenantId(), run.conversationId());
         scheduleAfterCommit(() -> {
             Runnable worker = () -> executions.submit(run.id(), () -> executeResumedQueued(
-                    run.id(), messages, actor, queueKey));
+                    run.id(), messages, continuationEvidence, continuationWebResults, actor, queueKey));
             if (!queue.resume(queueKey, run.id(), worker)) {
                 // Runs created before queueing was introduced have no in-memory queue reservation.
                 worker.run();
@@ -750,6 +792,8 @@ public class RunCommandService {
         RunSpec spec = deserializeRunSpec(run);
         ActorContext executionActor = spec.actor();
         List<ModelGateway.ModelMessage> messages = deserializeMessages(continuation.messagesJson());
+        EvidenceBundle continuationEvidence = deserializeEvidence(continuation.evidenceJson());
+        List<WebSearchResult> continuationWebResults = deserializeWebResults(continuation.webResultsJson());
         messages.add(ModelGateway.ModelMessage.toolResult(
                 approval.toolCallId(), approvalResult(decision)));
         continuations.delete(continuation);
@@ -762,7 +806,7 @@ public class RunCommandService {
         var queueKey = new ConversationRunQueue.QueueKey(executionActor.tenantId(), run.conversationId());
         scheduleAfterCommit(() -> {
             Runnable worker = () -> executions.submit(run.id(), () -> executeResumedQueued(
-                    run.id(), messages, executionActor, queueKey));
+                    run.id(), messages, continuationEvidence, continuationWebResults, executionActor, queueKey));
             if (!queue.resume(queueKey, run.id(), worker)) {
                 worker.run();
             }
@@ -772,6 +816,8 @@ public class RunCommandService {
     private void executeResumedQueued(
             String runId,
             List<ModelGateway.ModelMessage> messages,
+            EvidenceBundle evidence,
+            List<WebSearchResult> webResults,
             ActorContext actor,
             ConversationRunQueue.QueueKey queueKey) {
         if (!claimPersistentTask(runId)) {
@@ -779,7 +825,7 @@ public class RunCommandService {
             return;
         }
         try {
-            executeResumedCoding(runId, messages, actor);
+            executeResumedCoding(runId, messages, evidence, webResults, actor);
         } finally {
             synchronizePersistentTask(runId, actor);
             releaseQueueSlotWhenTerminal(runId, actor, queueKey);
@@ -789,6 +835,8 @@ public class RunCommandService {
     private void executeResumedCoding(
             String runId,
             List<ModelGateway.ModelMessage> messages,
+            EvidenceBundle evidence,
+            List<WebSearchResult> webResults,
             ActorContext actor) {
         try {
             AgentRunEntity run = runs.findByIdAndTenantId(runId, actor.tenantId()).orElseThrow();
@@ -815,26 +863,26 @@ public class RunCommandService {
                             messages,
                             actor,
                             workspaceScope,
-                            approvalMode)
-                    : approvalMode == ApprovalMode.ON_REQUEST
-                            ? codingAgentLoop.resume(
-                                    runId,
-                                    run.modelProfileId(),
-                                    spec.toolBindings(),
-                                    messages,
-                                    actor,
-                                    workspaceScope)
-                            : codingAgentLoop.resume(
-                                    runId,
-                                    run.modelProfileId(),
-                                    spec.toolBindings(),
-                                    messages,
-                                    actor,
-                                    workspaceScope,
-                                    approvalMode));
+                            approvalMode,
+                            spec.agentApprovalPolicySnapshot())
+                    : codingAgentLoop.resume(
+                            runId,
+                            run.modelProfileId(),
+                            spec.toolBindings(),
+                            messages,
+                            actor,
+                            workspaceScope,
+                            approvalMode,
+                            spec.agentApprovalPolicySnapshot()));
             events.publish(runId, RunEventType.STEP_COMPLETED, agentStep, actor);
             publishProgress(runId, "正在整理最终回答。", actor);
             answer = finalizeCodingDelivery(run, command, spec.executionMode(), answer, actor);
+            publishCitedRetrievalSources(
+                    runId,
+                    evidence,
+                    webResults,
+                    answer,
+                    actor);
             for (String part : tokenBatches(answer)) {
                 events.publish(runId, RunEventType.TOKEN_DELTA, part, actor);
             }
@@ -846,10 +894,160 @@ public class RunCommandService {
         } catch (CodingApprovalRequiredException approvalRequired) {
             AgentRunEntity run = runs.findByIdAndTenantId(runId, actor.tenantId()).orElseThrow();
             RunSpec spec = deserializeRunSpec(run);
-            suspendForApproval(runId, spec.nodeId(), spec.workingDirectory(), approvalRequired, actor);
+            suspendForApproval(runId, spec.nodeId(), spec.workingDirectory(), approvalRequired, actor,
+                    evidence,
+                    webResults);
         } catch (Exception ex) {
             failUnlessCancelled(runId, ex, actor);
         }
+    }
+
+    private String executeCollaborativeConversation(
+            String runId,
+            String primaryModelProfileId,
+            List<ModelGateway.ModelMessage> messages,
+            List<AgentCollaboratorRuntimeDefinition> collaborators,
+            CreateRunCommand command,
+            ActorContext actor) {
+        List<AgentCollaboratorRuntimeDefinition> handoffs = collaborators.stream()
+                .filter(AgentCollaboratorRuntimeDefinition::handoff)
+                .toList();
+        if (!handoffs.isEmpty()) {
+            if (handoffs.size() != 1 || collaborators.stream().anyMatch(AgentCollaboratorRuntimeDefinition::asTool)) {
+                throw new IllegalArgumentException("HANDOFF cannot be combined with AS_TOOL collaborators.");
+            }
+            AgentCollaboratorRuntimeDefinition collaborator = handoffs.getFirst();
+            events.publish(
+                    runId,
+                    RunEventType.STEP_STARTED,
+                    "collaborator=" + collaborator.displayName() + ", mode=HANDOFF",
+                    actor);
+            String collaboratorModelId = blankToDefault(
+                    collaborator.defaultModelProfileId(), primaryModelProfileId);
+            List<ModelGateway.ModelMessage> handoffMessages = List.of(
+                    new ModelGateway.ModelMessage(
+                            "system",
+                            collaborator.systemPrompt()
+                                    + "\n\nYou own this task as the delegated Agent."
+                                    + " Complete it directly, stay within your published role,"
+                                    + " and do not claim to have used unavailable tools or data."),
+                    new ModelGateway.ModelMessage("user", command.text()));
+            ModelGateway.ModelAnswer handoffAnswer = completeModelCall(
+                    runId,
+                    "handoff",
+                    new ModelGateway.ModelCompletionRequest(collaboratorModelId, handoffMessages),
+                    actor);
+            String result = sanitizeModelOutput(handoffAnswer.content());
+            if (result.isBlank()) result = "The delegated Agent returned no usable answer.";
+            events.publish(
+                    runId,
+                    RunEventType.STEP_COMPLETED,
+                    "collaborator=" + collaborator.displayName() + ", mode=HANDOFF",
+                    actor);
+            return result;
+        }
+        Map<String, AgentCollaboratorRuntimeDefinition> byToolName = new LinkedHashMap<>();
+        List<ModelGateway.ModelTool> tools = new ArrayList<>();
+        for (int index = 0; index < collaborators.size(); index++) {
+            AgentCollaboratorRuntimeDefinition collaborator = collaborators.get(index);
+            String toolName = "consult_agent_" + (index + 1);
+            byToolName.put(toolName, collaborator);
+            tools.add(new ModelGateway.ModelTool(
+                    toolName,
+                    "Consult " + collaborator.displayName() + " when: " + collaborator.when()
+                            + ". The collaborator returns analysis only and cannot execute tools.",
+                    Map.of(
+                            "type", "object",
+                            "properties", Map.of(
+                                    "task", Map.of(
+                                            "type", "string",
+                                            "description", "The focused question or task for this collaborator.")),
+                            "required", List.of("task"),
+                            "additionalProperties", false)));
+        }
+
+        ModelGateway.ModelAnswer routing = completeModelCall(runId, "collaboration-routing", new ModelGateway.ModelCompletionRequest(
+                primaryModelProfileId,
+                messages,
+                tools,
+                ModelGateway.ToolChoice.AUTO), actor);
+        List<ModelGateway.ModelToolCall> requested = routing.toolCalls() == null
+                ? List.of()
+                : routing.toolCalls().stream().limit(4).toList();
+        if (requested.isEmpty()) {
+            return sanitizeModelOutput(routing.content());
+        }
+
+        messages.add(ModelGateway.ModelMessage.assistantToolCalls(routing.content(), requested));
+        for (ModelGateway.ModelToolCall call : requested) {
+            AgentCollaboratorRuntimeDefinition collaborator = byToolName.get(call.name());
+            if (collaborator == null) {
+                messages.add(ModelGateway.ModelMessage.toolResult(
+                        call.id(), "The requested collaborator is not bound to this Agent."));
+                continue;
+            }
+            String task = collaboratorTask(call.arguments(), command.text());
+            events.publish(
+                    runId,
+                    RunEventType.STEP_STARTED,
+                    "collaborator=" + collaborator.displayName() + ", mode=AS_TOOL",
+                    actor);
+            String collaboratorModelId = blankToDefault(
+                    collaborator.defaultModelProfileId(), primaryModelProfileId);
+            List<ModelGateway.ModelMessage> collaboratorMessages = List.of(
+                    new ModelGateway.ModelMessage(
+                            "system",
+                            collaborator.systemPrompt()
+                                    + "\n\nYou are acting as a bounded expert collaborator. "
+                                    + "Analyze only the delegated task. Do not claim to have used tools, "
+                                    + "memory, or external data. Return concise evidence and recommendations "
+                                    + "to the primary Agent."),
+                    new ModelGateway.ModelMessage("user", task));
+            ModelGateway.ModelAnswer collaboratorAnswer = completeModelCall(
+                    runId,
+                    "collaborator",
+                    new ModelGateway.ModelCompletionRequest(collaboratorModelId, collaboratorMessages),
+                    actor);
+            String result = sanitizeModelOutput(collaboratorAnswer.content());
+            if (result.isBlank()) {
+                result = "The collaborator returned no usable analysis.";
+            }
+            messages.add(ModelGateway.ModelMessage.toolResult(call.id(), result));
+            events.publish(
+                    runId,
+                    RunEventType.STEP_COMPLETED,
+                    "collaborator=" + collaborator.displayName() + ", mode=AS_TOOL",
+                    actor);
+        }
+
+        ModelGateway.ModelAnswer synthesis = completeModelCall(
+                runId,
+                "collaboration-synthesis",
+                new ModelGateway.ModelCompletionRequest(primaryModelProfileId, messages),
+                actor);
+        return sanitizeModelOutput(synthesis.content());
+    }
+
+    private ModelGateway.ModelAnswer completeModelCall(
+            String runId,
+            String phase,
+            ModelGateway.ModelCompletionRequest request,
+            ActorContext actor) {
+        long startedNanos = System.nanoTime();
+        ModelGateway.ModelAnswer answer = modelGateway.complete(request);
+        RunModelUsage.publish(
+                events, objectMapper, runId, phase, request.modelProfileId(),
+                answer, startedNanos, actor);
+        return answer;
+    }
+
+    private static String collaboratorTask(Map<String, Object> arguments, String fallback) {
+        Object value = arguments == null ? null : arguments.get("task");
+        String task = value == null ? "" : String.valueOf(value).trim();
+        if (task.isBlank()) {
+            task = fallback == null ? "" : fallback.trim();
+        }
+        return task.length() <= 4_000 ? task : task.substring(0, 4_000);
     }
 
     /** Publishes a user-visible status without exposing hidden model reasoning or raw arguments. */
@@ -963,7 +1161,9 @@ public class RunCommandService {
             String nodeId,
             String workingDirectory,
             CodingApprovalRequiredException approvalRequired,
-            ActorContext actor) {
+            ActorContext actor,
+            EvidenceBundle evidence,
+            List<WebSearchResult> webResults) {
         AgentRunEntity run = runs.findByIdAndTenantId(runId, actor.tenantId()).orElseThrow();
         if (run.status() != RunStatus.RUNNING) {
             throw new IllegalStateException("Cannot suspend a coding run that is not running: " + runId);
@@ -976,6 +1176,8 @@ public class RunCommandService {
                 approvalRequired.approvalId(),
                 approvalRequired.toolCallId(),
                 serializeMessages(approvalRequired.messages()),
+                serializeForDigest(evidence == null ? new EvidenceBundle(List.of()) : evidence),
+                serializeForDigest(webResults == null ? List.of() : webResults),
                 Instant.now()));
         run.waitForApproval();
         runs.save(run);
@@ -990,6 +1192,27 @@ public class RunCommandService {
                 RunEventType.RUN_WAITING_APPROVAL,
                 "approvalId=" + approvalRequired.approvalId(),
                 actor);
+    }
+
+    private EvidenceBundle deserializeEvidence(String value) {
+        try {
+            List<EvidenceBundle.Evidence> evidence = objectMapper.readValue(
+                    value == null || value.isBlank() ? "[]" : value,
+                    new TypeReference<List<EvidenceBundle.Evidence>>() { });
+            return new EvidenceBundle(evidence);
+        } catch (Exception ignored) {
+            return new EvidenceBundle(List.of());
+        }
+    }
+
+    private List<WebSearchResult> deserializeWebResults(String value) {
+        try {
+            return objectMapper.readValue(
+                    value == null || value.isBlank() ? "[]" : value,
+                    new TypeReference<List<WebSearchResult>>() { });
+        } catch (Exception ignored) {
+            return List.of();
+        }
     }
 
     private void failUnlessCancelled(String runId, Exception ex, ActorContext actor) {
@@ -1696,13 +1919,16 @@ public class RunCommandService {
             String query,
             String runId,
             CodingWorkspaceScope workspaceScope,
-            ActorContext actor) {
+            ActorContext actor,
+            ApprovalMode approvalMode,
+            AgentApprovalPolicy agentApprovalPolicy) {
         ResolvedToolBinding binding = findBinding(bindings, "backend", "knowledge_search");
-        if (binding == null) {
+        if (!canRunAutomaticTool(binding, approvalMode, agentApprovalPolicy)) {
             return new EvidenceBundle(List.of());
         }
         ToolProviderResult result = invokeBoundTool(
-                runId, "retrieval_knowledge", binding, Map.of("query", query, "limit", 5), workspaceScope, actor);
+                runId, "retrieval_knowledge", binding, Map.of("query", query, "limit", 5), workspaceScope, actor,
+                approvalMode, agentApprovalPolicy);
         if (!result.succeeded()) {
             throw new IllegalStateException("Knowledge retrieval failed: " + result.errorMessage());
         }
@@ -1721,13 +1947,16 @@ public class RunCommandService {
             String query,
             String runId,
             CodingWorkspaceScope workspaceScope,
-            ActorContext actor) {
+            ActorContext actor,
+            ApprovalMode approvalMode,
+            AgentApprovalPolicy agentApprovalPolicy) {
         ResolvedToolBinding binding = findBinding(bindings, "backend", "web_search");
         if (binding == null) {
             throw new IllegalStateException("web_search is not available in the immutable RunSpec.");
         }
         ToolProviderResult result = invokeBoundTool(
-                runId, "retrieval_web", binding, Map.of("query", query, "limit", 5), workspaceScope, actor);
+                runId, "retrieval_web", binding, Map.of("query", query, "limit", 5), workspaceScope, actor,
+                approvalMode, agentApprovalPolicy);
         if (!result.succeeded()) {
             throw new IllegalStateException("Web retrieval failed: " + result.errorMessage());
         }
@@ -1751,7 +1980,9 @@ public class RunCommandService {
             String query,
             String runId,
             CodingWorkspaceScope workspaceScope,
-            ActorContext actor) {
+            ActorContext actor,
+            ApprovalMode approvalMode,
+            AgentApprovalPolicy agentApprovalPolicy) {
         List<McpToolCallResult> results = new ArrayList<>();
         int index = 0;
         for (ResolvedToolBinding binding : bindings == null ? List.<ResolvedToolBinding>of() : bindings) {
@@ -1759,7 +1990,7 @@ public class RunCommandService {
                 continue;
             }
             // 后台预检索不能替用户批准有副作用的 MCP 工具；模型仍可在正式循环中请求并暂停审批。
-            if (binding.requiresApproval()) {
+            if (!canRunAutomaticTool(binding, approvalMode, agentApprovalPolicy)) {
                 continue;
             }
             ToolProviderResult result = invokeBoundTool(
@@ -1768,7 +1999,9 @@ public class RunCommandService {
                     binding,
                     Map.of("query", query),
                     workspaceScope,
-                    actor);
+                    actor,
+                    approvalMode,
+                    agentApprovalPolicy);
             try {
                 List<Map<String, Object>> content = objectMapper.convertValue(
                         result.result().getOrDefault("content", List.of()),
@@ -1799,9 +2032,12 @@ public class RunCommandService {
             ResolvedToolBinding binding,
             Map<String, Object> arguments,
             CodingWorkspaceScope workspaceScope,
-            ActorContext actor) {
+            ActorContext actor,
+            ApprovalMode approvalMode,
+            AgentApprovalPolicy agentApprovalPolicy) {
         ToolProviderResult result = toolRouter.invoke(new ToolInvocationRequest(
-                runId, toolCallId, binding, arguments, null, workspaceScope, actor));
+                runId, toolCallId, binding, arguments, null, workspaceScope, actor, null,
+                approvalMode, agentApprovalPolicy));
         if (result == null) {
             throw new IllegalStateException("ToolProvider returned no result for " + binding.bindingId() + ".");
         }
@@ -1821,9 +2057,26 @@ public class RunCommandService {
 
     private static boolean shouldSearchWeb(
             CreateRunCommand command,
-            List<ResolvedToolBinding> bindings) {
-        return findBinding(bindings, "backend", "web_search") != null
+            List<ResolvedToolBinding> bindings,
+            ApprovalMode approvalMode,
+            AgentApprovalPolicy agentApprovalPolicy) {
+        return canRunAutomaticTool(findBinding(bindings, "backend", "web_search"), approvalMode, agentApprovalPolicy)
                 && requestsExternalSearch(command.text());
+    }
+
+    private static boolean canRunAutomaticTool(
+            ResolvedToolBinding binding,
+            ApprovalMode approvalMode,
+            AgentApprovalPolicy agentApprovalPolicy) {
+        if (binding == null) {
+            return false;
+        }
+        ApprovalMode runMode = approvalMode == null ? ApprovalMode.ON_REQUEST : approvalMode;
+        AgentApprovalPolicy policy = agentApprovalPolicy == null
+                ? AgentApprovalPolicy.sessionOnly()
+                : agentApprovalPolicy;
+        return policy.decisionFor(binding) == AgentApprovalPolicy.Decision.ALLOW
+                && !runMode.requiresApproval(binding);
     }
 
     private static boolean suppressAutomaticKnowledgeForCurrentWebRequest(
@@ -1890,9 +2143,25 @@ public class RunCommandService {
 
     private static boolean isVerifiedWebResult(WebSearchResult result) {
         return result != null
+                && isSafeExternalUrl(result.url())
                 && result.evidence() != null
                 && result.evidence().readable()
                 && result.evidence().relevant();
+    }
+
+    static boolean isSafeExternalUrl(String value) {
+        if (value == null || value.isBlank()) {
+            return false;
+        }
+        try {
+            java.net.URI uri = java.net.URI.create(value.trim());
+            return uri.isAbsolute()
+                    && uri.getHost() != null
+                    && ("http".equalsIgnoreCase(uri.getScheme())
+                            || "https".equalsIgnoreCase(uri.getScheme()));
+        } catch (IllegalArgumentException ignored) {
+            return false;
+        }
     }
 
     private static boolean isCurrentInformationRequest(String text) {
@@ -2119,7 +2388,8 @@ public class RunCommandService {
         if (suppressesLocalToolAutoSelection(normalized)) {
             return false;
         }
-        boolean namesLocalPath = normalized.matches("(?s).*(?:[a-z]:[\\\\/]|/home/|/users/|/workspace/|~/).*");
+        boolean namesLocalPath = normalized.matches(
+                "(?s).*(?:(?<![a-z0-9])[a-z]:[\\\\/]|\\\\\\\\[^\\s]+|(?:^|\\s)/(?:home|users|workspace|mnt|opt|srv|var|tmp)/|(?:^|\\s)~/).*");
         boolean requestsChange = normalized.matches(
                 "(?s).*(create|build|make|develop|implement|fix|refactor|update|modify|run|test|debug|"
                         + "\\u521b\\u5efa|\\u65b0\\u5efa|\\u5f00\\u53d1|\\u5b9e\\u73b0|\\u4fee\\u590d|\\u91cd\\u6784|"

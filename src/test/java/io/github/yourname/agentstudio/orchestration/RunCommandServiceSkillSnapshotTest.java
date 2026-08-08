@@ -13,6 +13,7 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.yourname.agentstudio.agent.AgentCatalog;
+import io.github.yourname.agentstudio.agent.AgentCollaboratorRuntimeDefinition;
 import io.github.yourname.agentstudio.agent.AgentDefinitionView;
 import io.github.yourname.agentstudio.agent.AgentRuntimeDefinition;
 import io.github.yourname.agentstudio.agent.AgentRuntimeDefinitionService;
@@ -44,6 +45,7 @@ import io.github.yourname.agentstudio.skill.CompatibilityReport;
 import io.github.yourname.agentstudio.tool.ToolRouter;
 import io.github.yourname.agentstudio.tool.ResolvedToolBinding;
 import io.github.yourname.agentstudio.tool.RiskLevel;
+import io.github.yourname.agentstudio.tool.ToolProviderResult;
 import java.util.Map;
 import java.util.List;
 import java.util.Optional;
@@ -60,6 +62,7 @@ class RunCommandServiceSkillSnapshotTest {
             new ActorContext("tenant-1", "user-1", Set.of("USER"), Set.of("agent:run"));
 
     private AgentRunRepository runs;
+    private CodingRunContinuationRepository continuations;
     private ConversationService conversations;
     private KnowledgeQueryService knowledge;
     private AgentCatalog agents;
@@ -80,6 +83,7 @@ class RunCommandServiceSkillSnapshotTest {
     @BeforeEach
     void setUp() {
         runs = mock(AgentRunRepository.class);
+        continuations = mock(CodingRunContinuationRepository.class);
         conversations = mock(ConversationService.class);
         knowledge = mock(KnowledgeQueryService.class);
         agents = mock(AgentCatalog.class);
@@ -120,7 +124,7 @@ class RunCommandServiceSkillSnapshotTest {
         service = new RunCommandService(
                 mock(AppProperties.class),
                 runs,
-                mock(CodingRunContinuationRepository.class),
+                continuations,
                 conversations,
                 mock(ConversationAttachmentService.class),
                 knowledge,
@@ -266,7 +270,7 @@ class RunCommandServiceSkillSnapshotTest {
         when(skills.resolveForRun(List.of())).thenReturn(List.of());
         when(skills.compileInstructions(List.of())).thenReturn("");
         when(conversations.history("conversation-1", ACTOR)).thenReturn(List.of());
-        when(codingAgentLoop.executeInteraction(anyString(), anyString(), any(), any(), any(), any(), any()))
+        when(codingAgentLoop.executeInteraction(anyString(), anyString(), any(), any(), any(), any(), any(), any()))
                 .thenReturn("done");
 
         service.create(commandForNode(), ACTOR);
@@ -286,7 +290,7 @@ class RunCommandServiceSkillSnapshotTest {
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<ResolvedToolBinding>> bindingCaptor = ArgumentCaptor.forClass(List.class);
         verify(codingAgentLoop).executeInteraction(
-                anyString(), anyString(), bindingCaptor.capture(), any(), any(), any(), any());
+                anyString(), anyString(), bindingCaptor.capture(), any(), any(), any(), any(), any());
         assertThat(bindingCaptor.getValue()).containsExactly(originalBinding);
         assertThat(persisted.runSpecJson())
                 .contains("Original immutable prompt")
@@ -295,6 +299,72 @@ class RunCommandServiceSkillSnapshotTest {
                 .doesNotContain("node:node-1:shell.run");
         verify(agents, times(1)).get("agent-1");
         verify(toolRouter, times(1)).resolve(any(), any(), anyString());
+    }
+
+    @Test
+    void initialApprovalPersistsRetrievalEvidenceForLaterCitation() {
+        ResolvedToolBinding knowledgeBinding = new ResolvedToolBinding(
+                "backend:knowledge_search",
+                "knowledge_search",
+                "knowledge_search",
+                "backend",
+                "knowledge_search",
+                "Search the bound knowledge base",
+                RiskLevel.LOW,
+                false,
+                Map.of("type", "object"),
+                Map.of());
+        ResolvedToolBinding nodeBinding = new ResolvedToolBinding(
+                "node:node-1:fs.write",
+                "tool_fs_write",
+                "fs.write",
+                "node",
+                "fs.write",
+                "Write a workspace file",
+                RiskLevel.HIGH,
+                true,
+                Map.of("type", "object"),
+                Map.of("nodeId", "node-1"));
+        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of(knowledgeBinding, nodeBinding));
+        when(skills.resolveForRun(List.of())).thenReturn(List.of());
+        when(skills.compileInstructions(List.of())).thenReturn("");
+        when(conversations.history("conversation-1", ACTOR)).thenReturn(List.of());
+        when(toolRouter.invoke(any())).thenReturn(new ToolProviderResult(
+                "SUCCEEDED",
+                true,
+                Map.of("matches", List.of(Map.<String, Object>of(
+                        "chunkId", 42L,
+                        "documentId", "doc-1",
+                        "knowledgeBaseId", "kb-1",
+                        "sourceName", "Operations guide",
+                        "chunkIndex", 1,
+                        "quote", "Use after approval.",
+                        "score", 0.9))),
+                "",
+                null));
+        when(codingAgentLoop.executeInteraction(anyString(), anyString(), any(), any(), any(), any(), any(), any()))
+                .thenThrow(new CodingApprovalRequiredException(
+                        "approval-1",
+                        "call-1",
+                        List.of(new ModelGateway.ModelMessage("user", "Inspect one file"))));
+
+        service.create(commandForNode(), ACTOR);
+        ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(runs).save(runCaptor.capture());
+        AgentRunEntity persisted = runCaptor.getValue();
+        when(runs.findById(persisted.id())).thenReturn(Optional.of(persisted));
+        when(runs.findByIdAndTenantId(persisted.id(), ACTOR.tenantId())).thenReturn(Optional.of(persisted));
+
+        queuedWorker.run();
+
+        ArgumentCaptor<CodingRunContinuationEntity> continuationCaptor =
+                ArgumentCaptor.forClass(CodingRunContinuationEntity.class);
+        verify(continuations).save(continuationCaptor.capture());
+        assertThat(continuationCaptor.getValue().evidenceJson())
+                .contains("kb-1")
+                .contains("Operations guide");
+        assertThat(continuationCaptor.getValue().webResultsJson()).isEqualTo("[]");
+        assertThat(persisted.status()).isEqualTo(RunStatus.WAITING_APPROVAL);
     }
 
     @Test
@@ -359,7 +429,7 @@ class RunCommandServiceSkillSnapshotTest {
         verify(runs).save(runCaptor.capture());
         RunSpec spec = new ObjectMapper().findAndRegisterModules()
                 .readValue(runCaptor.getValue().runSpecJson(), RunSpec.class);
-        assertThat(spec.version()).isEqualTo(2);
+        assertThat(spec.version()).isEqualTo(RunSpec.CURRENT_VERSION);
         assertThat(spec.agentVersionId()).isEqualTo("agent-version-7");
         assertThat(spec.agentManifestDigest()).isEqualTo("sha256:manifest-v7");
         assertThat(spec.agentMemoryPolicySnapshot()).contains("PERSONALIZED");
@@ -397,6 +467,142 @@ class RunCommandServiceSkillSnapshotTest {
                 persisted.id(),
                 "Review the project",
                 memoryPolicy,
+                ACTOR);
+    }
+
+    @Test
+    void conversationalRunConsultsBoundAgentAndLetsPrimaryAgentSynthesize() throws Exception {
+        AgentRuntimeDefinitionService runtimeDefinitions = mock(AgentRuntimeDefinitionService.class);
+        AgentCollaboratorRuntimeDefinition collaborator = new AgentCollaboratorRuntimeDefinition(
+                "research-agent",
+                "research-version-3",
+                "sha256:research-manifest",
+                "Research analyst",
+                "AS_TOOL",
+                "Use for evidence analysis",
+                "You verify evidence carefully.",
+                "sha256:research-prompt",
+                "model-1");
+        when(runtimeDefinitions.resolve("agent-1", ACTOR.tenantId(), ACTOR.userId())).thenReturn(
+                new AgentRuntimeDefinition(
+                        "agent-1",
+                        "agent-version-8",
+                        "sha256:manifest-v8",
+                        "Primary coordinator prompt",
+                        "sha256:prompt-v8",
+                        "",
+                        "model-1",
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(collaborator),
+                        "{}",
+                        true));
+        service.configureAgentRuntimeDefinitions(runtimeDefinitions);
+        when(skills.resolveForRun(List.of())).thenReturn(List.of());
+        when(skills.compileInstructions(List.of())).thenReturn("");
+        when(conversations.history("conversation-1", ACTOR)).thenReturn(List.of());
+        when(modelGateway.complete(any()))
+                .thenReturn(new ModelGateway.ModelAnswer(
+                        "",
+                        10,
+                        2,
+                        "model",
+                        List.of(new ModelGateway.ModelToolCall(
+                                "call-1",
+                                "consult_agent_1",
+                                Map.of("task", "Check the evidence"))),
+                        "tool_calls"))
+                .thenReturn(new ModelGateway.ModelAnswer(
+                        "The evidence supports the claim with one limitation.", 12, 5, "model"))
+                .thenReturn(new ModelGateway.ModelAnswer(
+                        "Final answer with the expert limitation.", 18, 7, "model"));
+
+        service.create(commandWithText("Assess this claim"), ACTOR);
+
+        ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(runs).save(runCaptor.capture());
+        AgentRunEntity persisted = runCaptor.getValue();
+        RunSpec spec = new ObjectMapper().findAndRegisterModules()
+                .readValue(persisted.runSpecJson(), RunSpec.class);
+        assertThat(spec.collaboratorBindings()).singleElement().isEqualTo(collaborator);
+        when(runs.findById(persisted.id())).thenReturn(Optional.of(persisted));
+        when(runs.findByIdAndTenantId(persisted.id(), ACTOR.tenantId())).thenReturn(Optional.of(persisted));
+
+        queuedWorker.run();
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<ModelGateway.ModelCompletionRequest> requestCaptor =
+                ArgumentCaptor.forClass(ModelGateway.ModelCompletionRequest.class);
+        verify(modelGateway, times(3)).complete(requestCaptor.capture());
+        List<ModelGateway.ModelCompletionRequest> requests = requestCaptor.getAllValues();
+        assertThat(requests.get(0).tools()).singleElement().satisfies(tool -> {
+            assertThat(tool.name()).isEqualTo("consult_agent_1");
+            assertThat(tool.description()).contains("Research analyst").contains("evidence analysis");
+        });
+        assertThat(requests.get(1).modelProfileId()).isEqualTo("model-1");
+        assertThat(requests.get(1).messages().getFirst().content())
+                .contains("You verify evidence carefully")
+                .contains("bounded expert collaborator");
+        assertThat(requests.get(2).messages())
+                .anySatisfy(message -> assertThat(message.content())
+                        .contains("The evidence supports the claim"));
+        assertThat(persisted.status()).isEqualTo(RunStatus.SUCCEEDED);
+        assertThat(persisted.finalAnswer()).isEqualTo("Final answer with the expert limitation.");
+        verify(events).publish(
+                persisted.id(),
+                RunEventType.STEP_STARTED,
+                "collaborator=Research analyst, mode=AS_TOOL",
+                ACTOR);
+    }
+
+    @Test
+    void handoffDelegatesTheTaskDirectlyToThePublishedCollaborator() throws Exception {
+        AgentRuntimeDefinitionService runtimeDefinitions = mock(AgentRuntimeDefinitionService.class);
+        AgentCollaboratorRuntimeDefinition collaborator = new AgentCollaboratorRuntimeDefinition(
+                "research-agent",
+                "research-version-4",
+                "sha256:research-manifest",
+                "Research analyst",
+                "HANDOFF",
+                "When the specialist should own the task",
+                "You verify evidence carefully.",
+                "sha256:research-prompt",
+                "model-1");
+        when(runtimeDefinitions.resolve("agent-1", ACTOR.tenantId(), ACTOR.userId())).thenReturn(
+                new AgentRuntimeDefinition(
+                        "agent-1", "agent-version-9", "sha256:manifest-v9", "Primary prompt",
+                        "sha256:prompt-v9", "", "model-1", List.of(), List.of(), List.of(),
+                        List.of(collaborator), "{}", true));
+        service.configureAgentRuntimeDefinitions(runtimeDefinitions);
+        when(skills.resolveForRun(List.of())).thenReturn(List.of());
+        when(skills.compileInstructions(List.of())).thenReturn("");
+        when(conversations.history("conversation-1", ACTOR)).thenReturn(List.of());
+        when(modelGateway.complete(any())).thenReturn(new ModelGateway.ModelAnswer(
+                "Delegated answer from the specialist.", 14, 6, "model"));
+
+        service.create(commandWithText("Assess this claim"), ACTOR);
+
+        ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(runs).save(runCaptor.capture());
+        AgentRunEntity persisted = runCaptor.getValue();
+        when(runs.findById(persisted.id())).thenReturn(Optional.of(persisted));
+        when(runs.findByIdAndTenantId(persisted.id(), ACTOR.tenantId())).thenReturn(Optional.of(persisted));
+
+        queuedWorker.run();
+
+        ArgumentCaptor<ModelGateway.ModelCompletionRequest> requestCaptor =
+                ArgumentCaptor.forClass(ModelGateway.ModelCompletionRequest.class);
+        verify(modelGateway).complete(requestCaptor.capture());
+        assertThat(requestCaptor.getValue().messages().getFirst().content())
+                .contains("You verify evidence carefully")
+                .contains("You own this task as the delegated Agent");
+        assertThat(persisted.status()).isEqualTo(RunStatus.SUCCEEDED);
+        assertThat(persisted.finalAnswer()).isEqualTo("Delegated answer from the specialist.");
+        verify(events).publish(
+                persisted.id(),
+                RunEventType.STEP_STARTED,
+                "collaborator=Research analyst, mode=HANDOFF",
                 ACTOR);
     }
 
@@ -442,7 +648,7 @@ class RunCommandServiceSkillSnapshotTest {
         when(skills.resolveForRun(List.of())).thenReturn(List.of());
         when(skills.compileInstructions(List.of())).thenReturn("");
         when(conversations.history("conversation-1", ACTOR)).thenReturn(List.of());
-        when(codingAgentLoop.executeInteraction(anyString(), anyString(), any(), any(), any(), any(), any()))
+        when(codingAgentLoop.executeInteraction(anyString(), anyString(), any(), any(), any(), any(), any(), any()))
                 .thenReturn("你好！");
         service.create(new CreateRunCommand(
                 "conversation-1", "你好呀", "model-1", "agent-1", List.of(), List.of(), List.of(),
@@ -456,7 +662,7 @@ class RunCommandServiceSkillSnapshotTest {
         queuedWorker.run();
 
         verify(codingAgentLoop).executeInteraction(
-                anyString(), anyString(), any(), any(), any(), any(), any());
+                anyString(), anyString(), any(), any(), any(), any(), any(), any());
         verify(nodes).validateExecutionTarget("node-1", ACTOR);
         verify(nodes, never()).codingEvidence(anyString(), any());
         assertThat(persisted.runSpecJson()).contains("\"executionMode\":\"NODE_INTERACTION\"");

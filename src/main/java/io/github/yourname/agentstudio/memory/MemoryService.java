@@ -44,24 +44,42 @@ public class MemoryService {
             String query,
             int limit,
             ActorContext actor) {
+        return list(agentId, personaId, false, type, status, query, limit, actor);
+    }
+
+    @Transactional(readOnly = true)
+    public List<MemoryView> list(
+            String agentId,
+            String personaId,
+            boolean sharedOnly,
+            MemoryType type,
+            MemoryStatus status,
+            String query,
+            int limit,
+            ActorContext actor) {
         if (agentId != null && !agentId.isBlank()) {
             requireVisibleAgent(agentId, actor);
         }
-        if (personaId != null && !personaId.isBlank()) {
+        if (sharedOnly && personaId != null && !personaId.isBlank()) {
+            throw new IllegalArgumentException("Shared memory scope cannot target a persona.");
+        }
+        if (!sharedOnly && personaId != null && !personaId.isBlank()) {
             requirePersona(personaId, actor);
         }
         int boundedLimit = Math.max(1, Math.min(limit <= 0 ? 50 : limit, 100));
         String normalizedQuery = query == null ? null : query.trim();
+        Instant now = Instant.now();
         return memories.search(
                         actor.tenantId(),
                         actor.userId(),
                         blankToNull(agentId),
                         blankToNull(personaId),
+                        sharedOnly,
                         type == null ? null : type.name(),
                         status == null ? null : status.name(),
                         normalizedQuery,
+                        now,
                         PageRequest.of(0, boundedLimit)).stream()
-                .filter(item -> item.expiresAt() == null || item.expiresAt().isAfter(Instant.now()))
                 .map(MemoryView::from)
                 .toList();
     }
@@ -130,6 +148,13 @@ public class MemoryService {
     }
 
     @Transactional
+    public MemoryView reject(String id, ActorContext actor) {
+        MemoryItemEntity item = requireOwned(id, actor);
+        item.reject(Instant.now());
+        return MemoryView.from(memories.saveAndFlush(item));
+    }
+
+    @Transactional
     public void delete(String id, ActorContext actor) {
         MemoryItemEntity item = requireOwned(id, actor);
         memories.delete(item);
@@ -140,7 +165,14 @@ public class MemoryService {
         if (command.agentId() != null && !command.agentId().isBlank()) {
             requireVisibleAgent(command.agentId(), actor);
         }
-        return memories.deleteForUser(actor.tenantId(), actor.userId(), blankToNull(command.agentId()));
+        if (command.sharedOnly() && command.personaId() != null && !command.personaId().isBlank()) {
+            throw new IllegalArgumentException("Shared memory scope cannot target a persona.");
+        }
+        if (!command.sharedOnly() && command.personaId() != null && !command.personaId().isBlank()) {
+            requirePersona(command.personaId(), actor);
+        }
+        return memories.deleteForUser(
+                actor.tenantId(), actor.userId(), blankToNull(command.agentId()), blankToNull(command.personaId()), command.sharedOnly());
     }
 
     private MemoryItemEntity requireOwned(String id, ActorContext actor) {

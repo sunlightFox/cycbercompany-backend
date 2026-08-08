@@ -3,9 +3,13 @@ HELP.md
 build/
 data/
 .runtime-data/
+.runtime-evaluation-data/
 frontend/
 logs/
 evaluation-results/
+.tmp-*/
+artifacts/
+scripts/__pycache__/
 .playwright-cli/
 .tmp-ui-skill-data/
 .tmp-ui-software-smoke/

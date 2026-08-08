@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.sun.net.httpserver.HttpServer;
 import io.github.yourname.agentstudio.config.AppProperties;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -26,6 +27,17 @@ class WebSearchServiceTest {
                 .isEqualTo("http://searxng:8080");
         assertThat(WebSearchService.effectiveConfig(configured, "").endpoint())
                 .isEqualTo("http://localhost:8888");
+    }
+
+    @Test
+    void blocksPrivateAndReservedAddressesBeyondJavaSiteLocalChecks() throws Exception {
+        assertThat(WebSearchService.isPubliclyRoutableAddress(InetAddress.getByName("8.8.8.8"))).isTrue();
+        assertThat(WebSearchService.isPubliclyRoutableAddress(InetAddress.getByName("10.0.0.1"))).isFalse();
+        assertThat(WebSearchService.isPubliclyRoutableAddress(InetAddress.getByName("100.64.0.1"))).isFalse();
+        assertThat(WebSearchService.isPubliclyRoutableAddress(InetAddress.getByName("127.0.0.1"))).isFalse();
+        assertThat(WebSearchService.isPubliclyRoutableAddress(InetAddress.getByName("::ffff:127.0.0.1"))).isFalse();
+        assertThat(WebSearchService.isPubliclyRoutableAddress(InetAddress.getByName("fc00::1"))).isFalse();
+        assertThat(WebSearchService.isPubliclyRoutableAddress(InetAddress.getByName("fe80::1"))).isFalse();
     }
 
     @Test

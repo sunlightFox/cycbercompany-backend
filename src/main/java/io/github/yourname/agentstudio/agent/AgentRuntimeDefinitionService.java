@@ -1,6 +1,7 @@
 package io.github.yourname.agentstudio.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.yourname.agentstudio.tool.AgentApprovalPolicy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -55,7 +56,9 @@ public class AgentRuntimeDefinitionService {
                     referenceIds(manifest, "skills"),
                     referenceIds(manifest, "knowledgeBases"),
                     referenceIds(manifest, "mcpConnections"),
+                    collaboratorDefinitions(agentId, manifest, tenantId, userId),
                     manifest.path("memory").toString(),
+                    AgentApprovalPolicy.fromManifest(manifest.path("safety")),
                     true);
         }
         if (identities.existsById(agentId)) {
@@ -74,7 +77,9 @@ public class AgentRuntimeDefinitionService {
                 java.util.List.of(),
                 java.util.List.of(),
                 java.util.List.of(),
+                java.util.List.of(),
                 "{}",
+                AgentApprovalPolicy.sessionOnly(),
                 legacy.enabled());
     }
 
@@ -90,6 +95,56 @@ public class AgentRuntimeDefinitionService {
             com.fasterxml.jackson.databind.JsonNode manifest, String field) {
         java.util.List<String> values = new java.util.ArrayList<>();
         manifest.path("capabilities").path(field).forEach(reference -> values.add(reference.path("id").asText()));
+        return java.util.List.copyOf(values);
+    }
+
+    private java.util.List<AgentCollaboratorRuntimeDefinition> collaboratorDefinitions(
+            String parentAgentId,
+            com.fasterxml.jackson.databind.JsonNode manifest,
+            String tenantId,
+            String userId) {
+        java.util.List<AgentCollaboratorRuntimeDefinition> values = new java.util.ArrayList<>();
+        int handoffCount = 0;
+        boolean hasAsTool = false;
+        for (var reference : manifest.path("capabilities").path("collaborators")) {
+            String targetId = reference.path("agentId").asText("");
+            if (targetId.equals(parentAgentId)) {
+                throw new IllegalArgumentException("An Agent cannot collaborate with itself.");
+            }
+            var target = identities.findByIdAndTenantId(targetId, tenantId)
+                    .orElseThrow(() -> new IllegalArgumentException("Collaborator Agent not found: " + targetId));
+            if ("PRIVATE".equals(target.visibility()) && !target.ownerUserId().equals(userId)) {
+                throw new IllegalArgumentException("Collaborator Agent not found: " + targetId);
+            }
+            if (!"ACTIVE".equals(target.status())) {
+                throw new IllegalArgumentException("Collaborator Agent is not active: " + targetId);
+            }
+            if (target.currentPublishedVersionId() == null || target.currentPublishedVersionId().isBlank()) {
+                throw new IllegalArgumentException("Collaborator Agent has no published version: " + targetId);
+            }
+            AgentVersionEntity version = versions.findByIdAndAgentIdAndTenantId(
+                            target.currentPublishedVersionId(), targetId, tenantId)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Published collaborator Agent version is missing: " + targetId));
+            if (version.state() != AgentVersionState.PUBLISHED) {
+                throw new IllegalStateException("Collaborator Agent version is not published: " + version.id());
+            }
+            values.add(new AgentCollaboratorRuntimeDefinition(
+                    targetId,
+                    version.id(),
+                    version.manifestDigest(),
+                    target.displayName(),
+                    reference.path("mode").asText(),
+                    reference.path("when").asText(),
+                    version.compiledSystemPrompt(),
+                    version.compiledPromptDigest(),
+                    version.defaultModelProfileId()));
+            if ("HANDOFF".equals(reference.path("mode").asText())) handoffCount++;
+            if ("AS_TOOL".equals(reference.path("mode").asText())) hasAsTool = true;
+        }
+        if (handoffCount > 1 || (handoffCount > 0 && hasAsTool)) {
+            throw new IllegalArgumentException("HANDOFF cannot be combined with AS_TOOL collaborators.");
+        }
         return java.util.List.copyOf(values);
     }
 }

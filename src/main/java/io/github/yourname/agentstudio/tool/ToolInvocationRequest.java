@@ -19,7 +19,8 @@ public record ToolInvocationRequest(
         CodingWorkspaceScope workspaceScope,
         ActorContext actor,
         String approvalId,
-        ApprovalMode approvalMode) {
+        ApprovalMode approvalMode,
+        AgentApprovalPolicy agentApprovalPolicy) {
 
     public ToolInvocationRequest {
         if (binding == null) {
@@ -31,6 +32,7 @@ public record ToolInvocationRequest(
             throw new IllegalArgumentException("Tool invocation requires a trusted actor.");
         }
         approvalMode = approvalMode == null ? ApprovalMode.ON_REQUEST : approvalMode;
+        agentApprovalPolicy = agentApprovalPolicy == null ? AgentApprovalPolicy.sessionOnly() : agentApprovalPolicy;
     }
 
     public ToolInvocationRequest(
@@ -41,7 +43,8 @@ public record ToolInvocationRequest(
             Integer timeoutSeconds,
             CodingWorkspaceScope workspaceScope,
             ActorContext actor) {
-        this(runId, toolCallId, binding, arguments, timeoutSeconds, workspaceScope, actor, null, ApprovalMode.ON_REQUEST);
+        this(runId, toolCallId, binding, arguments, timeoutSeconds, workspaceScope, actor, null,
+                ApprovalMode.ON_REQUEST, AgentApprovalPolicy.sessionOnly());
     }
 
     public ToolInvocationRequest(
@@ -53,7 +56,22 @@ public record ToolInvocationRequest(
             CodingWorkspaceScope workspaceScope,
             ActorContext actor,
             String approvalId) {
-        this(runId, toolCallId, binding, arguments, timeoutSeconds, workspaceScope, actor, approvalId, ApprovalMode.ON_REQUEST);
+        this(runId, toolCallId, binding, arguments, timeoutSeconds, workspaceScope, actor, approvalId,
+                ApprovalMode.ON_REQUEST, AgentApprovalPolicy.sessionOnly());
+    }
+
+    public ToolInvocationRequest(
+            String runId,
+            String toolCallId,
+            ResolvedToolBinding binding,
+            Map<String, Object> arguments,
+            Integer timeoutSeconds,
+            CodingWorkspaceScope workspaceScope,
+            ActorContext actor,
+            String approvalId,
+            ApprovalMode approvalMode) {
+        this(runId, toolCallId, binding, arguments, timeoutSeconds, workspaceScope, actor, approvalId,
+                approvalMode, AgentApprovalPolicy.sessionOnly());
     }
 
     private static Map<String, Object> sanitizeArguments(Map<String, Object> arguments) {

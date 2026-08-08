@@ -6,6 +6,7 @@ import io.github.yourname.agentstudio.model.ModelRateLimitException;
 import io.github.yourname.agentstudio.model.ModelTransientException;
 import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.tool.ApprovalMode;
+import io.github.yourname.agentstudio.tool.AgentApprovalPolicy;
 import io.github.yourname.agentstudio.tool.CodingWorkspaceScope;
 import io.github.yourname.agentstudio.tool.ResolvedToolBinding;
 import io.github.yourname.agentstudio.tool.ToolCleanupResult;
@@ -243,6 +244,7 @@ class CodingAgentLoop {
                 actor,
                 workspaceScope,
                 ApprovalMode.ON_REQUEST,
+                AgentApprovalPolicy.sessionOnly(),
                 true,
                 CODING_EXECUTION_PROTOCOL);
     }
@@ -255,8 +257,22 @@ class CodingAgentLoop {
             ActorContext actor,
             CodingWorkspaceScope workspaceScope,
             ApprovalMode approvalMode) {
+        return execute(runId, modelProfileId, bindings, messages, actor, workspaceScope, approvalMode,
+                AgentApprovalPolicy.sessionOnly());
+    }
+
+    String execute(
+            String runId,
+            String modelProfileId,
+            List<ResolvedToolBinding> bindings,
+            List<ModelGateway.ModelMessage> messages,
+            ActorContext actor,
+            CodingWorkspaceScope workspaceScope,
+            ApprovalMode approvalMode,
+            AgentApprovalPolicy agentApprovalPolicy) {
         return execute(
-                runId, modelProfileId, bindings, messages, actor, workspaceScope, approvalMode, true,
+                runId, modelProfileId, bindings, messages, actor, workspaceScope, approvalMode,
+                agentApprovalPolicy, true,
                 CODING_EXECUTION_PROTOCOL);
     }
 
@@ -268,8 +284,22 @@ class CodingAgentLoop {
             ActorContext actor,
             CodingWorkspaceScope workspaceScope,
             ApprovalMode approvalMode) {
+        return executeInteraction(runId, modelProfileId, bindings, messages, actor, workspaceScope, approvalMode,
+                AgentApprovalPolicy.sessionOnly());
+    }
+
+    String executeInteraction(
+            String runId,
+            String modelProfileId,
+            List<ResolvedToolBinding> bindings,
+            List<ModelGateway.ModelMessage> messages,
+            ActorContext actor,
+            CodingWorkspaceScope workspaceScope,
+            ApprovalMode approvalMode,
+            AgentApprovalPolicy agentApprovalPolicy) {
         return execute(
                 runId, modelProfileId, bindings, messages, actor, workspaceScope, approvalMode,
+                agentApprovalPolicy,
                 requiresFirstNodeToolCall(bindings, messages),
                 NODE_INTERACTION_PROTOCOL);
     }
@@ -331,6 +361,7 @@ class CodingAgentLoop {
                 actor,
                 workspaceScope,
                 ApprovalMode.ON_REQUEST,
+                AgentApprovalPolicy.sessionOnly(),
                 false,
                 CODING_EXECUTION_PROTOCOL);
     }
@@ -343,8 +374,22 @@ class CodingAgentLoop {
             ActorContext actor,
             CodingWorkspaceScope workspaceScope,
             ApprovalMode approvalMode) {
+        return resume(runId, modelProfileId, bindings, messages, actor, workspaceScope, approvalMode,
+                AgentApprovalPolicy.sessionOnly());
+    }
+
+    String resume(
+            String runId,
+            String modelProfileId,
+            List<ResolvedToolBinding> bindings,
+            List<ModelGateway.ModelMessage> messages,
+            ActorContext actor,
+            CodingWorkspaceScope workspaceScope,
+            ApprovalMode approvalMode,
+            AgentApprovalPolicy agentApprovalPolicy) {
         return execute(
-                runId, modelProfileId, bindings, messages, actor, workspaceScope, approvalMode, false,
+                runId, modelProfileId, bindings, messages, actor, workspaceScope, approvalMode,
+                agentApprovalPolicy, false,
                 CODING_EXECUTION_PROTOCOL);
     }
 
@@ -356,8 +401,22 @@ class CodingAgentLoop {
             ActorContext actor,
             CodingWorkspaceScope workspaceScope,
             ApprovalMode approvalMode) {
+        return resumeInteraction(runId, modelProfileId, bindings, messages, actor, workspaceScope, approvalMode,
+                AgentApprovalPolicy.sessionOnly());
+    }
+
+    String resumeInteraction(
+            String runId,
+            String modelProfileId,
+            List<ResolvedToolBinding> bindings,
+            List<ModelGateway.ModelMessage> messages,
+            ActorContext actor,
+            CodingWorkspaceScope workspaceScope,
+            ApprovalMode approvalMode,
+            AgentApprovalPolicy agentApprovalPolicy) {
         return execute(
-                runId, modelProfileId, bindings, messages, actor, workspaceScope, approvalMode, false,
+                runId, modelProfileId, bindings, messages, actor, workspaceScope, approvalMode,
+                agentApprovalPolicy, false,
                 NODE_INTERACTION_PROTOCOL);
     }
 
@@ -369,6 +428,7 @@ class CodingAgentLoop {
             ActorContext actor,
             CodingWorkspaceScope workspaceScope,
             ApprovalMode approvalMode,
+            AgentApprovalPolicy agentApprovalPolicy,
             boolean requireFirstToolCall,
             String executionProtocol) {
         boolean waitingForApproval = false;
@@ -387,10 +447,13 @@ class CodingAgentLoop {
                 byModelName.put(tool.modelName(), tool);
             }
             Map<String, ResolvedToolBinding> byModelCallAlias = modelCallAliases(available);
+            AgentApprovalPolicy effectiveAgentApprovalPolicy = agentApprovalPolicy == null
+                    ? AgentApprovalPolicy.sessionOnly()
+                    : agentApprovalPolicy;
             List<ModelGateway.ModelTool> modelTools = available.stream()
                     .map(tool -> new ModelGateway.ModelTool(
                             tool.modelName(),
-                            modelToolDescription(tool, effectiveApprovalMode),
+                            modelToolDescription(tool, effectiveApprovalMode, effectiveAgentApprovalPolicy),
                             tool.inputSchema()))
                     .toList();
             // A resumed run already has a completed (or explicitly rejected) tool call in its
@@ -487,7 +550,8 @@ class CodingAgentLoop {
                             workspaceScope,
                             actor,
                             null,
-                            effectiveApprovalMode);
+                            effectiveApprovalMode,
+                            effectiveAgentApprovalPolicy);
                     ToolProviderResult outcome = invokeWithProgress(
                             invocationRequest, tool.logicalName(), runId, actor);
                     if (outcome.requiresApproval()) {
@@ -658,13 +722,27 @@ class CodingAgentLoop {
     }
 
     /** Adds host-owned operation and approval semantics to model-visible tool metadata. */
-    private static String modelToolDescription(ResolvedToolBinding tool, ApprovalMode approvalMode) {
+    private static String modelToolDescription(
+            ResolvedToolBinding tool,
+            ApprovalMode approvalMode,
+            AgentApprovalPolicy agentApprovalPolicy) {
         String base = tool.description() == null || tool.description().isBlank()
                 ? "Execute the advertised operation."
                 : tool.description().strip();
         String description = base + " Host logical operation: " + tool.logicalName() + ".";
-        if (!tool.requiresApproval()) {
+        AgentApprovalPolicy.Decision agentDecision = agentApprovalPolicy == null
+                ? AgentApprovalPolicy.Decision.ALLOW
+                : agentApprovalPolicy.decisionFor(tool);
+        if (agentDecision == AgentApprovalPolicy.Decision.DENY) {
+            return description + " The Agent policy denies this operation. Do not call it.";
+        }
+        if (!tool.requiresApproval() && agentDecision != AgentApprovalPolicy.Decision.ASK) {
             return description;
+        }
+        if (agentDecision == AgentApprovalPolicy.Decision.ASK) {
+            return description
+                    + " The Agent policy requires human approval for this risk level. Calling it only requests approval;"
+                    + " do not claim the action ran until a later tool result reports SUCCEEDED.";
         }
         if (approvalMode != null && approvalMode.bypassesApproval(tool)) {
             return description
@@ -794,13 +872,26 @@ class CodingAgentLoop {
         for (int retry = 0; ; retry++) {
             try {
                 ensureNotCancelled(runId);
+                long startedNanos = System.nanoTime();
+                ModelGateway.ModelAnswer answer;
                 if (modelGateway.supportsStreaming()) {
                     // The surrounding loop owns final output delivery. This consumer intentionally
                     // buffers no visible text: the complete ModelAnswer below determines whether
                     // this model turn is a tool-planning turn or the actual final answer.
-                    return modelGateway.stream(request, ignored -> { });
+                    answer = modelGateway.stream(request, ignored -> { });
+                } else {
+                    answer = modelGateway.complete(request);
                 }
-                return modelGateway.complete(request);
+                RunModelUsage.publish(
+                        events,
+                        objectMapper,
+                        runId,
+                        "agent-loop",
+                        request.modelProfileId(),
+                        answer,
+                        startedNanos,
+                        actor);
+                return answer;
             } catch (ModelRateLimitException ex) {
                 if (retry >= MAX_RATE_LIMIT_RETRIES) {
                     throw new IllegalStateException(

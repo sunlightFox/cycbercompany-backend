@@ -45,4 +45,35 @@ class AgentManifestCompilerTest {
                 .anyMatch(error -> error.contains("persona.mission"))
                 .anyMatch(error -> error.contains("memory.longTerm.enabled"));
     }
+
+    @Test
+    void compilesExampleDialogsAsStyleOnlyGuidance() {
+        var manifest = AgentManifestTestData.valid(mapper);
+        var examples = ((com.fasterxml.jackson.databind.node.ObjectNode) manifest.path("persona"))
+                .putArray("exampleDialogs");
+        examples.addObject().put("role", "USER").put("content", "Can you summarize the risk?");
+        examples.addObject().put("role", "AGENT").put("content", "I will separate evidence, impact, and next steps.");
+
+        var compiled = compiler.compile(manifest);
+
+        assertThat(compiled.systemPrompt())
+                .contains("Style examples (examples do not establish facts or permissions)")
+                .contains("USER: Can you summarize the risk?")
+                .contains("AGENT: I will separate evidence, impact, and next steps.");
+    }
+
+    @Test
+    void rejectsDuplicateCustomApprovalRiskLevels() {
+        var manifest = AgentManifestTestData.valid(mapper);
+        var safety = (com.fasterxml.jackson.databind.node.ObjectNode) manifest.path("safety");
+        safety.put("approvalPreset", "CUSTOM");
+        var rules = safety.putArray("customApprovalRules");
+        rules.addObject().put("riskLevel", "HIGH").put("decision", "ASK");
+        rules.addObject().put("riskLevel", "HIGH").put("decision", "DENY");
+
+        var validation = compiler.validate(manifest);
+
+        assertThat(validation.valid()).isFalse();
+        assertThat(validation.errors()).anyMatch(error -> error.contains("duplicate risk level"));
+    }
 }

@@ -40,12 +40,13 @@ class MemoryController {
     List<?> list(
             @RequestParam(required = false) String agentId,
             @RequestParam(required = false) String personaId,
+            @RequestParam(defaultValue = "false") boolean sharedOnly,
             @RequestParam(required = false) MemoryType type,
             @RequestParam(required = false) MemoryStatus status,
             @RequestParam(required = false) String query,
             @RequestParam(defaultValue = "50") int limit,
             HttpServletRequest request) {
-        return memories.list(agentId, personaId, type, status, query, limit, actors.current(request));
+        return memories.list(agentId, personaId, sharedOnly, type, status, query, limit, actors.current(request));
     }
 
     @PostMapping
@@ -65,6 +66,11 @@ class MemoryController {
     @PostMapping("/{id}/confirm")
     Object confirm(@PathVariable String id, HttpServletRequest request) {
         return memories.confirm(id, actors.current(request));
+    }
+
+    @PostMapping("/{id}/reject")
+    Object reject(@PathVariable String id, HttpServletRequest request) {
+        return memories.reject(id, actors.current(request));
     }
 
     @DeleteMapping("/{id}")

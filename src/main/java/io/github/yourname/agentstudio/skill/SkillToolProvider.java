@@ -125,7 +125,9 @@ public class SkillToolProvider implements ToolProvider {
         arguments.put("timeoutSeconds", timeout);
         String nodeId = attribute(request, "nodeId");
         CallNodeToolCommand command = new CallNodeToolCommand(arguments, timeout);
-        NodeToolCallResult result = request.approvalMode().bypassesApproval(request.binding())
+        boolean approvalGranted = request.approvalMode().bypassesApproval(request.binding())
+                || (request.approvalId() != null && !request.approvalId().isBlank());
+        NodeToolCallResult result = approvalGranted
                 ? nodes.callToolForRun(
                         request.runId(),
                         request.toolCallId(),

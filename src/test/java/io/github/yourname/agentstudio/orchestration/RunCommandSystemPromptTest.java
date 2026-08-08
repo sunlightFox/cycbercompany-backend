@@ -24,6 +24,16 @@ class RunCommandSystemPromptTest {
     }
 
     @Test
+    void acceptsOnlyAbsoluteHttpUrlsForWebCitations() {
+        assertThat(RunCommandService.isSafeExternalUrl("https://status.example.test/incident/42")).isTrue();
+        assertThat(RunCommandService.isSafeExternalUrl("http://127.0.0.1:8080/reference")).isTrue();
+        assertThat(RunCommandService.isSafeExternalUrl("javascript:alert(1)")).isFalse();
+        assertThat(RunCommandService.isSafeExternalUrl("data:text/html,unexpected")).isFalse();
+        assertThat(RunCommandService.isSafeExternalUrl("/relative/source")).isFalse();
+        assertThat(RunCommandService.isSafeExternalUrl("https://")).isFalse();
+    }
+
+    @Test
     void queryCompactionRetainsChineseContextInMixedLanguageRequests() {
         String query = RunCommandService.webSearchQuery("搜索今天 OpenAI 发布的新闻，并带来源链接");
 
@@ -243,6 +253,12 @@ class RunCommandSystemPromptTest {
                 "Fix the login endpoint in this project and run its tests."))
                 .isTrue();
         assertThat(RunCommandService.requestsLocalProject(
+                "Fix the project at \\\\build-server\\shared\\shop-api and run its tests."))
+                .isTrue();
+        assertThat(RunCommandService.requestsLocalProject(
+                "Fix the project at /mnt/d/work/shop-api and run its tests."))
+                .isTrue();
+        assertThat(RunCommandService.requestsLocalProject(
                 "修复当前项目的登录接口并运行测试"))
                 .isTrue();
         assertThat(RunCommandService.requestsLocalProject(
@@ -250,6 +266,9 @@ class RunCommandSystemPromptTest {
                 .isFalse();
         assertThat(RunCommandService.requestsLocalProject(
                 "How should I fix this project?"))
+                .isFalse();
+        assertThat(RunCommandService.requestsLocalProject(
+                "Fix the project at https://example.com/workspace/shop-api and run its tests."))
                 .isFalse();
         assertThat(RunCommandService.requestsLocalProject(
                 "Run the tests for the project, but do not access any local files."))

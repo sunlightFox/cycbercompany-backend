@@ -968,13 +968,64 @@ public class WebSearchService {
         }
         if (!allowPrivateHosts) {
             for (InetAddress address : InetAddress.getAllByName(uri.getHost())) {
-                if (address.isAnyLocalAddress() || address.isLoopbackAddress() || address.isLinkLocalAddress()
-                        || address.isSiteLocalAddress() || address.isMulticastAddress()) {
+                if (!isPubliclyRoutableAddress(address)) {
                     throw new IllegalArgumentException("Private or local result hosts are not readable");
                 }
             }
         }
         return uri;
+    }
+
+    static boolean isPubliclyRoutableAddress(InetAddress address) {
+        if (address == null
+                || address.isAnyLocalAddress()
+                || address.isLoopbackAddress()
+                || address.isLinkLocalAddress()
+                || address.isSiteLocalAddress()
+                || address.isMulticastAddress()) {
+            return false;
+        }
+        byte[] raw = address.getAddress();
+        if (raw.length == 4) {
+            return isPublicIpv4(raw);
+        }
+        if (raw.length != 16) {
+            return false;
+        }
+        // IPv4-compatible and IPv4-mapped IPv6 literals must inherit IPv4 restrictions.
+        boolean ipv4Compatible = true;
+        for (int index = 0; index < 12; index++) {
+            if (raw[index] != 0) {
+                ipv4Compatible = false;
+                break;
+            }
+        }
+        boolean ipv4Mapped = true;
+        for (int index = 0; index < 10; index++) {
+            if (raw[index] != 0) {
+                ipv4Mapped = false;
+                break;
+            }
+        }
+        ipv4Mapped = ipv4Mapped && raw[10] == (byte) 0xff && raw[11] == (byte) 0xff;
+        if (ipv4Compatible || ipv4Mapped) {
+            return isPublicIpv4(new byte[] { raw[12], raw[13], raw[14], raw[15] });
+        }
+        // fc00::/7 is IPv6 unique-local space. Java's isSiteLocalAddress does not cover it.
+        return (raw[0] & 0xfe) != 0xfc;
+    }
+
+    private static boolean isPublicIpv4(byte[] raw) {
+        int first = Byte.toUnsignedInt(raw[0]);
+        int second = Byte.toUnsignedInt(raw[1]);
+        return first != 0
+                && first != 10
+                && first != 127
+                && !(first == 100 && second >= 64 && second <= 127)
+                && !(first == 169 && second == 254)
+                && !(first == 172 && second >= 16 && second <= 31)
+                && !(first == 192 && second == 168)
+                && !(first >= 224);
     }
 
     private static boolean isUsableResult(WebSearchResult result) {

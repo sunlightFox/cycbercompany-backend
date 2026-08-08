@@ -2,6 +2,7 @@ package io.github.yourname.agentstudio.nodeclient;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.yourname.agentstudio.nodeclient.config.NodeConfigStore;
+import io.github.yourname.agentstudio.nodeclient.config.NodeProcessLock;
 import io.github.yourname.agentstudio.nodeclient.transport.NodeWebSocketClient;
 import java.awt.BorderLayout;
 import java.awt.Color;
@@ -14,6 +15,7 @@ import java.awt.GridBagLayout;
 import java.awt.Insets;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
+import java.io.IOException;
 import java.net.http.HttpClient;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21,6 +23,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.JComponent;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
@@ -50,6 +53,7 @@ final class NodeClientWindow {
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
     private final NodeConfigStore configStore;
+    private final WindowsLoginStartup windowsLoginStartup;
     private final JFrame frame = new JFrame("Agent Studio Node");
     private final JLabel statusDot = new JLabel("●");
     private final JLabel statusText = new JLabel("等待启动");
@@ -59,6 +63,7 @@ final class NodeClientWindow {
     private final JLabel workspaceValue;
     private final JButton workspaceButton = new JButton("选择...");
     private final JButton actionButton = new JButton("启动");
+    private JCheckBox loginStartupButton;
     private volatile NodeWebSocketClient activeClient;
     private volatile Thread worker;
     private volatile boolean stopping;
@@ -70,6 +75,7 @@ final class NodeClientWindow {
         this.objectMapper = objectMapper;
         this.httpClient = httpClient;
         this.configStore = new NodeConfigStore(objectMapper, AgentStudioNodeApplication.localConfigPath(options));
+        this.windowsLoginStartup = WindowsLoginStartup.forPackagedApp().orElse(null);
         Map<String, String> resolved = resolvedOptions(options);
         this.serverValue = valueLabel(resolved.get("server"));
         this.deviceValue = valueLabel(resolved.get("name"));
@@ -83,7 +89,11 @@ final class NodeClientWindow {
         SwingUtilities.invokeLater(() -> {
             installSystemLookAndFeel();
             NodeClientWindow window = new NodeClientWindow(options, objectMapper, httpClient);
-            window.frame.setVisible(true);
+            // Login startup stays unobtrusive once the user has already confirmed a workspace.
+            // Surface the window again if configuration was lost so recovery is still possible.
+            if (!runsInBackground(options) || !window.registered) {
+                window.frame.setVisible(true);
+            }
             if (window.shouldAutoStart()) {
                 window.startNode();
             }
@@ -207,8 +217,26 @@ final class NodeClientWindow {
     }
 
     private JPanel actionPanel() {
-        JPanel panel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0));
+        JPanel panel = new JPanel(new BorderLayout());
         panel.setOpaque(false);
+        if (windowsLoginStartup != null) {
+            JCheckBox startWithWindows = new JCheckBox("\u767b\u5f55 Windows \u540e\u81ea\u52a8\u8fde\u63a5");
+            loginStartupButton = startWithWindows;
+            startWithWindows.setOpaque(false);
+            startWithWindows.setForeground(MUTED);
+            startWithWindows.setEnabled(canConfigureLoginStartup(registered));
+            startWithWindows.setToolTipText("\u53ef\u5728 Windows \u7684 Startup \u6587\u4ef6\u5939\u4e2d\u968f\u65f6\u5220\u9664");
+            try {
+                startWithWindows.setSelected(windowsLoginStartup.isEnabled());
+            } catch (IOException ex) {
+                startWithWindows.setEnabled(false);
+                startWithWindows.setToolTipText(conciseMessage(ex));
+            }
+            startWithWindows.addActionListener(event -> updateLoginStartup(startWithWindows));
+            panel.add(startWithWindows, BorderLayout.WEST);
+        }
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0));
+        actions.setOpaque(false);
         actionButton.setPreferredSize(new Dimension(142, 42));
         actionButton.setFont(actionButton.getFont().deriveFont(Font.BOLD, 14f));
         actionButton.setForeground(Color.BLACK);
@@ -216,8 +244,18 @@ final class NodeClientWindow {
         actionButton.setFocusPainted(false);
         actionButton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
         actionButton.addActionListener(event -> toggleNode());
-        panel.add(actionButton);
+        actions.add(actionButton);
+        panel.add(actions, BorderLayout.EAST);
         return panel;
+    }
+
+    private void updateLoginStartup(JCheckBox startWithWindows) {
+        try {
+            windowsLoginStartup.setEnabled(startWithWindows.isSelected());
+        } catch (IOException ex) {
+            startWithWindows.setSelected(!startWithWindows.isSelected());
+            showStatus("\u65e0\u6cd5\u4fdd\u5b58\u542f\u52a8\u9009\u9879", conciseMessage(ex), RED);
+        }
     }
 
     private static void addDetail(JPanel panel, int row, String name, JComponent value) {
@@ -259,24 +297,25 @@ final class NodeClientWindow {
         actionButton.setBackground(STOP_BACKGROUND);
         showStatus(registered ? "正在连接" : "正在注册", "请稍候...", BLUE);
         worker = Thread.ofVirtual().name("agent-studio-node-gui").start(() -> {
-            try {
-                // A damaged or user-bound protected config must not prevent an explicit
-                // Start action from rebuilding this managed-local companion. Only a config
-                // that was successfully loaded is safe to synchronize before replacement.
-                if (registered) {
-                    synchronizeSelectedWorkspace(options);
+            try (NodeProcessLock ignored = NodeProcessLock.acquire(configStore.path())) {
+                if (shouldReprovisionOnStart(baseOptions, registered)) {
+                    // A damaged or user-bound protected config must not prevent an explicit
+                    // Start action from rebuilding this managed-local companion. Only a config
+                    // that was successfully loaded is safe to synchronize before replacement.
+                    if (registered) {
+                        synchronizeSelectedWorkspace(options);
+                    }
+                    // A visible Start repairs a control-plane reset or credential rotation.
+                    provisionLocalWithRetry(options);
+                    registered = true;
                 }
-                // Local bootstrap deliberately runs on every start. It restores the companion
-                // after a control-plane data reset or a credential rotation, and refreshes the
-                // node credential before the WebSocket reconnect loop begins.
-                provisionLocalWithRetry(options);
-                registered = true;
                 SwingUtilities.invokeLater(() -> showStatus("正在连接", "正在验证本机执行器...", BLUE));
-                AgentStudioNodeApplication.start(
+                AgentStudioNodeApplication.startWithAcquiredProcessLock(
                         options, configStore, objectMapper, httpClient, client -> {
                             activeClient = client;
                             client.setConnectionObserver(connected -> SwingUtilities.invokeLater(() -> {
                                 if (connected) {
+                                    enableLoginStartupOption();
                                     showStatus("运行中", "本机执行器已连接，正在等待任务", GREEN);
                                 } else if (!stopping) {
                                     showStatus("正在重连", "与服务端的连接暂时中断，正在恢复...", BLUE);
@@ -331,6 +370,9 @@ final class NodeClientWindow {
     static String startupFailureDetail(Throwable error) {
         String message = conciseMessage(error);
         String normalized = message.toLowerCase(java.util.Locale.ROOT);
+        if (normalized.contains("already running for this config")) {
+            return "\u672c\u673a\u6267\u884c\u5668\u5df2\u5728\u8fd0\u884c\uff0c\u65e0\u9700\u91cd\u590d\u542f\u52a8\u3002";
+        }
         if (normalized.contains("http 401") || normalized.contains("http 403")) {
             return "服务端需要身份验证。请为当前 Windows 用户配置 AGENT_STUDIO_API_TOKEN 后重试。";
         }
@@ -400,6 +442,24 @@ final class NodeClientWindow {
         // confirm the workspace; later launches reconnect without another prompt. Deployment
         // shortcuts can still deliberately suppress this with --no-auto-start.
         return registered && !booleanOption(options, "no-auto-start");
+    }
+
+    static boolean runsInBackground(Map<String, String> options) {
+        return booleanOption(options, "background");
+    }
+
+    static boolean shouldReprovisionOnStart(Map<String, String> options, boolean registered) {
+        return !registered || !runsInBackground(options);
+    }
+
+    static boolean canConfigureLoginStartup(boolean registered) {
+        return registered;
+    }
+
+    private void enableLoginStartupOption() {
+        if (loginStartupButton != null) {
+            loginStartupButton.setEnabled(true);
+        }
     }
 
     static Map<String, String> resolvedOptions(Map<String, String> configured) {

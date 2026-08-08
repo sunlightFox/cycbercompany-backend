@@ -84,7 +84,8 @@ public class ToolApprovalService {
                 entity.argumentsJson(), new TypeReference<Map<String, Object>>() { });
         ToolInvocationRequest invocation = new ToolInvocationRequest(
                 entity.runId(), entity.toolCallId(), binding, arguments, entity.timeoutSeconds(),
-                CodingWorkspaceScope.from(entity.workingDirectory()), actor, entity.id());
+                CodingWorkspaceScope.from(entity.workingDirectory()), actor, entity.id(),
+                ApprovalMode.ON_REQUEST, AgentApprovalPolicy.sessionOnly());
         return new ApprovalExecution(entity, invocation, approved);
     }
 

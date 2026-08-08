@@ -1,11 +1,13 @@
 package io.github.yourname.agentstudio.orchestration;
 
+import io.github.yourname.agentstudio.agent.AgentCollaboratorRuntimeDefinition;
 import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.memory.MemorySnapshot;
 import io.github.yourname.agentstudio.skill.SkillRunBinding;
 import io.github.yourname.agentstudio.skill.SkillAnalysis;
 import io.github.yourname.agentstudio.skill.CompatibilityReport;
 import io.github.yourname.agentstudio.tool.ApprovalMode;
+import io.github.yourname.agentstudio.tool.AgentApprovalPolicy;
 import io.github.yourname.agentstudio.tool.ResolvedToolBinding;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -31,6 +33,8 @@ public record RunSpec(
         String agentPromptDigest,
         String agentToolAllowList,
         String agentMemoryPolicySnapshot,
+        AgentApprovalPolicy agentApprovalPolicySnapshot,
+        List<AgentCollaboratorRuntimeDefinition> collaboratorBindings,
         List<SkillRunBinding> skillBindings,
         String skillSnapshotDigest,
         String skillInstructionsDigest,
@@ -56,11 +60,12 @@ public record RunSpec(
         String userPersonaId,
         String userPersonaSnapshotJson) {
 
-    public static final int CURRENT_VERSION = 2;
+    public static final int CURRENT_VERSION = 4;
     public static final int MIN_SUPPORTED_VERSION = 1;
 
     public RunSpec {
         skillBindings = copy(skillBindings);
+        collaboratorBindings = copy(collaboratorBindings);
         skillAnalyses = copy(skillAnalyses);
         knowledgeBaseIds = copy(knowledgeBaseIds);
         mcpConnectionIds = copy(mcpConnectionIds);
@@ -81,10 +86,61 @@ public record RunSpec(
         agentMemoryPolicySnapshot = agentMemoryPolicySnapshot == null || agentMemoryPolicySnapshot.isBlank()
                 ? "{}"
                 : agentMemoryPolicySnapshot;
+        agentApprovalPolicySnapshot = agentApprovalPolicySnapshot == null
+                ? AgentApprovalPolicy.sessionOnly()
+                : agentApprovalPolicySnapshot;
         approvalMode = ApprovalMode.from(approvalMode).wireValue();
         executionMode = executionMode == null
                 ? RunExecutionMode.fromPersisted(nodeId, userText, workingDirectory, requestedToolNames)
                 : executionMode;
+    }
+
+    /** Compatibility constructor for persisted/test snapshots created before Agent approval policies. */
+    public RunSpec(
+            int version,
+            String conversationId,
+            String userText,
+            String modelProfileId,
+            String modelCapabilityRevision,
+            String agentId,
+            String agentVersionId,
+            String agentManifestDigest,
+            String agentSystemPrompt,
+            String agentPromptDigest,
+            String agentToolAllowList,
+            String agentMemoryPolicySnapshot,
+            List<AgentCollaboratorRuntimeDefinition> collaboratorBindings,
+            List<SkillRunBinding> skillBindings,
+            String skillSnapshotDigest,
+            String skillInstructionsDigest,
+            List<SkillAnalysis> skillAnalyses,
+            CompatibilityReport compatibilityReport,
+            List<String> knowledgeBaseIds,
+            List<String> mcpConnectionIds,
+            List<String> requestedToolNames,
+            List<ResolvedToolBinding> toolBindings,
+            String nodeId,
+            RunExecutionMode executionMode,
+            String workingDirectory,
+            List<String> attachmentIds,
+            String attachmentContext,
+            String capabilityRevision,
+            String policyRevision,
+            String approvalMode,
+            String tenantId,
+            String userId,
+            Set<String> actorRoles,
+            Set<String> actorScopes,
+            List<MemorySnapshot> memorySnapshots,
+            String userPersonaId,
+            String userPersonaSnapshotJson) {
+        this(version, conversationId, userText, modelProfileId, modelCapabilityRevision, agentId, agentVersionId,
+                agentManifestDigest, agentSystemPrompt, agentPromptDigest, agentToolAllowList,
+                agentMemoryPolicySnapshot, AgentApprovalPolicy.sessionOnly(), collaboratorBindings, skillBindings,
+                skillSnapshotDigest, skillInstructionsDigest, skillAnalyses, compatibilityReport, knowledgeBaseIds,
+                mcpConnectionIds, requestedToolNames, toolBindings, nodeId, executionMode, workingDirectory,
+                attachmentIds, attachmentContext, capabilityRevision, policyRevision, approvalMode, tenantId, userId,
+                actorRoles, actorScopes, memorySnapshots, userPersonaId, userPersonaSnapshotJson);
     }
 
     public ActorContext actor() {

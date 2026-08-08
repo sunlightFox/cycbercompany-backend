@@ -27,6 +27,8 @@ public enum RunEventType {
     MODEL_RATE_LIMITED,
     /** 模型网关准备重试供应商瞬时错误。 */
     MODEL_PROVIDER_RETRYING,
+    /** Provider-reported token usage and measured latency for one successful model call. */
+    MODEL_USAGE,
     /** 模型请求调用工具。 */
     TOOL_CALL_REQUESTED,
     /** 工具实际开始执行。 */

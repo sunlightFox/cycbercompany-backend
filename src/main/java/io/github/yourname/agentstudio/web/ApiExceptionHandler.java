@@ -8,6 +8,7 @@ import io.github.yourname.agentstudio.persona.UserPersonaRevisionConflictExcepti
 import io.github.yourname.agentstudio.agent.AgentRevisionConflictException;
 import io.github.yourname.agentstudio.conversation.ConversationArchivedException;
 import io.github.yourname.agentstudio.node.NodeToolApprovalConflictException;
+import io.github.yourname.agentstudio.node.LocalComputerControlNotReadyException;
 import io.github.yourname.agentstudio.execution.ExecutionModeChangeNotAllowedException;
 import io.github.yourname.agentstudio.skill.SkillCompatibilityException;
 import java.time.Instant;
@@ -114,6 +115,14 @@ class ApiExceptionHandler {
     ProblemDetail conversationArchived(ConversationArchivedException ex) {
         var detail = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
         detail.setProperty("code", "CONVERSATION_ARCHIVED");
+        detail.setProperty("timestamp", Instant.now().toString());
+        return detail;
+    }
+
+    @ExceptionHandler(LocalComputerControlNotReadyException.class)
+    ProblemDetail localComputerControlNotReady(LocalComputerControlNotReadyException ex) {
+        var detail = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
+        detail.setProperty("code", "LOCAL_COMPUTER_CONTROL_NOT_READY");
         detail.setProperty("timestamp", Instant.now().toString());
         return detail;
     }

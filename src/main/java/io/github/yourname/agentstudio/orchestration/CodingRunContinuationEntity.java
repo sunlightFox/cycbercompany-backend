@@ -19,6 +19,10 @@ public class CodingRunContinuationEntity {
     private String toolCallId;
     @Lob
     private String messagesJson;
+    @Lob
+    private String evidenceJson;
+    @Lob
+    private String webResultsJson;
     private Instant createdAt;
     private Instant updatedAt;
     @Version
@@ -35,6 +39,8 @@ public class CodingRunContinuationEntity {
             String approvalId,
             String toolCallId,
             String messagesJson,
+            String evidenceJson,
+            String webResultsJson,
             Instant now) {
         this.runId = runId;
         this.tenantId = tenantId;
@@ -43,8 +49,23 @@ public class CodingRunContinuationEntity {
         this.approvalId = approvalId;
         this.toolCallId = toolCallId;
         this.messagesJson = messagesJson;
+        this.evidenceJson = evidenceJson == null || evidenceJson.isBlank() ? "[]" : evidenceJson;
+        this.webResultsJson = webResultsJson == null || webResultsJson.isBlank() ? "[]" : webResultsJson;
         this.createdAt = now;
         this.updatedAt = now;
+    }
+
+    /** Compatibility constructor for continuations created before retrieval candidates were persisted. */
+    public CodingRunContinuationEntity(
+            String runId,
+            String tenantId,
+            String nodeId,
+            String workingDirectory,
+            String approvalId,
+            String toolCallId,
+            String messagesJson,
+            Instant now) {
+        this(runId, tenantId, nodeId, workingDirectory, approvalId, toolCallId, messagesJson, "[]", "[]", now);
     }
 
     public String runId() { return runId; }
@@ -54,6 +75,8 @@ public class CodingRunContinuationEntity {
     public String approvalId() { return approvalId; }
     public String toolCallId() { return toolCallId; }
     public String messagesJson() { return messagesJson; }
+    public String evidenceJson() { return evidenceJson; }
+    public String webResultsJson() { return webResultsJson; }
     public Instant createdAt() { return createdAt; }
     public Instant updatedAt() { return updatedAt; }
 }

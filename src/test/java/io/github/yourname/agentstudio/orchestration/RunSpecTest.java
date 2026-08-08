@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.github.yourname.agentstudio.tool.AgentApprovalPolicy;
+import io.github.yourname.agentstudio.tool.RiskLevel;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -40,6 +42,7 @@ class RunSpecTest {
                 "sha256:agent",
                 "*",
                 "{}",
+                List.of(),
                 List.of(),
                 "sha256:skills",
                 "sha256:skill-instructions",
@@ -82,5 +85,15 @@ class RunSpecTest {
         assertThat(restoredV1.agentVersionId()).isEmpty();
         assertThat(restoredV1.agentManifestDigest()).isEmpty();
         assertThat(restoredV1.agentMemoryPolicySnapshot()).isEqualTo("{}");
+        assertThat(restoredV1.agentApprovalPolicySnapshot()).isEqualTo(AgentApprovalPolicy.sessionOnly());
+
+        AgentApprovalPolicy customPolicy = new AgentApprovalPolicy("CUSTOM", List.of(
+                new AgentApprovalPolicy.Rule(RiskLevel.HIGH, AgentApprovalPolicy.Decision.DENY)));
+        ObjectNode persistedV4 = mapper.valueToTree(spec);
+        persistedV4.set("agentApprovalPolicySnapshot", mapper.valueToTree(customPolicy));
+
+        RunSpec restoredV4 = mapper.treeToValue(persistedV4, RunSpec.class);
+
+        assertThat(restoredV4.agentApprovalPolicySnapshot()).isEqualTo(customPolicy);
     }
 }

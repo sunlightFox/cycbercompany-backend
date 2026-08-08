@@ -2,11 +2,16 @@ package io.github.yourname.agentstudio.tool;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 import io.github.yourname.agentstudio.security.ActorContext;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.time.Instant;
 import org.junit.jupiter.api.Test;
 
 class ToolRouterTest {
@@ -81,6 +86,78 @@ class ToolRouterTest {
         assertThat(node.lastRequest).isNotNull();
         assertThat(node.lastRequest.binding().bindingId()).isEqualTo("node:trusted:fs.read");
         assertThat(mcp.lastRequest).isNull();
+    }
+
+    @Test
+    void agentAskForcesApprovalEvenWhenRunHasFullAccess() {
+        ToolApprovalService approvals = mock(ToolApprovalService.class);
+        when(approvals.request(any())).thenReturn(pendingApproval());
+        RecordingProvider provider = new RecordingProvider(
+                "node", descriptor("node", "node:1:read", "fs.read"));
+        ToolRouter router = new ToolRouter(List.of(provider), approvals);
+        ResolvedToolBinding binding = new ResolvedToolBinding(
+                "node:1:read", "tool_read", "fs.read", "node", "fs.read", "Read",
+                RiskLevel.LOW, false, Map.of(), Map.of());
+        AgentApprovalPolicy policy = new AgentApprovalPolicy("CUSTOM", List.of(
+                new AgentApprovalPolicy.Rule(RiskLevel.LOW, AgentApprovalPolicy.Decision.ASK)));
+
+        ToolProviderResult result = router.invoke(new ToolInvocationRequest(
+                "run-1", "call-1", binding, Map.of(), null, CodingWorkspaceScope.from(null), ACTOR,
+                null, ApprovalMode.FULL_ACCESS, policy));
+
+        assertThat(result.requiresApproval()).isTrue();
+        assertThat(provider.lastRequest).isNull();
+    }
+
+    @Test
+    void agentAllowCannotBypassStricterRunApprovalMode() {
+        ToolApprovalService approvals = mock(ToolApprovalService.class);
+        when(approvals.request(any())).thenReturn(pendingApproval());
+        RecordingProvider provider = new RecordingProvider(
+                "node", descriptor("node", "node:1:write", "fs.write"));
+        ToolRouter router = new ToolRouter(List.of(provider), approvals);
+        ResolvedToolBinding binding = new ResolvedToolBinding(
+                "node:1:write", "tool_write", "fs.write", "node", "fs.write", "Write",
+                RiskLevel.HIGH, true, Map.of(), Map.of());
+        AgentApprovalPolicy policy = new AgentApprovalPolicy("CUSTOM", List.of(
+                new AgentApprovalPolicy.Rule(RiskLevel.HIGH, AgentApprovalPolicy.Decision.ALLOW)));
+
+        ToolProviderResult result = router.invoke(new ToolInvocationRequest(
+                "run-1", "call-1", binding, Map.of(), null, CodingWorkspaceScope.from(null), ACTOR,
+                null, ApprovalMode.ON_REQUEST, policy));
+
+        assertThat(result.requiresApproval()).isTrue();
+        assertThat(provider.lastRequest).isNull();
+    }
+
+    @Test
+    void agentDenyBlocksBeforeApprovalOrProviderExecution() {
+        ToolApprovalService approvals = mock(ToolApprovalService.class);
+        RecordingProvider provider = new RecordingProvider(
+                "node", descriptor("node", "node:1:delete", "fs.delete"));
+        ToolRouter router = new ToolRouter(List.of(provider), approvals);
+        ResolvedToolBinding binding = new ResolvedToolBinding(
+                "node:1:delete", "tool_delete", "fs.delete", "node", "fs.delete", "Delete",
+                RiskLevel.HIGH, true, Map.of(), Map.of());
+        AgentApprovalPolicy policy = new AgentApprovalPolicy("CUSTOM", List.of(
+                new AgentApprovalPolicy.Rule(RiskLevel.HIGH, AgentApprovalPolicy.Decision.DENY)));
+
+        ToolProviderResult result = router.invoke(new ToolInvocationRequest(
+                "run-1", "call-1", binding, Map.of(), null, CodingWorkspaceScope.from(null), ACTOR,
+                null, ApprovalMode.FULL_ACCESS, policy));
+
+        assertThat(result.status()).isEqualTo("DENIED");
+        assertThat(result.result()).containsEntry("code", "AGENT_POLICY_DENIED");
+        assertThat(provider.lastRequest).isNull();
+        verifyNoInteractions(approvals);
+    }
+
+    private static ToolApprovalView pendingApproval() {
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+        return new ToolApprovalView(
+                "approval-1", "run-1", "call-1", "binding", "node", "tool", "sha256:test",
+                null, "", ToolApprovalStatus.REQUESTED, "user", null, now, now.plusSeconds(600),
+                null, "");
     }
 
     private static ToolDescriptor descriptor(String providerId, String bindingId, String logicalName) {

@@ -10,6 +10,7 @@ class ApprovalModeTest {
 
     private static final ResolvedToolBinding MEDIUM_RISK = binding(RiskLevel.MEDIUM);
     private static final ResolvedToolBinding HIGH_RISK = binding(RiskLevel.HIGH);
+    private static final ResolvedToolBinding CRITICAL_RISK = binding(RiskLevel.CRITICAL);
 
     @Test
     void defaultsToOnRequestAndAcceptsStableWireValues() {
@@ -26,6 +27,7 @@ class ApprovalModeTest {
         assertThat(ApprovalMode.ON_REQUEST.requiresApproval(MEDIUM_RISK)).isTrue();
         assertThat(ApprovalMode.AUTO_APPROVE.requiresApproval(MEDIUM_RISK)).isFalse();
         assertThat(ApprovalMode.AUTO_APPROVE.requiresApproval(HIGH_RISK)).isTrue();
+        assertThat(ApprovalMode.AUTO_APPROVE.requiresApproval(CRITICAL_RISK)).isTrue();
         assertThat(ApprovalMode.FULL_ACCESS.requiresApproval(HIGH_RISK)).isFalse();
     }
 

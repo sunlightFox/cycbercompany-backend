@@ -500,16 +500,21 @@ public class AgentManifestCompiler {
         if (values == null) {
             return;
         }
-        if (!values.isArray() || values.size() > 64) {
-            errors.add("safety.customApprovalRules must be an array with at most 64 items.");
+        if (!values.isArray() || values.size() > 4) {
+            errors.add("safety.customApprovalRules must be an array with at most 4 items.");
             return;
         }
+        Set<String> riskLevels = new java.util.HashSet<>();
         for (JsonNode value : values) {
             rejectUnknownFields(value, "safety.customApprovalRules[]", Set.of("riskLevel", "decision"), errors);
             if (!value.isObject()
                     || !Set.of("LOW", "MEDIUM", "HIGH", "CRITICAL").contains(value.path("riskLevel").asText())
                     || !Set.of("ALLOW", "ASK", "DENY").contains(value.path("decision").asText())) {
                 errors.add("safety.customApprovalRules contains an invalid rule.");
+                return;
+            }
+            if (!riskLevels.add(value.path("riskLevel").asText())) {
+                errors.add("safety.customApprovalRules contains a duplicate risk level.");
                 return;
             }
         }

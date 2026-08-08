@@ -8,6 +8,7 @@ import io.github.yourname.agentstudio.agent.AgentIdentityRepository;
 import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.persona.UserPersonaEntity;
 import io.github.yourname.agentstudio.persona.UserPersonaRepository;
+import io.github.yourname.agentstudio.persona.UserPersonaService;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -34,6 +35,9 @@ class MemoryServiceIntegrationTest {
 
     @Autowired
     private UserPersonaRepository personas;
+
+    @Autowired
+    private UserPersonaService personaService;
 
     @Test
     void userCanGovernMemoryWithinAgentScope() {
@@ -149,6 +153,45 @@ class MemoryServiceIntegrationTest {
         assertThat(retrieval.retrieve(agent.id(), "中文回答", policy, actor))
                 .extracting(MemorySnapshot::id)
                 .containsExactly(candidate.id());
+
+        MemoryView rejected = memories.reject(candidate.id(), actor);
+        assertThat(rejected.status()).isEqualTo(MemoryStatus.REJECTED);
+        assertThat(retrieval.retrieve(agent.id(), "中文回答", policy, actor)).isEmpty();
+    }
+
+    @Test
+    void candidateDeduplicationIsScopedToPersona() {
+        var agent = identities.save(new AgentIdentityEntity(
+                "memory-agent-candidate-persona", "tenant-memory-candidate-persona", "user-memory-candidate-persona",
+                "Memory Agent", "", "", "", "[]", "PRIVATE", Instant.now()));
+        Instant now = Instant.now();
+        var work = personas.save(new UserPersonaEntity(
+                "candidate-persona-work", "tenant-memory-candidate-persona", "user-memory-candidate-persona",
+                "Work", "", "{}", true, now));
+        var personal = personas.save(new UserPersonaEntity(
+                "candidate-persona-personal", "tenant-memory-candidate-persona", "user-memory-candidate-persona",
+                "Personal", "", "{}", false, now));
+        ActorContext actor = new ActorContext(
+                "tenant-memory-candidate-persona", "user-memory-candidate-persona",
+                java.util.Set.of(), java.util.Set.of());
+        String policy = """
+                {"mode":"PERSONALIZED","longTerm":{"enabled":true,"categories":["PROCEDURAL"],
+                "writeMode":"SUGGEST","topK":3,"minRelevance":0.1}}
+                """;
+        String preference = "以后请始终使用简洁回答。";
+
+        MemoryView workCandidate = candidates.capture(
+                agent.id(), work.id(), "conversation-work", "run-work", preference, policy, actor).orElseThrow();
+        assertThat(candidates.capture(
+                agent.id(), work.id(), "conversation-work-2", "run-work-2", preference, policy, actor)).isEmpty();
+        MemoryView personalCandidate = candidates.capture(
+                agent.id(), personal.id(), "conversation-personal", "run-personal", preference, policy, actor).orElseThrow();
+        MemoryView sharedCandidate = candidates.capture(
+                agent.id(), null, "conversation-shared", "run-shared", preference, policy, actor).orElseThrow();
+
+        assertThat(workCandidate.personaId()).isEqualTo(work.id());
+        assertThat(personalCandidate.personaId()).isEqualTo(personal.id());
+        assertThat(sharedCandidate.personaId()).isNull();
     }
 
     @Test
@@ -187,5 +230,64 @@ class MemoryServiceIntegrationTest {
                 .extracting(MemorySnapshot::id)
                 .containsExactlyInAnyOrder(global.id(), personalMemory.id())
                 .doesNotContain(workMemory.id());
+
+        assertThat(memories.list(agent.id(), null, true, null, null, null, 10, actor))
+                .extracting(MemoryView::id)
+                .containsExactly(global.id());
+
+        assertThat(memories.clear(new ClearMemoryCommand(agent.id(), work.id()), actor)).isEqualTo(1);
+        assertThat(memories.list(agent.id(), work.id(), null, null, null, 10, actor)).isEmpty();
+        assertThat(memories.list(agent.id(), null, null, null, null, 10, actor))
+                .extracting(MemoryView::id)
+                .containsExactlyInAnyOrder(global.id(), personalMemory.id());
+        assertThat(memories.clear(new ClearMemoryCommand(agent.id(), null, true), actor)).isEqualTo(1);
+        assertThat(memories.list(agent.id(), null, null, null, null, 10, actor))
+                .extracting(MemoryView::id)
+                .containsExactly(personalMemory.id());
+    }
+
+    @Test
+    void expiredMemoriesDoNotConsumeListLimit() {
+        var agent = identities.save(new AgentIdentityEntity(
+                "memory-agent-expiry", "tenant-memory-expiry", "user-memory-expiry",
+                "Memory Agent", "", "", "", "[]", "PRIVATE", Instant.now()));
+        ActorContext actor = new ActorContext(
+                "tenant-memory-expiry", "user-memory-expiry", java.util.Set.of(), java.util.Set.of());
+        memories.create(new CreateMemoryCommand(
+                agent.id(), MemoryType.PROFILE, "Expired preference.", 0.5,
+                null, null, null, Instant.now().minusSeconds(60), null), actor);
+        MemoryView active = memories.create(new CreateMemoryCommand(
+                agent.id(), MemoryType.PROFILE, "Active preference.", 0.5,
+                null, null, null, Instant.now().plusSeconds(60), null), actor);
+
+        assertThat(memories.list(agent.id(), null, null, null, null, 1, actor))
+                .extracting(MemoryView::id)
+                .containsExactly(active.id());
+    }
+
+    @Test
+    void deletingPersonaRemovesOnlyItsScopedMemories() {
+        var agent = identities.save(new AgentIdentityEntity(
+                "memory-agent-persona-delete", "tenant-memory-persona-delete", "user-memory-persona-delete",
+                "Memory Agent", "", "", "", "[]", "PRIVATE", Instant.now()));
+        var persona = personas.save(new UserPersonaEntity(
+                "persona-delete", "tenant-memory-persona-delete", "user-memory-persona-delete",
+                "Temporary", "", "{}", true, Instant.now()));
+        ActorContext actor = new ActorContext(
+                "tenant-memory-persona-delete", "user-memory-persona-delete",
+                java.util.Set.of(), java.util.Set.of());
+        MemoryView shared = memories.create(new CreateMemoryCommand(
+                agent.id(), MemoryType.PROFILE, "Shared preference.", 0.5,
+                null, null, null, null, null), actor);
+        memories.create(new CreateMemoryCommand(
+                agent.id(), MemoryType.PROFILE, "Persona preference.", 0.5,
+                null, null, null, null, persona.id()), actor);
+
+        personaService.delete(persona.id(), actor);
+
+        assertThat(personas.findById(persona.id())).isEmpty();
+        assertThat(memories.list(agent.id(), null, null, null, null, 10, actor))
+                .extracting(MemoryView::id)
+                .containsExactly(shared.id());
     }
 }
