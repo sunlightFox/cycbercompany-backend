@@ -4,7 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import io.github.yourname.agentstudio.security.ActorContext;
@@ -41,7 +40,7 @@ class ToolRouterTest {
     }
 
     @Test
-    void intersectsAgentAllowListWithRunSelection() {
+    void exposesEveryDiscoveredToolRegardlessOfLegacySelections() {
         ToolRouter router = new ToolRouter(List.of(provider(
                 "node",
                 descriptor("node", "node:1:fs.read", "fs.read"),
@@ -50,7 +49,8 @@ class ToolRouterTest {
 
         List<ResolvedToolBinding> bindings = router.resolve(DISCOVERY, List.of("fs.*"), "fs.read,shell.run");
 
-        assertThat(bindings).extracting(ResolvedToolBinding::logicalName).containsExactly("fs.read");
+        assertThat(bindings).extracting(ResolvedToolBinding::logicalName)
+                .containsExactly("fs.read", "fs.write", "shell.run");
     }
 
     @Test
@@ -72,7 +72,9 @@ class ToolRouterTest {
         RecordingProvider mcp = new RecordingProvider(
                 "mcp", descriptor("mcp", "mcp:other:fs.read", "fs.read"));
         ToolRouter router = new ToolRouter(List.of(node, mcp));
-        ResolvedToolBinding binding = router.resolve(DISCOVERY, List.of("node:*"), "*").getFirst();
+        ResolvedToolBinding binding = new ResolvedToolBinding(
+                "node:trusted:fs.read", "tool_read", "fs.read", "node", "fs.read", "Read",
+                RiskLevel.LOW, false, Map.of(), Map.of());
 
         router.invoke(new ToolInvocationRequest(
                 "run-1",
@@ -89,7 +91,7 @@ class ToolRouterTest {
     }
 
     @Test
-    void agentAskForcesApprovalEvenWhenRunHasFullAccess() {
+    void fullAccessBypassesAgentAskPolicy() {
         ToolApprovalService approvals = mock(ToolApprovalService.class);
         when(approvals.request(any())).thenReturn(pendingApproval());
         RecordingProvider provider = new RecordingProvider(
@@ -105,8 +107,8 @@ class ToolRouterTest {
                 "run-1", "call-1", binding, Map.of(), null, CodingWorkspaceScope.from(null), ACTOR,
                 null, ApprovalMode.FULL_ACCESS, policy));
 
-        assertThat(result.requiresApproval()).isTrue();
-        assertThat(provider.lastRequest).isNull();
+        assertThat(result.succeeded()).isTrue();
+        assertThat(provider.lastRequest).isNotNull();
     }
 
     @Test
@@ -131,8 +133,9 @@ class ToolRouterTest {
     }
 
     @Test
-    void agentDenyBlocksBeforeApprovalOrProviderExecution() {
+    void legacyAgentDenyRequestsApprovalInsteadOfHidingTheCapability() {
         ToolApprovalService approvals = mock(ToolApprovalService.class);
+        when(approvals.request(any())).thenReturn(pendingApproval());
         RecordingProvider provider = new RecordingProvider(
                 "node", descriptor("node", "node:1:delete", "fs.delete"));
         ToolRouter router = new ToolRouter(List.of(provider), approvals);
@@ -144,12 +147,10 @@ class ToolRouterTest {
 
         ToolProviderResult result = router.invoke(new ToolInvocationRequest(
                 "run-1", "call-1", binding, Map.of(), null, CodingWorkspaceScope.from(null), ACTOR,
-                null, ApprovalMode.FULL_ACCESS, policy));
+                null, ApprovalMode.ON_REQUEST, policy));
 
-        assertThat(result.status()).isEqualTo("DENIED");
-        assertThat(result.result()).containsEntry("code", "AGENT_POLICY_DENIED");
+        assertThat(result.status()).isEqualTo("APPROVAL_REQUIRED");
         assertThat(provider.lastRequest).isNull();
-        verifyNoInteractions(approvals);
     }
 
     private static ToolApprovalView pendingApproval() {

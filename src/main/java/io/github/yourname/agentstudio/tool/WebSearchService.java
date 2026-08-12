@@ -6,7 +6,6 @@ import io.github.yourname.agentstudio.config.AppProperties;
 import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.URI;
-import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -25,13 +24,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.StringJoiner;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -42,7 +38,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /**
- * Agent-oriented web retrieval using Tavily when configured, with SearXNG kept as a legacy fallback.
+ * Agent-oriented web retrieval using the configured Tavily API.
  *
  * <p>Search results are discovery candidates. Only readable, relevant page excerpts are
  * marked as verified evidence; both remain untrusted external content.
@@ -50,10 +46,8 @@ import org.springframework.stereotype.Service;
 @Service
 public class WebSearchService {
 
-    private static final String SEARXNG_SOURCE = "searxng";
     private static final String TAVILY_SOURCE = "tavily";
     private static final String TAVILY_DEFAULT_ENDPOINT = "https://api.tavily.com/search";
-    private static final String TAVILY_API_KEY_ENV = "TAVILY_API_KEY";
     private static final String USER_AGENT = "AgentStudio/1.0 (+local web retrieval)";
     private static final Set<String> TRACKING_PARAMETERS = Set.of("fbclid", "gclid", "mc_cid", "mc_eid");
     private static final Pattern ENGLISH_RELATIVE_TIME = Pattern.compile(
@@ -61,17 +55,12 @@ public class WebSearchService {
     private static final Pattern CHINESE_RELATIVE_TIME = Pattern.compile("(\\d+)\\s*(分钟|小时|天)前");
     private static final Pattern URL_CALENDAR_DATE = Pattern.compile(
             "(?<!\\d)(20\\d{2})[-/]?(0[1-9]|1[0-2])[-/]?(0[1-9]|[12]\\d|3[01])(?!\\d)");
-    // The public GDELT DOC endpoint asks callers to keep requests at least five seconds apart.
-    private static final AtomicLong NEXT_GDELT_REQUEST_AT = new AtomicLong();
-    private static final long GDELT_MIN_REQUEST_INTERVAL_MILLIS = 5_000;
 
     private final AppProperties properties;
     private final HttpClient searchHttpClient;
     private final HttpClient pageHttpClient;
     private final ObjectMapper objectMapper;
     private final ConcurrentMap<String, CachedSearch> searchCache = new ConcurrentHashMap<>();
-    private final AtomicInteger gdeltConsecutiveFailures = new AtomicInteger();
-    private final AtomicLong gdeltCircuitOpenUntil = new AtomicLong();
 
     @Autowired
     public WebSearchService(AppProperties properties, ObjectMapper objectMapper) {
@@ -109,7 +98,6 @@ public class WebSearchService {
         AppProperties.WebSearch config = effectiveConfig(properties.webSearch());
         String query = command.query().trim();
         WebSearchMode intent = resolveIntent(command, query);
-        boolean tavilyEnabled = tavilyConfigured();
         if (!config.enabled()) {
             return response(query, intent, List.of(), List.of(), 0, 0, 0, 0, 0, 0);
         }
@@ -122,10 +110,8 @@ public class WebSearchService {
         AppProperties.SearchPlanning planning = effectivePlanning(config.planning());
         List<WebSearchQueryPlanner.PlannedQuery> queryPlan = WebSearchQueryPlanner.plan(
                 query, topicQuery, intent, planning.maxQueries());
-        AppProperties.NewsSources newsSources = effectiveNewsSources(config.newsSources());
         List<SearchAttempt> attempts = executeSearchPlan(
-                config, command, queryPlan, newsSources, topicQuery.isBlank() ? query : topicQuery,
-                effectiveFreshness, candidateLimit, planning.cacheTtlSeconds());
+                config, command, queryPlan, candidateLimit, planning.cacheTtlSeconds());
         List<WebSearchProviderTrace> traces = attempts.stream().map(SearchAttempt::trace).collect(Collectors.toCollection(ArrayList::new));
         List<WebSearchResult> candidates = attempts.stream()
                 .flatMap(attempt -> attempt.results().stream())
@@ -134,19 +120,15 @@ public class WebSearchService {
         // search returns no candidates and query fan-out is disabled.
         if (candidates.isEmpty() && intent == WebSearchMode.NEWS
                 && queryPlan.stream().noneMatch(item -> item.mode() == WebSearchMode.GENERAL)) {
-            SearchAttempt fallback = tavilyEnabled
-                    ? searchTavily(command, query, WebSearchMode.GENERAL, candidateLimit,
-                            "tavily/general-fallback", planning.cacheTtlSeconds())
-                    : searchSearxng(
-                            config, command, query, WebSearchMode.GENERAL, candidateLimit,
-                            "searxng/general-fallback", planning.cacheTtlSeconds());
+            SearchAttempt fallback = searchTavily(config, command, query, WebSearchMode.GENERAL, candidateLimit,
+                    "tavily/general-fallback", planning.cacheTtlSeconds());
             traces.add(fallback.trace());
             candidates = fallback.results();
         }
         RankingResult candidatesForReading = rankCandidates(
                 candidates, topicQuery, candidateLimit, config.perDomainLimit(), config.minUniqueDomains(),
                 command.includeDomains(), command.excludeDomains(), WebSearchFreshness.ANY, false, requirePublicationDate);
-        EvidenceReadResult evidence = readEvidence(candidatesForReading.results(), topicQuery, config.pageReader(), newsSources);
+        EvidenceReadResult evidence = readEvidence(candidatesForReading.results(), topicQuery, config.pageReader());
         List<WebSearchResult> rankedCandidates = requirePublicationDate
                 ? evidence.results().stream().filter(WebSearchService::isVerifiedRelevantEvidence).toList()
                 : evidence.results();
@@ -163,28 +145,13 @@ public class WebSearchService {
             AppProperties.WebSearch config,
             WebSearchCommand command,
             List<WebSearchQueryPlanner.PlannedQuery> queryPlan,
-            AppProperties.NewsSources newsSources,
-            String gdeltQuery,
-            WebSearchFreshness freshness,
             int limit,
             long cacheTtlSeconds) {
-        boolean tavilyEnabled = tavilyConfigured();
         List<Future<SearchAttempt>> tasks = new ArrayList<>();
         try (ExecutorService executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
             for (WebSearchQueryPlanner.PlannedQuery planned : queryPlan) {
-                if (tavilyEnabled) {
-                    tasks.add(executor.submit(() -> searchTavily(
-                            command, planned.query(), planned.mode(), limit,
-                            planned.sourceId().replaceFirst("^searxng/", "tavily/"), cacheTtlSeconds)));
-                } else {
-                    tasks.add(executor.submit(() -> searchSearxng(
-                            config, command, planned.query(), planned.mode(), limit, planned.sourceId(), cacheTtlSeconds)));
-                }
-            }
-            if (newsSources.gdeltEnabled()
-                    && queryPlan.stream().anyMatch(item -> item.mode() == WebSearchMode.NEWS)) {
-                tasks.add(executor.submit(() -> searchGdelt(
-                        newsSources, gdeltQuery, freshness, limit, cacheTtlSeconds)));
+                tasks.add(executor.submit(() -> searchTavily(
+                        config, command, planned.query(), planned.mode(), limit, planned.sourceId(), cacheTtlSeconds)));
             }
             List<SearchAttempt> attempts = new ArrayList<>(tasks.size());
             for (Future<SearchAttempt> task : tasks) {
@@ -199,6 +166,7 @@ public class WebSearchService {
     }
 
     private SearchAttempt searchTavily(
+            AppProperties.WebSearch config,
             WebSearchCommand command,
             String query,
             WebSearchMode intent,
@@ -208,7 +176,7 @@ public class WebSearchService {
         long startedAt = System.nanoTime();
         String providerQuery = query;
         try {
-            URI uri = buildTavilyUri();
+            URI uri = buildTavilyUri(config);
             String body = buildTavilyRequestBody(providerQuery, command, intent, limit);
             List<WebSearchResult> cached = cachedResults("tavily:" + body, cacheTtlSeconds);
             if (cached != null) {
@@ -218,7 +186,7 @@ public class WebSearchService {
                     .timeout(Duration.ofSeconds(12))
                     .header("Accept", "application/json")
                     .header("Content-Type", "application/json")
-                    .header("Authorization", "Bearer " + tavilyApiKey())
+                    .header("Authorization", "Bearer " + config.tavilyApiKey())
                     .header("User-Agent", USER_AGENT)
                     .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                     .build();
@@ -241,107 +209,9 @@ public class WebSearchService {
         }
     }
 
-    private SearchAttempt searchSearxng(
-            AppProperties.WebSearch config,
-            WebSearchCommand command,
-            String query,
-            WebSearchMode intent,
-            int limit,
-            String sourceId,
-            long cacheTtlSeconds) {
-        long startedAt = System.nanoTime();
-        String providerQuery = providerQuery(query, command.includeDomains());
-        try {
-            URI uri = buildSearxngUri(config, providerQuery, intent, effectiveFreshness(intent, command.freshness()), limit);
-            List<WebSearchResult> cached = cachedResults("searxng:" + uri, cacheTtlSeconds);
-            if (cached != null) {
-                return cachedAttempt(sourceId, providerQuery, startedAt, cached);
-            }
-            HttpRequest request = HttpRequest.newBuilder(uri)
-                    .timeout(Duration.ofSeconds(12))
-                    .header("Accept", "application/json")
-                    .header("User-Agent", USER_AGENT)
-                    .GET()
-                    .build();
-            HttpResponse<String> response = searchHttpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new IllegalStateException("SearXNG returned HTTP " + response.statusCode());
-            }
-            List<WebSearchResult> results = parseSearxngResults(response.body(), limit);
-            cacheResults("searxng:" + uri, results, cacheTtlSeconds);
-            return new SearchAttempt(results, new WebSearchProviderTrace(
-                    sourceId, "SUCCESS", providerQuery, results.size(), elapsedMillis(startedAt), ""));
-        } catch (InterruptedException ex) {
-            Thread.currentThread().interrupt();
-            return failedAttempt(sourceId, providerQuery, startedAt,
-                    "endpoint=" + safeEndpoint(config.endpoint()) + ": SearXNG request was interrupted");
-        } catch (Exception ex) {
-            return failedAttempt(sourceId, providerQuery, startedAt,
-                    "endpoint=" + safeEndpoint(config.endpoint()) + ": " + safeMessage(ex));
-        }
-    }
-
     private SearchAttempt failedAttempt(String sourceId, String query, long startedAt, String detail) {
         return new SearchAttempt(List.of(), new WebSearchProviderTrace(
                 sourceId, "FAILED", query, 0, elapsedMillis(startedAt), detail));
-    }
-
-    private SearchAttempt searchGdelt(
-            AppProperties.NewsSources sources,
-            String query,
-            WebSearchFreshness freshness,
-            int limit,
-            long cacheTtlSeconds) {
-        long startedAt = System.nanoTime();
-        URI uri;
-        try {
-            uri = buildGdeltUri(sources, query, freshness, limit);
-        } catch (Exception ex) {
-            return failedAttempt("gdelt/doc", query, startedAt, safeMessage(ex));
-        }
-        List<WebSearchResult> cached = cachedResults("gdelt:" + uri, cacheTtlSeconds);
-        if (cached != null) {
-            return cachedAttempt("gdelt/doc", query, startedAt, cached);
-        }
-        if (System.currentTimeMillis() < gdeltCircuitOpenUntil.get()) {
-            return new SearchAttempt(List.of(), new WebSearchProviderTrace(
-                    "gdelt/doc", "SKIPPED", query, 0, elapsedMillis(startedAt), "Circuit open after repeated failures"));
-        }
-        if (!reserveGdeltRequest()) {
-            return new SearchAttempt(List.of(), new WebSearchProviderTrace(
-                    "gdelt/doc", "SKIPPED", query, 0, elapsedMillis(startedAt), "Public endpoint cooldown"));
-        }
-        try {
-            HttpRequest request = HttpRequest.newBuilder(uri)
-                    .timeout(Duration.ofSeconds(12))
-                    .header("Accept", "application/json")
-                    .header("User-Agent", USER_AGENT)
-                    .GET()
-                    .build();
-            HttpResponse<String> response = searchHttpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new IllegalStateException("GDELT returned HTTP " + response.statusCode());
-            }
-            List<WebSearchResult> results = parseGdeltResults(response.body(), limit);
-            gdeltConsecutiveFailures.set(0);
-            gdeltCircuitOpenUntil.set(0);
-            cacheResults("gdelt:" + uri, results, cacheTtlSeconds);
-            return new SearchAttempt(results, new WebSearchProviderTrace(
-                    "gdelt/doc", "SUCCESS", query, results.size(), elapsedMillis(startedAt), ""));
-        } catch (InterruptedException ex) {
-            Thread.currentThread().interrupt();
-            recordGdeltFailure();
-            return failedAttempt("gdelt/doc", query, startedAt, "GDELT request was interrupted");
-        } catch (Exception ex) {
-            recordGdeltFailure();
-            return failedAttempt("gdelt/doc", query, startedAt, safeMessage(ex));
-        }
-    }
-
-    private void recordGdeltFailure() {
-        if (gdeltConsecutiveFailures.incrementAndGet() >= 2) {
-            gdeltCircuitOpenUntil.set(System.currentTimeMillis() + 60_000);
-        }
     }
 
     private SearchAttempt cachedAttempt(String sourceId, String query, long startedAt, List<WebSearchResult> results) {
@@ -375,31 +245,6 @@ public class WebSearchService {
         }
     }
 
-    private List<WebSearchResult> parseSearxngResults(String json, int limit) throws Exception {
-        JsonNode results = objectMapper.readTree(json).path("results");
-        if (!results.isArray()) {
-            throw new IllegalStateException("SearXNG JSON response did not contain a results array");
-        }
-        List<WebSearchResult> parsed = new ArrayList<>();
-        for (JsonNode item : results) {
-            String title = item.path("title").asText("").trim();
-            String url = item.path("url").asText("").trim();
-            if (title.isBlank() || url.isBlank()) {
-                continue;
-            }
-            String engine = item.path("engines").isArray() && !item.path("engines").isEmpty()
-                    ? item.path("engines").get(0).asText(SEARXNG_SOURCE)
-                    : SEARXNG_SOURCE;
-            Instant publishedAt = parseSearxngPublicationDate(item, url);
-            parsed.add(new WebSearchResult(title, url, item.path("content").asText(""), engine,
-                    "SEARXNG", publishedAt));
-            if (parsed.size() >= limit) {
-                break;
-            }
-        }
-        return List.copyOf(parsed);
-    }
-
     private List<WebSearchResult> parseTavilyResults(String json, int limit) throws Exception {
         JsonNode results = objectMapper.readTree(json).path("results");
         if (!results.isArray()) {
@@ -428,41 +273,10 @@ public class WebSearchService {
         return List.copyOf(parsed);
     }
 
-    private static Instant parseSearxngPublicationDate(JsonNode item, String url) {
-        Instant publishedAt = parsePublicationDate(item.path("publishedDate").asText(""));
-        if (publishedAt == null) {
-            publishedAt = parseRelativePublicationDate(item.path("metadata").asText(""), Instant.now());
-        }
-        return publishedAt == null ? parsePublicationDateFromUrl(url) : publishedAt;
-    }
-
-    private List<WebSearchResult> parseGdeltResults(String json, int limit) throws Exception {
-        JsonNode articles = objectMapper.readTree(json).path("articles");
-        if (!articles.isArray()) {
-            throw new IllegalStateException("GDELT JSON response did not contain an articles array");
-        }
-        List<WebSearchResult> parsed = new ArrayList<>();
-        for (JsonNode item : articles) {
-            String title = item.path("title").asText("").trim();
-            String url = item.path("url").asText("").trim();
-            if (title.isBlank() || url.isBlank()) {
-                continue;
-            }
-            String domain = item.path("domain").asText("gdelt");
-            parsed.add(new WebSearchResult(title, url, domain, domain, "GDELT",
-                    parseGdeltPublicationDate(item.path("seendate").asText(""))));
-            if (parsed.size() >= limit) {
-                break;
-            }
-        }
-        return List.copyOf(parsed);
-    }
-
     private EvidenceReadResult readEvidence(
             List<WebSearchResult> results,
             String query,
-            AppProperties.PageReader pageReader,
-            AppProperties.NewsSources newsSources) {
+            AppProperties.PageReader pageReader) {
         if (pageReader == null || !pageReader.enabled() || pageReader.maxResults() <= 0) {
             return new EvidenceReadResult(results, 0, 0);
         }
@@ -474,7 +288,7 @@ public class WebSearchService {
         try (ExecutorService executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
             for (int index = 0; index < readLimit; index++) {
                 WebSearchResult result = results.get(index);
-                pageTasks.add(executor.submit(() -> readPage(result.url(), query, pageReader, newsSources)));
+                pageTasks.add(executor.submit(() -> readPage(result.url(), query, pageReader)));
             }
             for (int index = 0; index < results.size(); index++) {
                 WebSearchResult result = results.get(index);
@@ -499,14 +313,8 @@ public class WebSearchService {
     private PageRead readPage(
             String rawUrl,
             String query,
-            AppProperties.PageReader settings,
-            AppProperties.NewsSources newsSources) {
-        PageRead direct = readDirectPage(rawUrl, query, settings);
-        if (direct.evidence().readable() || !newsSources.jinaReaderEnabled()) {
-            return direct;
-        }
-        PageRead fallback = readViaJina(rawUrl, query, settings, newsSources);
-        return fallback.evidence().readable() ? fallback : direct;
+            AppProperties.PageReader settings) {
+        return readDirectPage(rawUrl, query, settings);
     }
 
     private PageRead readDirectPage(String rawUrl, String query, AppProperties.PageReader settings) {
@@ -562,6 +370,7 @@ public class WebSearchService {
         }
     }
 
+    /*
     private PageRead readViaJina(
             String rawUrl,
             String query,
@@ -594,6 +403,8 @@ public class WebSearchService {
         }
     }
 
+    */
+
     private WebEvidence extractEvidence(String html, String baseUri, String query, int maxExcerptChars) {
         Document document = Jsoup.parse(html, baseUri);
         Instant publishedAt = extractPublicationDate(document);
@@ -609,69 +420,12 @@ public class WebSearchService {
                 relevant ? "Readable page text matched the query." : "Readable page text had weak query overlap.", publishedAt);
     }
 
-    private static URI buildSearxngUri(
-            AppProperties.WebSearch config,
-            String query,
-            WebSearchMode intent,
-            WebSearchFreshness freshness,
-            int limit) {
-        URI endpoint = URI.create(config.endpoint().endsWith("/") ? config.endpoint() + "search" : config.endpoint() + "/search");
-        if (!"https".equalsIgnoreCase(endpoint.getScheme()) && !"http".equalsIgnoreCase(endpoint.getScheme())) {
-            throw new IllegalArgumentException("SearXNG endpoint must use HTTP(S)");
-        }
-        StringJoiner parameters = new StringJoiner("&");
-        addParameter(parameters, "q", query);
-        addParameter(parameters, "format", "json");
-        addParameter(parameters, "categories", categoryFor(intent));
-        String engines = intent == WebSearchMode.NEWS ? config.newsEngines() : config.generalEngines();
-        if (engines != null && !engines.isBlank()) {
-            addParameter(parameters, "engines", engines);
-        }
-        addParameter(parameters, "language", blankToDefault(config.language(), "zh-CN"));
-        addParameter(parameters, "safesearch", Integer.toString(Math.min(2, Math.max(0, config.safeSearch()))));
-        addParameter(parameters, "pageno", "1");
-        addParameter(parameters, "number_of_results", Integer.toString(limit));
-        String timeRange = timeRangeFor(intent, freshness);
-        if (timeRange != null) {
-            addParameter(parameters, "time_range", timeRange);
-        }
-        if (endpoint.getRawQuery() != null || endpoint.getRawFragment() != null) {
-            throw new IllegalArgumentException("SearXNG endpoint must not contain a query or fragment");
-        }
-        return URI.create(endpoint + "?" + parameters);
-    }
-
-    private static URI buildGdeltUri(
-            AppProperties.NewsSources sources,
-            String query,
-            WebSearchFreshness freshness,
-            int limit) {
-        URI endpoint = URI.create(blankToDefault(sources.gdeltEndpoint(), "https://api.gdeltproject.org/api/v2/doc/doc"));
-        if (!"https".equalsIgnoreCase(endpoint.getScheme()) && !"http".equalsIgnoreCase(endpoint.getScheme())) {
-            throw new IllegalArgumentException("GDELT endpoint must use HTTP(S)");
-        }
-        if (endpoint.getRawQuery() != null || endpoint.getRawFragment() != null) {
-            throw new IllegalArgumentException("GDELT endpoint must not contain a query or fragment");
-        }
-        StringJoiner parameters = new StringJoiner("&");
-        addParameter(parameters, "query", query);
-        addParameter(parameters, "mode", "artlist");
-        addParameter(parameters, "format", "json");
-        addParameter(parameters, "maxrecords", Integer.toString(Math.min(250, Math.max(1, limit))));
-        addParameter(parameters, "timespan", switch (freshness) {
-            case DAY -> "1d";
-            case WEEK -> "1week";
-            case MONTH, ANY -> "1month";
-        });
-        return URI.create(endpoint + "?" + parameters);
-    }
-
-    private URI buildTavilyUri() {
-        String apiKey = tavilyApiKey();
+    private URI buildTavilyUri(AppProperties.WebSearch config) {
+        String apiKey = config.tavilyApiKey();
         if (apiKey.isBlank()) {
             throw new IllegalStateException("Tavily API key is not configured");
         }
-        String configuredEndpoint = blankToDefault(System.getenv("TAVILY_ENDPOINT"), TAVILY_DEFAULT_ENDPOINT);
+        String configuredEndpoint = blankToDefault(config.tavilyEndpoint(), TAVILY_DEFAULT_ENDPOINT);
         String normalizedEndpoint = configuredEndpoint.endsWith("/search")
                 ? configuredEndpoint
                 : (configuredEndpoint.endsWith("/") ? configuredEndpoint + "search" : configuredEndpoint + "/search");
@@ -713,6 +467,7 @@ public class WebSearchService {
         return objectMapper.writeValueAsString(payload);
     }
 
+    /*
     private static void addParameter(StringJoiner parameters, String key, String value) {
         parameters.add(URLEncoder.encode(key, StandardCharsets.UTF_8) + "=" + URLEncoder.encode(value, StandardCharsets.UTF_8));
     }
@@ -728,10 +483,12 @@ public class WebSearchService {
         return switch (effectiveFreshness(intent, freshness)) {
             case DAY -> "day";
             case MONTH -> "month";
-            case WEEK -> "month"; // SearXNG exposes day/month/year; page dates apply the finer week filter.
+            case WEEK -> "month";
             case ANY -> null;
         };
     }
+
+    */
 
     private static WebSearchFreshness effectiveFreshness(WebSearchMode intent, WebSearchFreshness requested) {
         if (requested != null && requested != WebSearchFreshness.ANY) {
@@ -747,11 +504,6 @@ public class WebSearchService {
                 && (intent == WebSearchMode.NEWS || intent == WebSearchMode.RECENT);
     }
 
-    private static String providerQuery(String query, List<String> includedDomains) {
-        Set<String> domains = normalizeDomains(includedDomains);
-        return domains.size() == 1 ? "site:" + domains.iterator().next() + " " + query : query;
-    }
-
     private static String tavilyTimeRangeFor(WebSearchMode intent, WebSearchFreshness freshness) {
         return switch (effectiveFreshness(intent, freshness)) {
             case DAY -> "day";
@@ -761,39 +513,11 @@ public class WebSearchService {
         };
     }
 
-    private static boolean tavilyConfigured() {
-        return !blankToDefault(System.getenv(TAVILY_API_KEY_ENV), "").isBlank();
-    }
-
-    private static String tavilyApiKey() {
-        return blankToDefault(System.getenv(TAVILY_API_KEY_ENV), "");
-    }
-
     private static AppProperties.WebSearch effectiveConfig(AppProperties.WebSearch configured) {
-        return effectiveConfig(configured, System.getenv("SEARXNG_ENDPOINT"));
-    }
-
-    static AppProperties.WebSearch effectiveConfig(AppProperties.WebSearch configured, String searxngEndpoint) {
         AppProperties.WebSearch defaults = new AppProperties.WebSearch(
-                true, 5, "http://localhost:8888", 2, 3, "zh-CN", 1, AppProperties.PageReader.defaults());
-        AppProperties.WebSearch resolved = configured == null ? defaults : configured;
-        if (searxngEndpoint == null || searxngEndpoint.isBlank()
-                || !"http://localhost:8888".equalsIgnoreCase(resolved.endpoint().trim())) {
-            return resolved;
-        }
-        return new AppProperties.WebSearch(
-                resolved.enabled(),
-                resolved.maxResults(),
-                searxngEndpoint.trim(),
-                resolved.perDomainLimit(),
-                resolved.minUniqueDomains(),
-                resolved.language(),
-                resolved.safeSearch(),
-                resolved.pageReader(),
-                resolved.newsSources(),
-                resolved.planning(),
-                resolved.generalEngines(),
-                resolved.newsEngines());
+                true, 5, TAVILY_DEFAULT_ENDPOINT, "", 2, 3,
+                AppProperties.PageReader.defaults(), AppProperties.SearchPlanning.defaults());
+        return configured == null ? defaults : configured;
     }
 
     private static String safeEndpoint(String endpoint) {
@@ -827,9 +551,11 @@ public class WebSearchService {
         }
     }
 
+    /*
     private static AppProperties.NewsSources effectiveNewsSources(AppProperties.NewsSources configured) {
         return configured == null ? AppProperties.NewsSources.defaults() : configured;
     }
+    */
 
     private static AppProperties.SearchPlanning effectivePlanning(AppProperties.SearchPlanning configured) {
         return configured == null ? AppProperties.SearchPlanning.defaults() : new AppProperties.SearchPlanning(
@@ -1296,19 +1022,6 @@ public class WebSearchService {
         }
     }
 
-    private static Instant parseGdeltPublicationDate(String value) {
-        if (value == null || value.isBlank()) {
-            return null;
-        }
-        try {
-            return DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'")
-                    .withZone(ZoneOffset.UTC)
-                    .parse(value, Instant::from);
-        } catch (DateTimeParseException ignored) {
-            return parsePublicationDate(value);
-        }
-    }
-
     private static WebSearchMode resolveIntent(WebSearchCommand command, String query) {
         if (command.mode() != null && command.mode() != WebSearchMode.AUTO) return command.mode();
         String normalized = query.toLowerCase(Locale.ROOT);
@@ -1344,19 +1057,6 @@ public class WebSearchService {
 
     private static long elapsedMillis(long startedAt) {
         return Duration.ofNanos(System.nanoTime() - startedAt).toMillis();
-    }
-
-    private static boolean reserveGdeltRequest() {
-        while (true) {
-            long now = System.currentTimeMillis();
-            long reservedUntil = NEXT_GDELT_REQUEST_AT.get();
-            if (now < reservedUntil) {
-                return false;
-            }
-            if (NEXT_GDELT_REQUEST_AT.compareAndSet(reservedUntil, now + GDELT_MIN_REQUEST_INTERVAL_MILLIS)) {
-                return true;
-            }
-        }
     }
 
     private static String safeMessage(Exception exception) {

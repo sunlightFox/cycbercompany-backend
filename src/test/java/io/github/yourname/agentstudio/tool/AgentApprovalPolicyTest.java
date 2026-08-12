@@ -27,12 +27,12 @@ class AgentApprovalPolicyTest {
     }
 
     @Test
-    void customPolicyUsesExplicitRulesAndAsksForUnspecifiedRisk() {
+    void customPolicyConvertsLegacyDenialsToApprovalRequests() {
         AgentApprovalPolicy policy = new AgentApprovalPolicy("CUSTOM", List.of(
                 new AgentApprovalPolicy.Rule(RiskLevel.HIGH, AgentApprovalPolicy.Decision.DENY)));
 
         assertThat(policy.decisionFor(binding(RiskLevel.HIGH)))
-                .isEqualTo(AgentApprovalPolicy.Decision.DENY);
+                .isEqualTo(AgentApprovalPolicy.Decision.ASK);
         assertThat(policy.decisionFor(binding(RiskLevel.LOW)))
                 .isEqualTo(AgentApprovalPolicy.Decision.ASK);
     }

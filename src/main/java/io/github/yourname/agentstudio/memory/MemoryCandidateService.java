@@ -49,14 +49,12 @@ public class MemoryCandidateService {
             ActorContext actor) {
         JsonNode policy = parse(memoryPolicyJson);
         JsonNode longTerm = policy.path("longTerm");
-        if (!"PERSONALIZED".equals(policy.path("mode").asText()) || !longTerm.path("enabled").asBoolean(false)) {
-            return Optional.empty();
-        }
         Matcher explicit = EXPLICIT.matcher(userText == null ? "" : userText.trim());
         boolean explicitRequest = explicit.matches();
         String writeMode = longTerm.path("writeMode").asText("SUGGEST");
         boolean stablePreference = PREFERENCE.matcher(userText == null ? "" : userText.trim()).matches();
-        if (!explicitRequest && ("EXPLICIT_ONLY".equals(writeMode) || !stablePreference)) {
+        boolean agentPreference = isAgentPreference(userText);
+        if (!explicitRequest && !agentPreference && ("EXPLICIT_ONLY".equals(writeMode) || !stablePreference)) {
             return Optional.empty();
         }
 
@@ -64,7 +62,8 @@ public class MemoryCandidateService {
                 ? firstNonBlank(explicit.group(1), explicit.group(2))
                 : userText.trim();
         content = truncate(content.trim(), 500);
-        MemoryType type = stablePreference ? MemoryType.PROCEDURAL : MemoryType.SEMANTIC;
+        MemoryScope scope = agentPreference ? MemoryScope.AGENT : MemoryScope.USER;
+        MemoryType type = agentPreference ? MemoryType.PROFILE : stablePreference ? MemoryType.PROCEDURAL : MemoryType.SEMANTIC;
         if (!categoryAllowed(longTerm.path("categories"), type)) {
             return Optional.empty();
         }
@@ -87,9 +86,12 @@ public class MemoryCandidateService {
                 actor.tenantId(),
                 actor.userId(),
                 agentId,
-                personaId,
+                scope,
+                MemoryOrigin.AUTO_EXTRACTED,
+                MemoryKey.infer(scope, type, content),
+                scope == MemoryScope.AGENT ? null : personaId,
                 type,
-                MemoryStatus.CANDIDATE,
+                MemoryStatus.CONFIRMED,
                 MemorySensitivity.NORMAL,
                 content,
                 explicitRequest ? 0.95 : 0.8,
@@ -102,7 +104,21 @@ public class MemoryCandidateService {
                 embeddings.embedForStorage(content).orElse(null),
                 now,
                 expiresAt);
-        return Optional.of(MemoryView.from(memories.save(candidate)));
+        var existing = memories.findActiveByKey(
+                actor.tenantId(), agentId, scope.name(), scope == MemoryScope.AGENT ? null : personaId,
+                candidate.memoryKey(), MemoryStatus.CONFIRMED.name());
+        if (existing.stream().anyMatch(item -> item.origin() == MemoryOrigin.USER_CREATED)) {
+            return Optional.empty();
+        }
+        if (existing.stream().anyMatch(item -> item.content().equalsIgnoreCase(candidate.content()))) {
+            return Optional.empty();
+        }
+        MemoryItemEntity saved = memories.save(candidate);
+        existing.forEach(item -> item.supersede(saved.id(), now));
+        if (!existing.isEmpty()) {
+            memories.saveAll(existing);
+        }
+        return Optional.of(MemoryView.from(saved));
     }
 
     public Optional<MemoryView> capture(
@@ -133,6 +149,13 @@ public class MemoryCandidateService {
 
     private static String truncate(String value, int maxLength) {
         return value.length() <= maxLength ? value : value.substring(0, maxLength);
+    }
+
+    private static boolean isAgentPreference(String userText) {
+        String value = userText == null ? "" : userText.trim().toLowerCase(java.util.Locale.ROOT);
+        return (value.contains("你喜欢") || value.contains("智能体喜欢") || value.contains("agent likes"))
+                && (value.contains("红") || value.contains("蓝") || value.contains("绿")
+                        || value.contains("颜色") || value.contains("color"));
     }
 
     private JsonNode parse(String value) {

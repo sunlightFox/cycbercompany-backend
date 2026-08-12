@@ -2,6 +2,7 @@ package io.github.yourname.agentstudio.node;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.yourname.agentstudio.execution.InProcessLocalToolProvider;
 import io.github.yourname.agentstudio.tool.CodingFailureSummary;
 import io.github.yourname.agentstudio.tool.CodingWorkspaceScope;
 import io.github.yourname.agentstudio.tool.ModelVisibleText;
@@ -44,7 +45,8 @@ public class NodeToolProvider implements ToolProvider {
 
     @Override
     public List<ToolDescriptor> discover(ToolDiscoveryRequest request) {
-        if (request.nodeId() == null || request.nodeId().isBlank()) {
+        if (request.nodeId() == null || request.nodeId().isBlank()
+                || InProcessLocalToolProvider.TARGET_ID.equals(request.nodeId())) {
             // 普通聊天 Run 没有本地节点，Node Provider 对它贡献空集合即可。
             return List.of();
         }

@@ -156,6 +156,10 @@ class ToolRegistryTest {
                 .filter(item -> "system.software.query".equals(item.name()))
                 .findFirst()
                 .orElseThrow();
+        var softwareList = registry.capabilities().stream()
+                .filter(item -> "system.software.list".equals(item.name()))
+                .findFirst()
+                .orElseThrow();
         var softwareInstall = registry.capabilities().stream()
                 .filter(item -> "system.software.install".equals(item.name()))
                 .findFirst()
@@ -220,6 +224,9 @@ class ToolRegistryTest {
         assertEquals(java.util.List.of("source", "destination"), move.inputSchema().get("required"));
         assertEquals(java.util.List.of("command"), shell.inputSchema().get("required"));
         assertEquals(java.util.List.of("packageId"), softwareQuery.inputSchema().get("required"));
+        assertEquals(java.util.List.of(), softwareList.inputSchema().getOrDefault("required", java.util.List.of()));
+        assertTrue(properties(softwareList.inputSchema()).containsKey("timeoutSeconds"));
+        assertTrue(softwareList.description().contains("winget"));
         assertEquals(java.util.List.of("packageId"), softwareInstall.inputSchema().get("required"));
         assertEquals(java.util.List.of("packageId"), softwareUninstall.inputSchema().get("required"));
         assertTrue(properties(softwareInstall.inputSchema()).containsKey("allowUpgrade"));

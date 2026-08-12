@@ -1,0 +1,17 @@
+{
+  "id": "video-player",
+  "name": "Video Mod",
+  "version": "0.1.0",
+  "category": "media",
+  "surfaces": ["player"],
+  "capabilities": ["media.search", "media.resolvePlayback", "player.play", "player.pause", "player.seek", "episode.next", "episode.previous", "media.explain"],
+  "memorySchemas": ["media_progress", "watch_history", "source_preference"],
+  "permissions": ["network.media-source", "media.playback", "subtitle.read"],
+  "sourceAdapters": ["tvbox", "rss", "custom-api"],
+  "runtime": {
+    "protocol": "agentstudio.media.v1",
+    "isolation": "process",
+    "entry": "scripts/tvbox-runtime-worker.py",
+    "requiresApprovedAdapter": true
+  }
+}

@@ -16,7 +16,8 @@ public record CreateMemoryCommand(
         @Size(max = 200) String sourceRunId,
         @Size(max = 2000) String evidenceSummary,
         Instant expiresAt,
-        @Size(max = 200) String personaId) {
+        @Size(max = 200) String personaId,
+        MemoryScope scope) {
 
     public CreateMemoryCommand(
             String agentId,
@@ -27,6 +28,11 @@ public record CreateMemoryCommand(
             String sourceRunId,
             String evidenceSummary,
             Instant expiresAt) {
-        this(agentId, type, content, importance, sourceConversationId, sourceRunId, evidenceSummary, expiresAt, null);
+        this(agentId, type, content, importance, sourceConversationId, sourceRunId, evidenceSummary, expiresAt, null, MemoryScope.USER);
+    }
+
+    public CreateMemoryCommand(String agentId, MemoryType type, String content, Double importance,
+            String sourceConversationId, String sourceRunId, String evidenceSummary, Instant expiresAt, String personaId) {
+        this(agentId, type, content, importance, sourceConversationId, sourceRunId, evidenceSummary, expiresAt, personaId, MemoryScope.USER);
     }
 }

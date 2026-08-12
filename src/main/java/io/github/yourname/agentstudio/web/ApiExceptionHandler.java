@@ -11,6 +11,7 @@ import io.github.yourname.agentstudio.node.NodeToolApprovalConflictException;
 import io.github.yourname.agentstudio.node.LocalComputerControlNotReadyException;
 import io.github.yourname.agentstudio.execution.ExecutionModeChangeNotAllowedException;
 import io.github.yourname.agentstudio.skill.SkillCompatibilityException;
+import io.github.yourname.agentstudio.mod.ModInstallationRequiredException;
 import java.time.Instant;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
@@ -91,6 +92,15 @@ class ApiExceptionHandler {
         var detail = ProblemDetail.forStatusAndDetail(HttpStatus.UNPROCESSABLE_CONTENT, ex.getMessage());
         detail.setProperty("code", "SKILL_INCOMPATIBLE");
         detail.setProperty("report", ex.report());
+        detail.setProperty("timestamp", Instant.now().toString());
+        return detail;
+    }
+
+    @ExceptionHandler(ModInstallationRequiredException.class)
+    ProblemDetail modInstallationRequired(ModInstallationRequiredException ex) {
+        var detail = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+        detail.setProperty("code", "MOD_INSTALLATION_REQUIRED");
+        detail.setProperty("modId", ex.modId());
         detail.setProperty("timestamp", Instant.now().toString());
         return detail;
     }

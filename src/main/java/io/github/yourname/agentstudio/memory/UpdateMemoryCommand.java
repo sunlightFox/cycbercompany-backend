@@ -13,5 +13,12 @@ public record UpdateMemoryCommand(
         @NotBlank @Size(max = 4000) String content,
         @DecimalMin("0.0") @DecimalMax("1.0") Double importance,
         Instant expiresAt,
-        @NotNull @PositiveOrZero Long expectedRevision) {
+        @NotNull @PositiveOrZero Long expectedRevision,
+        MemoryScope scope,
+        @Size(max = 200) String personaId) {
+
+    public UpdateMemoryCommand(MemoryType type, String content, Double importance, Instant expiresAt,
+            Long expectedRevision) {
+        this(type, content, importance, expiresAt, expectedRevision, null, null);
+    }
 }

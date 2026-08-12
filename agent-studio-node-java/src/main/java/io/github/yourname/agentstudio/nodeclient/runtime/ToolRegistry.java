@@ -829,6 +829,11 @@ public class ToolRegistry {
                                         "description", "Package manager; only winget is supported."),
                                 "timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 600, "default", 60,
                                         "description", "Timeout in seconds.")), "packageId")),
+                new NodeCapability("system.software.list",
+                        "List installed Windows packages known to winget. Returns bounded plain-text inventory only and does not change the system. It may not include applications installed outside winget. Requires human approval.",
+                        "HIGH", softwareTool != null, true,
+                        objectSchema(Map.of("timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 600, "default", 90,
+                                "description", "Timeout in seconds.")))),
                 new NodeCapability("system.software.install",
                         "Install one Windows package by exact winget packageId using winget --id and --exact. Does not accept display names, custom installer arguments, force flags, hash bypasses, reboot allowance, paths, or shell syntax. Defaults to --no-upgrade; use a future upgrade tool for upgrades. Requires human approval.",
                         "HIGH", softwareTool != null, true,
@@ -1194,6 +1199,9 @@ public class ToolRegistry {
         }
         if ("system.software.query".equals(toolName)) {
             return softwareTool == null ? unavailable(toolName) : softwareTool.query(arguments);
+        }
+        if ("system.software.list".equals(toolName)) {
+            return softwareTool == null ? unavailable(toolName) : softwareTool.list(arguments);
         }
         if ("system.software.install".equals(toolName)) {
             return softwareTool == null ? unavailable(toolName) : softwareTool.install(arguments);

@@ -14,6 +14,25 @@ import org.junit.jupiter.api.Test;
 class SoftwareToolTest {
 
     @Test
+    void listUsesBoundedWingetInventoryWithoutSearchArguments() {
+        AtomicReference<List<String>> observedCommand = new AtomicReference<>();
+        SoftwareTool tool = new SoftwareTool((command, timeoutSeconds) -> {
+            observedCommand.set(command);
+            return new SoftwareTool.CommandResult(
+                    0,
+                    new SoftwareTool.CapturedOutput("Name Id Version\nVS Code Microsoft.VisualStudioCode 1.100", false),
+                    new SoftwareTool.CapturedOutput("", false), false, 12);
+        }, true);
+
+        var result = tool.list(Map.of("timeoutSeconds", "10"));
+
+        assertTrue(result.success());
+        assertEquals(List.of("winget", "list", "--accept-source-agreements", "--disable-interactivity"), observedCommand.get());
+        assertEquals("list", result.result().get("operation"));
+        assertTrue(result.result().get("limitations").toString().contains("winget"));
+    }
+
+    @Test
     void queryUsesExactWingetIdWithoutShell() {
         AtomicReference<List<String>> observedCommand = new AtomicReference<>();
         AtomicInteger observedTimeout = new AtomicInteger();

@@ -47,15 +47,6 @@ public class ToolRouter {
             ToolDiscoveryRequest request,
             List<String> requestedTools,
             String agentAllowList) {
-        List<String> agentRules = parseRules(agentAllowList);
-        if (agentRules.isEmpty()) {
-            return List.of();
-        }
-        List<String> runRules = requestedTools == null ? List.of() : requestedTools.stream()
-                .filter(value -> value != null && !value.isBlank())
-                .map(String::trim)
-                .toList();
-
         Map<String, ToolDescriptor> discovered = new LinkedHashMap<>();
         for (ToolProvider provider : providers.values().stream()
                 .sorted(Comparator.comparing(ToolProvider::providerId))
@@ -75,12 +66,6 @@ public class ToolRouter {
         List<ResolvedToolBinding> result = new ArrayList<>();
         Map<String, String> modelNames = new HashMap<>();
         for (ToolDescriptor descriptor : discovered.values()) {
-            if (!matchesAny(agentRules, descriptor)) {
-                continue;
-            }
-            if (!runRules.isEmpty() && !matchesAny(runRules, descriptor)) {
-                continue;
-            }
             String modelName = modelName(descriptor);
             String previous = modelNames.putIfAbsent(modelName, descriptor.bindingId());
             if (previous != null && !previous.equals(descriptor.bindingId())) {
@@ -111,7 +96,8 @@ public class ToolRouter {
                             + "-risk operation.",
                     null);
         }
-        boolean requiresApproval = agentDecision == AgentApprovalPolicy.Decision.ASK
+        boolean requiresApproval = (agentDecision == AgentApprovalPolicy.Decision.ASK
+                && request.approvalMode() != ApprovalMode.FULL_ACCESS)
                 || request.approvalMode().requiresApproval(request.binding());
         if (requiresApproval && !alreadyApproved) {
             if (approvals == null) {
@@ -154,42 +140,6 @@ public class ToolRouter {
             results.addAll(provider.cleanup(runId, actor));
         }
         return List.copyOf(results);
-    }
-
-    private static List<String> parseRules(String text) {
-        if (text == null || text.isBlank()) {
-            return List.of();
-        }
-        return java.util.Arrays.stream(text.split("[,\\s]+"))
-                .map(String::trim)
-                .filter(value -> !value.isBlank())
-                .distinct()
-                .toList();
-    }
-
-    private static boolean matchesAny(List<String> rules, ToolDescriptor descriptor) {
-        return rules.stream().anyMatch(rule -> matches(rule, descriptor));
-    }
-
-    static boolean matches(String rawRule, ToolDescriptor descriptor) {
-        String rule = rawRule == null ? "" : rawRule.trim().toLowerCase(Locale.ROOT);
-        if (rule.equals("*")) {
-            return true;
-        }
-        List<String> candidates = List.of(
-                descriptor.bindingId().toLowerCase(Locale.ROOT),
-                descriptor.logicalName().toLowerCase(Locale.ROOT),
-                descriptor.providerToolName().toLowerCase(Locale.ROOT),
-                descriptor.providerId().toLowerCase(Locale.ROOT) + ":*");
-        if (candidates.contains(rule)) {
-            return true;
-        }
-        if (rule.endsWith(".*")) {
-            String prefix = rule.substring(0, rule.length() - 1);
-            return descriptor.logicalName().toLowerCase(Locale.ROOT).startsWith(prefix)
-                    || descriptor.providerToolName().toLowerCase(Locale.ROOT).startsWith(prefix);
-        }
-        return false;
     }
 
     private static String modelName(ToolDescriptor descriptor) {

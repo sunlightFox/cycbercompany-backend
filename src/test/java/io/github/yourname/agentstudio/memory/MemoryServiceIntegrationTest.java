@@ -102,7 +102,7 @@ class MemoryServiceIntegrationTest {
     }
 
     @Test
-    void retrievalRequiresPersonalizedPolicyAndRemainsUserScoped() {
+    void retrievalUsesConfirmedMemoryRegardlessOfPolicyModeAndRemainsUserScoped() {
         var agent = identities.save(new AgentIdentityEntity(
                 "memory-agent-retrieval", "tenant-memory-retrieval", "owner-memory-retrieval",
                 "Memory Agent", "", "", "", "[]", "TEAM", Instant.now()));
@@ -123,12 +123,14 @@ class MemoryServiceIntegrationTest {
                 .extracting(MemorySnapshot::id)
                 .containsExactly(memory.id());
         assertThat(retrieval.retrieve(
-                agent.id(), "JUnit 测试", "{\"mode\":\"CONVERSATION\"}", owner)).isEmpty();
+                agent.id(), "JUnit 测试", "{\"mode\":\"CONVERSATION\"}", owner))
+                .extracting(MemorySnapshot::id)
+                .containsExactly(memory.id());
         assertThat(retrieval.retrieve(agent.id(), "JUnit 测试", personalized, colleague)).isEmpty();
     }
 
     @Test
-    void candidateRequiresConfirmationBeforeItCanBeRecalled() {
+    void autoExtractedMemoryIsImmediatelyAvailable() {
         var agent = identities.save(new AgentIdentityEntity(
                 "memory-agent-candidate", "tenant-memory-candidate", "user-memory-candidate",
                 "Memory Agent", "", "", "", "[]", "PRIVATE", Instant.now()));
@@ -142,14 +144,12 @@ class MemoryServiceIntegrationTest {
         MemoryView candidate = candidates.capture(
                         agent.id(), "conversation-1", "run-1", "以后请始终用中文回答。", policy, actor)
                 .orElseThrow();
-        assertThat(candidate.status()).isEqualTo(MemoryStatus.CANDIDATE);
+        assertThat(candidate.status()).isEqualTo(MemoryStatus.CONFIRMED);
+        assertThat(candidate.origin()).isEqualTo(MemoryOrigin.AUTO_EXTRACTED);
         assertThat(candidate.type()).isEqualTo(MemoryType.PROCEDURAL);
         assertThat(candidate.expiresAt()).isAfter(Instant.now());
         assertThat(candidates.capture(
                 agent.id(), "conversation-2", "run-2", "以后请始终用中文回答。", policy, actor)).isEmpty();
-        assertThat(retrieval.retrieve(agent.id(), "中文回答", policy, actor)).isEmpty();
-
-        memories.confirm(candidate.id(), actor);
         assertThat(retrieval.retrieve(agent.id(), "中文回答", policy, actor))
                 .extracting(MemorySnapshot::id)
                 .containsExactly(candidate.id());
@@ -157,6 +157,30 @@ class MemoryServiceIntegrationTest {
         MemoryView rejected = memories.reject(candidate.id(), actor);
         assertThat(rejected.status()).isEqualTo(MemoryStatus.REJECTED);
         assertThat(retrieval.retrieve(agent.id(), "中文回答", policy, actor)).isEmpty();
+    }
+
+    @Test
+    void userCreatedAgentMemoryWinsOverConflictingAutomaticMemory() {
+        var agent = identities.save(new AgentIdentityEntity(
+                "memory-agent-priority", "tenant-memory-priority", "user-memory-priority",
+                "Memory Agent", "", "", "", "[]", "PRIVATE", Instant.now()));
+        ActorContext actor = new ActorContext(
+                "tenant-memory-priority", "user-memory-priority", java.util.Set.of(), java.util.Set.of());
+        MemoryView manual = memories.create(new CreateMemoryCommand(
+                agent.id(), MemoryType.PROFILE, "The agent likes red.", 0.9,
+                null, null, null, null, null, MemoryScope.AGENT), actor);
+        String policy = """
+                {"longTerm":{"categories":["PROFILE"],"writeMode":"SUGGEST","topK":3}}
+                """;
+
+        assertThat(candidates.capture(
+                agent.id(), "conversation-priority", "run-priority", "agent likes blue", policy, actor)).isEmpty();
+        assertThat(retrieval.retrieve(agent.id(), "", policy, actor))
+                .extracting(MemorySnapshot::id)
+                .contains(manual.id());
+        assertThat(memories.list(agent.id(), null, false, null, null, MemoryOrigin.USER_CREATED, null, 10, actor))
+                .extracting(MemoryView::id)
+                .containsExactly(manual.id());
     }
 
     @Test

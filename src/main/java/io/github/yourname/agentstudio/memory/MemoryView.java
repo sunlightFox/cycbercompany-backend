@@ -5,6 +5,10 @@ import java.time.Instant;
 public record MemoryView(
         String id,
         String agentId,
+        MemoryScope scope,
+        MemoryOrigin origin,
+        String memoryKey,
+        String supersededBy,
         String personaId,
         MemoryType type,
         MemoryStatus status,
@@ -23,7 +27,7 @@ public record MemoryView(
 
     static MemoryView from(MemoryItemEntity item) {
         return new MemoryView(
-                item.id(), item.agentId(), item.personaId(), item.type(), item.status(), item.sensitivity(), item.content(),
+                item.id(), item.agentId(), item.scope(), item.origin(), item.memoryKey(), item.supersededBy(), item.personaId(), item.type(), item.status(), item.sensitivity(), item.content(),
                 item.confidence(), item.importance(), item.sourceConversationId(), item.sourceRunId(),
                 item.evidenceSummary(), item.createdAt(), item.updatedAt(), item.lastUsedAt(),
                 item.expiresAt(), item.revision());

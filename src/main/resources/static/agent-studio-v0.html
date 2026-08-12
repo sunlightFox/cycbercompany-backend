@@ -8,26 +8,26 @@
   <style>
     :root {
       color-scheme: light;
-      --page: #f7f7f5;
+      --page: #f6f7f6;
       --surface: #ffffff;
-      --surface-subtle: #f1f1ee;
-      --surface-hover: #ecece8;
-      --text: #171717;
-      --muted: #686863;
-      --quiet: #92928c;
-      --border: #e3e3de;
-      --border-strong: #cecec7;
+      --surface-subtle: #f1f3f1;
+      --surface-hover: #e9ece9;
+      --text: #181a19;
+      --muted: #626761;
+      --quiet: #8c918a;
+      --border: #e0e4df;
+      --border-strong: #c9d0c8;
       --accent: #2563eb;
       --accent-soft: #edf3ff;
       --success: #16803d;
       --success-soft: #edf8f0;
-      --warning: #b76500;
-      --warning-soft: #fff6e8;
-      --danger: #c3322b;
+      --gold: #8b6b1f;
+      --gold-soft: #fbf5df;
+      --ink: #202221;
       --nav-width: 68px;
       --catalog-width: 292px;
-      --step-width: 210px;
-      --content-max: 780px;
+      --step-width: 190px;
+      --content-max: 860px;
       --control-height: 38px;
       --space-row: 16px;
       --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -65,7 +65,7 @@
       align-items: center;
       gap: 8px;
       padding: 12px 8px;
-      background: #202221;
+      background: var(--ink);
       color: #f4f4f1;
       border-right: 1px solid #303230;
     }
@@ -96,7 +96,7 @@
       transition: background 130ms var(--ease), color 130ms var(--ease);
     }
     .rail-button:hover { background: #303230; color: #fff; }
-    .rail-button.active { background: #f4f4f1; color: #202221; }
+    .rail-button.active { background: #f4f4f1; color: var(--ink); }
     .rail-spacer { flex: 1; }
 
     .catalog {
@@ -112,7 +112,7 @@
       border-bottom: 1px solid var(--border);
     }
     .catalog-title-row, .editor-head, .section-title-row, .field-head, .action-row,
-    .agent-topline, .step-row, .check-row, .drawer-head, .modal-head {
+    .agent-topline, .check-row, .drawer-head, .modal-head, .default-item, .publish-line {
       display: flex;
       align-items: center;
     }
@@ -130,7 +130,7 @@
       cursor: pointer;
       transition: background 130ms var(--ease), border-color 130ms var(--ease);
     }
-    .icon-button:hover { background: var(--surface-hover); border-color: #b9b9b2; }
+    .icon-button:hover { background: var(--surface-hover); border-color: #b5bdb4; }
     .search {
       width: 100%;
       height: 36px;
@@ -184,13 +184,12 @@
       font-size: 13px;
     }
     .avatar.green { background: #dfeee3; color: #176035; }
-    .avatar.gray { background: #e6e6e1; color: #575750; }
+    .avatar.gold { background: #f3e8c0; color: #755b17; }
     .agent-copy { min-width: 0; }
     .agent-topline { justify-content: space-between; gap: 8px; }
     .agent-name { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .agent-desc { margin-top: 3px; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--warning); }
-    .dot.live { background: var(--success); }
+    .dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--success); }
 
     .workspace { display: grid; grid-template-rows: 65px minmax(0, 1fr); min-width: 0; background: var(--surface); }
     .editor-head {
@@ -208,12 +207,13 @@
       align-items: center;
       gap: 6px;
       min-height: 24px;
-      padding: 2px 7px;
-      border: 1px solid #e8c792;
+      padding: 2px 8px;
+      border: 1px solid #bfe0c8;
       border-radius: 5px;
-      background: var(--warning-soft);
-      color: #8a4d00;
+      background: var(--success-soft);
+      color: var(--success);
       font-size: 12px;
+      font-weight: 650;
     }
     .editor-subtitle { margin-top: 2px; color: var(--muted); font-size: 12px; }
     .action-row { gap: 8px; flex: 0 0 auto; }
@@ -230,7 +230,6 @@
     .button:hover { background: var(--surface-hover); }
     .button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
     .button.primary:hover { background: #1d55cc; }
-    .button:disabled { cursor: not-allowed; opacity: .48; }
     .button.loading { color: var(--muted); pointer-events: none; }
 
     .editor-body { display: grid; grid-template-columns: var(--step-width) minmax(0, 1fr); min-height: 0; }
@@ -271,11 +270,47 @@
     .step-button.active .step-number { border-color: var(--accent); background: var(--accent); color: white; }
     .step-meta { margin-left: auto; color: var(--quiet); font-size: 11px; }
 
+    .publish-card {
+      margin-top: 18px;
+      padding: 12px 10px;
+      border-top: 1px solid var(--border);
+    }
+    .publish-line { justify-content: space-between; gap: 10px; color: var(--muted); font-size: 12px; }
+    .publish-line strong { color: var(--success); }
+
     .canvas { min-width: 0; overflow: auto; background: var(--surface); }
     .form-page { width: min(100%, calc(var(--content-max) + 64px)); margin: 0 auto; padding: 34px 32px 80px; }
     .page-kicker { color: var(--accent); font-size: 12px; font-weight: 700; }
     .page-title { margin: 7px 0 6px; font-size: 24px; line-height: 1.25; text-wrap: pretty; }
-    .page-description { max-width: 650px; margin: 0 0 30px; color: var(--muted); text-wrap: pretty; }
+    .page-description { max-width: 680px; margin: 0 0 22px; color: var(--muted); text-wrap: pretty; }
+    .default-strip {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin: 0 0 30px;
+    }
+    .default-item {
+      gap: 10px;
+      min-width: 0;
+      padding: 11px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #fbfcfb;
+    }
+    .default-icon {
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      flex: 0 0 auto;
+      border-radius: 5px;
+      background: var(--success-soft);
+      color: var(--success);
+      font-weight: 800;
+    }
+    .default-copy { min-width: 0; }
+    .default-copy strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+    .default-copy span { display: block; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--quiet); font-size: 12px; }
     .form-section { padding: 0 0 28px; margin: 0 0 28px; border-bottom: 1px solid var(--border); }
     .form-section:last-child { border-bottom: 0; }
     .section-title-row { justify-content: space-between; gap: 16px; margin-bottom: 18px; }
@@ -298,6 +333,7 @@
       transition: border-color 130ms var(--ease), box-shadow 130ms var(--ease);
     }
     .field textarea { min-height: 88px; resize: vertical; }
+    .field textarea.large { min-height: 132px; }
     .field input:hover, .field textarea:hover, .field select:hover { border-color: #adada6; }
     .field input:focus, .field textarea:focus, .field select:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,.11); }
     .tag-editor { display: flex; flex-wrap: wrap; gap: 7px; min-height: 44px; padding: 6px; border: 1px solid var(--border-strong); border-radius: 5px; }
@@ -305,7 +341,7 @@
     .tag button { padding: 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
     .tag-add { padding: 3px 6px; border: 0; background: transparent; color: var(--accent); cursor: pointer; }
     .choice-list { display: grid; gap: 8px; }
-    .choice-row, .toggle-row {
+    .choice-row {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 16px;
@@ -313,20 +349,13 @@
       padding: 13px 0;
       border-bottom: 1px solid var(--border);
     }
-    .choice-row:last-child, .toggle-row:last-child { border-bottom: 0; }
+    .choice-row:last-child { border-bottom: 0; }
     .choice-title { font-weight: 600; }
     .choice-desc { margin-top: 2px; color: var(--muted); font-size: 13px; text-wrap: pretty; }
-    .switch { position: relative; width: 38px; height: 22px; flex: 0 0 auto; }
-    .switch input { position: absolute; opacity: 0; }
-    .switch span { position: absolute; inset: 0; border-radius: 11px; background: var(--border-strong); cursor: pointer; transition: background 150ms var(--ease); }
-    .switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform 150ms var(--ease); }
-    .switch input:checked + span { background: var(--accent); }
-    .switch input:checked + span::after { transform: translateX(16px); }
-    .switch input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
     .placeholder {
       display: grid;
       place-items: center;
-      min-height: 180px;
+      min-height: 154px;
       padding: 24px;
       border: 1px dashed var(--border-strong);
       border-radius: 6px;
@@ -358,11 +387,6 @@
     .drawer.mobile-nav.open { transform: translateX(0); }
     .drawer-head, .modal-head { justify-content: space-between; gap: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
     .drawer-head h2, .modal-head h2 { margin: 0; font-size: 18px; }
-    .test-thread { display: grid; gap: 18px; padding: 22px 0; }
-    .test-message { max-width: 88%; padding: 10px 12px; border-radius: 6px; background: var(--surface-subtle); }
-    .test-message.agent { padding: 0; background: transparent; }
-    .test-label { margin-bottom: 4px; color: var(--quiet); font-size: 11px; }
-    .sandbox-note { padding: 10px 12px; border: 1px solid #e8c792; border-radius: 5px; background: var(--warning-soft); color: #744000; font-size: 13px; }
 
     .modal-wrap { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 20px; opacity: 0; pointer-events: none; transition: opacity 180ms var(--ease); }
     .modal-wrap.open { opacity: 1; pointer-events: auto; }
@@ -379,10 +403,6 @@
       transition: transform 180ms var(--ease);
     }
     .modal-wrap.open .modal { transform: translateY(0); }
-    .check-list { margin: 18px 0; }
-    .check-row { gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
-    .check-mark { display: grid; place-items: center; width: 21px; height: 21px; border-radius: 50%; background: var(--success-soft); color: var(--success); font-size: 12px; font-weight: 800; }
-    .check-mark.pending { background: var(--warning-soft); color: var(--warning); }
 
     .tweaks-toggle { position: fixed; z-index: 70; right: 18px; bottom: 18px; box-shadow: 0 8px 24px rgba(20,24,22,.10); }
     .tweaks {
@@ -407,17 +427,16 @@
     .segmented { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 3px; border-radius: 6px; background: var(--surface-subtle); }
     .segmented button { min-height: 30px; padding: 3px 6px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; }
     .segmented button.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(20,24,22,.09); }
-    .assumptions { margin: 12px 0 0; padding: 10px 0 0 18px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
-    .assumptions li { margin: 4px 0; }
 
-    body[data-layout="focus"] { --catalog-width: 224px; --step-width: 186px; --content-max: 720px; }
-    body[data-layout="wide"] { --catalog-width: 336px; --step-width: 232px; --content-max: 900px; }
+    body[data-layout="focus"] { --catalog-width: 224px; --step-width: 174px; --content-max: 760px; }
+    body[data-layout="wide"] { --catalog-width: 336px; --step-width: 210px; --content-max: 980px; }
     body[data-density="compact"] { --control-height: 34px; --space-row: 11px; }
 
     @media (max-width: 1100px) {
-      :root { --catalog-width: 240px; --step-width: 184px; }
+      :root { --catalog-width: 240px; --step-width: 176px; }
       .editor-head { padding: 0 16px; }
       .form-page { padding-inline: 24px; }
+      .default-strip { grid-template-columns: 1fr; }
     }
     @media (max-width: 820px) {
       body { overflow: auto; }
@@ -450,86 +469,94 @@
     <nav class="rail" aria-label="主导航">
       <div class="product-mark" aria-label="Agent Studio">AS</div>
       <button class="rail-button" type="button" title="工作台">工作台</button>
-      <button class="rail-button active" type="button" title="智能体">智能体</button>
-      <button class="rail-button" type="button" title="记忆">记忆</button>
-      <button class="rail-button" type="button" title="能力">能力</button>
+      <button class="rail-button active" type="button" title="数字员工">员工</button>
       <div class="rail-spacer"></div>
       <button class="rail-button" type="button" title="设置">设置</button>
     </nav>
 
-    <aside class="catalog" aria-label="智能体列表">
+    <aside class="catalog" aria-label="数字员工列表">
       <div class="catalog-head">
         <div class="catalog-title-row">
-          <h1>智能体</h1>
-          <button class="icon-button" id="newAgentButton" type="button" title="新建智能体" aria-label="新建智能体">＋</button>
+          <h1>数字员工</h1>
+          <button class="icon-button" id="newAgentButton" type="button" title="新建数字员工" aria-label="新建数字员工">+</button>
         </div>
-        <input class="search" id="agentSearch" type="search" placeholder="搜索名称或标签" aria-label="搜索智能体">
+        <input class="search" id="agentSearch" type="search" placeholder="搜索名称或标签" aria-label="搜索数字员工">
       </div>
-      <div class="catalog-filter" aria-label="筛选智能体">
+      <div class="catalog-filter" aria-label="筛选数字员工">
         <button class="filter-button active" type="button">全部</button>
-        <button class="filter-button" type="button">草稿</button>
         <button class="filter-button" type="button">已发布</button>
       </div>
       <div class="agent-list" id="agentList">
-        <button class="agent-item active" type="button" data-name="代码审查员" data-desc="发现真实缺陷并给出可执行建议">
+        <button class="agent-item active" type="button" data-name="代码审查员" data-desc="审查代码变更并给出可执行建议">
           <span class="avatar">代</span>
           <span class="agent-copy">
-            <span class="agent-topline"><span class="agent-name">代码审查员</span><span class="dot" title="有未发布改动"></span></span>
-            <span class="agent-desc">研发 · 草稿有改动</span>
+            <span class="agent-topline"><span class="agent-name">代码审查员</span><span class="dot" title="已发布"></span></span>
+            <span class="agent-desc">研发 · 已发布</span>
           </span>
         </button>
         <button class="agent-item" type="button" data-name="知识库助手" data-desc="根据团队资料回答问题并标注依据">
           <span class="avatar green">知</span>
           <span class="agent-copy">
-            <span class="agent-topline"><span class="agent-name">知识库助手</span><span class="dot live" title="已发布"></span></span>
+            <span class="agent-topline"><span class="agent-name">知识库助手</span><span class="dot" title="已发布"></span></span>
             <span class="agent-desc">知识 · 已发布</span>
           </span>
         </button>
         <button class="agent-item" type="button" data-name="项目协调员" data-desc="整理任务、风险和待确认事项">
-          <span class="avatar gray">项</span>
+          <span class="avatar gold">项</span>
           <span class="agent-copy">
-            <span class="agent-topline"><span class="agent-name">项目协调员</span><span class="dot live" title="已发布"></span></span>
+            <span class="agent-topline"><span class="agent-name">项目协调员</span><span class="dot" title="已发布"></span></span>
             <span class="agent-desc">协作 · 已发布</span>
           </span>
         </button>
       </div>
     </aside>
 
-    <section class="workspace" aria-label="智能体编辑器">
+    <section class="workspace" aria-label="数字员工配置">
       <header class="editor-head">
         <button class="icon-button mobile-menu" id="mobileMenuButton" type="button" aria-label="打开导航" title="打开导航">≡</button>
         <div class="editor-identity">
           <div class="editor-title-line">
             <h2 class="editor-title" id="editorAgentName">代码审查员</h2>
-            <span class="status-chip"><span class="dot"></span>未发布改动</span>
+            <span class="status-chip"><span class="dot"></span>已发布</span>
           </div>
-          <div class="editor-subtitle" id="editorAgentDescription">发现真实缺陷并给出可执行建议</div>
+          <div class="editor-subtitle" id="editorAgentDescription">审查代码变更并给出可执行建议</div>
         </div>
         <div class="action-row">
-          <button class="button" id="testButton" type="button">测试</button>
-          <button class="button primary" id="saveButton" type="button">保存草稿</button>
-          <button class="icon-button" id="publishButton" type="button" title="发布检查" aria-label="发布检查">⋯</button>
+          <button class="button primary" id="saveButton" type="button">保存设置</button>
         </div>
       </header>
 
       <div class="editor-body">
-        <nav class="steps" aria-label="配置步骤">
-          <div class="steps-label">配置流程</div>
-          <button class="step-button active" type="button" data-step="basic"><span class="step-number">1</span><span>基础信息</span><span class="step-meta">完成</span></button>
-          <button class="step-button" type="button" data-step="persona"><span class="step-number">2</span><span>人设</span><span class="step-meta">完成</span></button>
-          <button class="step-button" type="button" data-step="capability"><span class="step-number">3</span><span>能力与工具</span><span class="step-meta">3</span></button>
-          <button class="step-button" type="button" data-step="knowledge"><span class="step-number">4</span><span>知识</span><span class="step-meta">1</span></button>
-          <button class="step-button" type="button" data-step="memory"><span class="step-number">5</span><span>记忆</span><span class="step-meta">关闭</span></button>
-          <button class="step-button" type="button" data-step="safety"><span class="step-number">6</span><span>安全边界</span><span class="step-meta">保守</span></button>
-          <button class="step-button" type="button" data-step="evaluation"><span class="step-number">7</span><span>测试评估</span><span class="step-meta">待运行</span></button>
-          <button class="step-button" type="button" data-step="publish"><span class="step-number">8</span><span>发布</span></button>
+        <nav class="steps" aria-label="配置区域">
+          <div class="steps-label">配置</div>
+          <button class="step-button active" type="button" data-step="basic"><span class="step-number">1</span><span>身份信息</span><span class="step-meta">必填</span></button>
+          <button class="step-button" type="button" data-step="persona"><span class="step-number">2</span><span>工作方式</span><span class="step-meta">推荐</span></button>
+          <div class="publish-card">
+            <div class="publish-line"><span>状态</span><strong>已发布</strong></div>
+            <div class="publish-line"><span>默认能力</span><strong>全部启用</strong></div>
+          </div>
         </nav>
 
         <div class="canvas" id="canvas">
           <div class="form-page">
-            <div class="page-kicker" id="pageKicker">步骤 1 / 8</div>
-            <h1 class="page-title" id="pageTitle">先让人一眼认出它</h1>
-            <p class="page-description" id="pageDescription">这些信息会出现在智能体列表和选择器中。保持简短，具体说明它擅长解决什么问题。</p>
+            <div class="page-kicker" id="pageKicker">配置 1 / 2</div>
+            <h1 class="page-title" id="pageTitle">只保留必要信息</h1>
+            <p class="page-description" id="pageDescription">数字员工默认已发布，并自动使用平台可用的全部工具和知识来源。这里只需要维护用户能看懂的身份与工作方式。</p>
+
+            <div class="default-strip" aria-label="默认启用能力">
+              <div class="default-item">
+                <span class="default-icon">✓</span>
+                <span class="default-copy"><strong>全部工具可用</strong><span>无需单独勾选权限</span></span>
+              </div>
+              <div class="default-item">
+                <span class="default-icon">✓</span>
+                <span class="default-copy"><strong>知识默认接入</strong><span>使用平台可见知识来源</span></span>
+              </div>
+              <div class="default-item">
+                <span class="default-icon">✓</span>
+                <span class="default-copy"><strong>已发布版本</strong><span>保存后直接生效</span></span>
+              </div>
+            </div>
 
             <div id="basicContent">
               <section class="form-section">
@@ -544,63 +571,40 @@
                   </div>
                   <div class="field">
                     <label for="category">分类</label>
-                    <select id="category"><option>研发</option><option>知识</option><option>协作</option><option>自定义</option></select>
+                    <select id="category"><option>研发</option><option>知识</option><option>协作</option><option>运营</option><option>自定义</option></select>
                   </div>
                   <div class="field full">
                     <label for="description">一句话说明</label>
                     <textarea id="description">审查代码变更，优先发现会影响正确性、安全性和可维护性的问题。</textarea>
                   </div>
                   <div class="field full">
-                    <div class="field-head"><label>标签</label><span class="field-help">便于搜索和分类</span></div>
-                    <div class="tag-editor"><span class="tag">代码 <button type="button" aria-label="移除代码标签">×</button></span><span class="tag">审查 <button type="button" aria-label="移除审查标签">×</button></span><span class="tag">安全 <button type="button" aria-label="移除安全标签">×</button></span><button class="tag-add" type="button">＋ 添加</button></div>
+                    <div class="field-head"><label>标签</label><span class="field-help">用于搜索和分组</span></div>
+                    <div class="tag-editor"><span class="tag">代码 <button type="button" aria-label="移除代码标签">×</button></span><span class="tag">审查 <button type="button" aria-label="移除审查标签">×</button></span><span class="tag">研发 <button type="button" aria-label="移除研发标签">×</button></span><button class="tag-add" type="button">+ 添加</button></div>
                   </div>
                 </div>
               </section>
               <section class="form-section">
-                <div class="section-title-row"><h2 class="section-title">头像</h2><span class="section-hint">[头像资源占位]</span></div>
-                <div class="placeholder"><div><strong>选择内置头像或上传图片</strong>v0 暂不制作头像素材，避免用临时图形代替正式资产。</div></div>
+                <div class="section-title-row"><h2 class="section-title">头像</h2><span class="section-hint">可选</span></div>
+                <div class="placeholder"><div><strong>选择内置头像或上传图片</strong>头像只影响列表和对话中的识别，不影响数字员工能力。</div></div>
               </section>
             </div>
 
             <div id="personaContent" hidden>
               <section class="form-section">
-                <div class="section-title-row"><h2 class="section-title">角色定位</h2><span class="section-hint">决定它如何思考和表达</span></div>
+                <div class="section-title-row"><h2 class="section-title">角色定位</h2><span class="section-hint">决定它如何回应</span></div>
                 <div class="form-grid">
                   <div class="field"><label for="role">它是谁</label><input id="role" value="高级代码审查员"></div>
-                  <div class="field"><label for="audience">为谁服务</label><input id="audience" value="熟悉工程实践的软件开发者"></div>
-                  <div class="field full"><label for="mission">核心目标</label><textarea id="mission">在不扩大变更范围的前提下，帮助团队尽早发现真实缺陷并给出可执行的修复建议。</textarea></div>
+                  <div class="field"><label for="audience">服务对象</label><input id="audience" value="熟悉工程实践的软件开发者"></div>
+                  <div class="field full"><label for="mission">核心目标</label><textarea id="mission" class="large">在不扩大变更范围的前提下，帮助团队尽早发现真实缺陷并给出可执行的修复建议。</textarea></div>
                 </div>
               </section>
               <section class="form-section">
-                <div class="section-title-row"><h2 class="section-title">行为边界</h2><span class="section-hint">比语气更重要</span></div>
+                <div class="section-title-row"><h2 class="section-title">表达偏好</h2><span class="section-hint">保持简洁一致</span></div>
                 <div class="choice-list">
-                  <div class="choice-row"><div><div class="choice-title">只报告有证据的问题</div><div class="choice-desc">不把风格偏好描述为缺陷。</div></div><button class="icon-button" type="button" aria-label="编辑边界">编辑</button></div>
-                  <div class="choice-row"><div><div class="choice-title">默认保持只读</div><div class="choice-desc">除非明确授权，否则不修改代码。</div></div><button class="icon-button" type="button" aria-label="编辑边界">编辑</button></div>
-                  <button class="button" type="button">＋ 添加边界</button>
+                  <div class="choice-row"><div><div class="choice-title">先说关键结论</div><div class="choice-desc">优先给出最重要的问题、影响和建议，少铺垫。</div></div><button class="icon-button" type="button" aria-label="编辑表达偏好">编辑</button></div>
+                  <div class="choice-row"><div><div class="choice-title">只报告有依据的问题</div><div class="choice-desc">不把风格偏好描述成缺陷，不制造额外配置负担。</div></div><button class="icon-button" type="button" aria-label="编辑表达偏好">编辑</button></div>
+                  <button class="button" type="button">+ 添加偏好</button>
                 </div>
-              </section>
-            </div>
-
-            <div id="memoryContent" hidden>
-              <section class="form-section">
-                <div class="section-title-row"><h2 class="section-title">记忆方式</h2><span class="section-hint">默认保护用户隐私</span></div>
-                <div class="choice-list">
-                  <div class="toggle-row"><div><div class="choice-title">长期记忆</div><div class="choice-desc">保存用户确认过的偏好、事实和工作方式。</div></div><label class="switch"><input id="memoryToggle" type="checkbox"><span></span></label></div>
-                  <div class="toggle-row"><div><div class="choice-title">每条记忆需确认</div><div class="choice-desc">智能体只提出候选内容，由用户决定是否保存。</div></div><label class="switch"><input type="checkbox" checked disabled><span></span></label></div>
-                </div>
-              </section>
-              <section class="form-section" id="memoryOptions" hidden>
-                <div class="section-title-row"><h2 class="section-title">召回策略</h2><span class="section-hint">高级策略保持折叠</span></div>
-                <div class="form-grid">
-                  <div class="field"><label for="retrieval">检索方式</label><select id="retrieval"><option>混合检索</option><option>关键词</option><option>语义</option></select></div>
-                  <div class="field"><label for="topk">最多召回</label><select id="topk"><option>3 条</option><option>5 条</option><option>8 条</option></select></div>
-                </div>
-              </section>
-            </div>
-
-            <div id="placeholderContent" hidden>
-              <section class="form-section">
-                <div class="placeholder"><div><strong id="placeholderTitle">[模块结构占位]</strong><span id="placeholderText">这一阶段只验证入口、顺序与信息密度，完整组件将在 v0 确认后实现。</span></div></div>
               </section>
             </div>
           </div>
@@ -611,57 +615,28 @@
 
   <div class="backdrop" id="backdrop"></div>
 
-  <aside class="drawer" id="testDrawer" aria-hidden="true" aria-label="测试智能体">
-    <div class="drawer-head"><div><h2>测试草稿</h2><div class="editor-subtitle">不会调用工具、记忆或知识库</div></div><button class="icon-button" data-close type="button" aria-label="关闭测试">×</button></div>
-    <div class="test-thread">
-      <div class="sandbox-note">安全沙箱：本次测试不会保存对话，也不会产生运行记录。</div>
-      <div class="test-message"><div class="test-label">你</div>帮我审查当前改动，先说你会关注什么。</div>
-      <div class="test-message agent"><div class="test-label">代码审查员</div>我会先确认变更范围，再检查正确性、安全性和行为回归。当前是无工具草稿测试，因此我不会读取真实仓库。</div>
-      <div class="field"><label for="testInput">继续测试</label><textarea id="testInput" placeholder="输入一条测试消息"></textarea></div>
-      <button class="button primary" type="button">发送测试</button>
-    </div>
-  </aside>
-
   <aside class="drawer mobile-nav" id="mobileNavDrawer" aria-hidden="true" aria-label="移动端导航">
-    <div class="drawer-head"><h2>智能体配置</h2><button class="icon-button" data-close type="button" aria-label="关闭导航">×</button></div>
+    <div class="drawer-head"><h2>数字员工配置</h2><button class="icon-button" data-close type="button" aria-label="关闭导航">×</button></div>
     <div style="padding:18px 0">
-      <div class="steps-label">当前智能体</div>
+      <div class="steps-label">当前数字员工</div>
       <button class="agent-item active" type="button">
         <span class="avatar">代</span>
-        <span class="agent-copy"><span class="agent-name">代码审查员</span><span class="agent-desc">研发 · 草稿有改动</span></span>
+        <span class="agent-copy"><span class="agent-name">代码审查员</span><span class="agent-desc">研发 · 已发布</span></span>
       </button>
-      <div class="steps-label" style="margin-top:18px">配置流程</div>
-      <button class="step-button active" type="button" data-mobile-step="basic"><span class="step-number">1</span><span>基础信息</span></button>
-      <button class="step-button" type="button" data-mobile-step="persona"><span class="step-number">2</span><span>人设</span></button>
-      <button class="step-button" type="button" data-mobile-step="capability"><span class="step-number">3</span><span>能力与工具</span></button>
-      <button class="step-button" type="button" data-mobile-step="knowledge"><span class="step-number">4</span><span>知识</span></button>
-      <button class="step-button" type="button" data-mobile-step="memory"><span class="step-number">5</span><span>记忆</span></button>
-      <button class="step-button" type="button" data-mobile-step="safety"><span class="step-number">6</span><span>安全边界</span></button>
-      <button class="step-button" type="button" data-mobile-step="evaluation"><span class="step-number">7</span><span>测试评估</span></button>
-      <button class="step-button" type="button" data-mobile-step="publish"><span class="step-number">8</span><span>发布</span></button>
+      <div class="steps-label" style="margin-top:18px">配置</div>
+      <button class="step-button active" type="button" data-mobile-step="basic"><span class="step-number">1</span><span>身份信息</span></button>
+      <button class="step-button" type="button" data-mobile-step="persona"><span class="step-number">2</span><span>工作方式</span></button>
     </div>
   </aside>
-
-  <div class="modal-wrap" id="publishModal" role="dialog" aria-modal="true" aria-labelledby="publishTitle">
-    <div class="modal">
-      <div class="modal-head"><h2 id="publishTitle">发布前检查</h2><button class="icon-button" data-close type="button" aria-label="关闭发布检查">×</button></div>
-      <div class="check-list">
-        <div class="check-row"><span class="check-mark">✓</span><span>身份和人设配置完整</span></div>
-        <div class="check-row"><span class="check-mark">✓</span><span>工具权限符合安全边界</span></div>
-        <div class="check-row"><span class="check-mark pending">!</span><span>需要运行发布评估</span></div>
-      </div>
-      <div class="action-row"><button class="button" data-close type="button">稍后处理</button><button class="button primary" type="button">运行评估</button></div>
-    </div>
-  </div>
 
   <div class="modal-wrap" id="newAgentModal" role="dialog" aria-modal="true" aria-labelledby="newAgentTitle">
     <div class="modal">
-      <div class="modal-head"><h2 id="newAgentTitle">新建智能体</h2><button class="icon-button" data-close type="button" aria-label="关闭新建窗口">×</button></div>
+      <div class="modal-head"><h2 id="newAgentTitle">新建数字员工</h2><button class="icon-button" data-close type="button" aria-label="关闭新建窗口">×</button></div>
       <div class="form-grid" style="margin-top:18px">
         <div class="field full"><label for="newAgentName">名称</label><input id="newAgentName" placeholder="例如：合同审核助手"></div>
-        <div class="field full"><label for="creationMode">从哪里开始</label><select id="creationMode"><option>从空白开始</option><option>复制现有智能体</option><option>从模板开始</option></select></div>
+        <div class="field full"><label for="creationMode">创建方式</label><select id="creationMode"><option>从空白开始</option><option>复制现有数字员工</option><option>从模板开始</option></select></div>
       </div>
-      <div class="action-row" style="justify-content:flex-end;margin-top:20px"><button class="button" data-close type="button">取消</button><button class="button primary" type="button">创建草稿</button></div>
+      <div class="action-row" style="justify-content:flex-end;margin-top:20px"><button class="button" data-close type="button">取消</button><button class="button primary" type="button">创建并发布</button></div>
     </div>
   </div>
 
@@ -679,30 +654,12 @@
       <button class="active" type="button" data-value="comfortable">舒适</button>
       <button type="button" data-value="compact">紧凑</button>
     </div>
-    <ul class="assumptions">
-      <li>核心用户在笔记本上频繁配置智能体</li>
-      <li>基础表单优先，高级 Manifest 延后出现</li>
-      <li>发布前必须通过可解释的检查</li>
-    </ul>
   </aside>
 
   <script>
     const stepCopy = {
-      basic: ["步骤 1 / 8", "先让人一眼认出它", "这些信息会出现在智能体列表和选择器中。保持简短，具体说明它擅长解决什么问题。"],
-      persona: ["步骤 2 / 8", "定义角色，而不是堆提示词", "明确它是谁、服务谁、承担什么责任，以及绝不应该越过哪些边界。"],
-      capability: ["步骤 3 / 8", "只给完成工作需要的能力", "组合模型、工具、Skill 和协作者。高风险能力需要明确审批策略。"],
-      knowledge: ["步骤 4 / 8", "连接可信的知识来源", "选择允许检索的知识库，并控制范围、引用和更新方式。"],
-      memory: ["步骤 5 / 8", "决定它可以记住什么", "默认只使用当前对话。长期记忆始终由用户确认，并与用户及角色隔离。"],
-      safety: ["步骤 6 / 8", "把权限边界变成明确规则", "选择审批强度、失败处理方式，以及输入输出的安全约束。"],
-      evaluation: ["步骤 7 / 8", "发布前用真实场景验证", "运行与当前草稿摘要绑定的评估，避免修改配置后沿用旧结果。"],
-      publish: ["步骤 8 / 8", "发布一个不可变版本", "确认变更摘要、可见范围和评估结果。已发布版本不会被后续编辑覆盖。"]
-    };
-    const placeholderCopy = {
-      capability: ["[能力选择器占位]", "模型、工具、Skill、MCP 和协作者将在这里按类别选择。"],
-      knowledge: ["[知识库选择器占位]", "这里展示已授权知识库、引用策略和检索范围。"],
-      safety: ["[安全策略占位]", "这里展示审批预设、失败策略与关键权限摘要。"],
-      evaluation: ["[评估报告占位]", "这里展示评估套件、通过率、失败用例与重新运行入口。"],
-      publish: ["[版本发布占位]", "这里展示变更摘要、可见范围、版本说明与最终发布动作。"]
+      basic: ["配置 1 / 2", "只保留必要信息", "数字员工默认已发布，并自动使用平台可用的全部工具和知识来源。这里只需要维护用户能看懂的身份与工作方式。"],
+      persona: ["配置 2 / 2", "定义稳定的工作方式", "用简短、明确的角色目标约束输出风格。能力、工具、知识和发布流程由平台默认处理。"]
     };
 
     const byId = (id) => document.getElementById(id);
@@ -722,9 +679,9 @@
       backdrop.classList.remove("open");
     }
 
-    document.querySelectorAll(".step-button").forEach((button) => {
+    document.querySelectorAll("[data-step]").forEach((button) => {
       button.addEventListener("click", () => {
-        document.querySelectorAll(".step-button").forEach((item) => item.classList.remove("active"));
+        document.querySelectorAll("[data-step]").forEach((item) => item.classList.remove("active"));
         button.classList.add("active");
         const step = button.dataset.step;
         const copy = stepCopy[step];
@@ -733,19 +690,13 @@
         byId("pageDescription").textContent = copy[2];
         byId("basicContent").hidden = step !== "basic";
         byId("personaContent").hidden = step !== "persona";
-        byId("memoryContent").hidden = step !== "memory";
-        byId("placeholderContent").hidden = ["basic", "persona", "memory"].includes(step);
-        if (placeholderCopy[step]) {
-          byId("placeholderTitle").textContent = placeholderCopy[step][0];
-          byId("placeholderText").textContent = placeholderCopy[step][1];
-        }
         canvas.scrollTop = 0;
       });
     });
 
-    document.querySelectorAll(".agent-item").forEach((button) => {
+    document.querySelectorAll("#agentList .agent-item").forEach((button) => {
       button.addEventListener("click", () => {
-        document.querySelectorAll(".agent-item").forEach((item) => item.classList.remove("active"));
+        document.querySelectorAll("#agentList .agent-item").forEach((item) => item.classList.remove("active"));
         button.classList.add("active");
         byId("editorAgentName").textContent = button.dataset.name;
         byId("editorAgentDescription").textContent = button.dataset.desc;
@@ -755,30 +706,22 @@
 
     byId("agentSearch").addEventListener("input", (event) => {
       const query = event.target.value.trim().toLowerCase();
-      document.querySelectorAll(".agent-item").forEach((item) => {
+      document.querySelectorAll("#agentList .agent-item").forEach((item) => {
         item.hidden = !item.textContent.toLowerCase().includes(query);
       });
     });
 
-    byId("memoryToggle").addEventListener("change", (event) => {
-      byId("memoryOptions").hidden = !event.target.checked;
-      const memoryStep = document.querySelector('[data-step="memory"] .step-meta');
-      memoryStep.textContent = event.target.checked ? "已开启" : "关闭";
-    });
-
     byId("saveButton").addEventListener("click", (event) => {
       const button = event.currentTarget;
-      button.textContent = "保存中…";
+      button.textContent = "保存中";
       button.classList.add("loading");
       setTimeout(() => {
         button.textContent = "已保存";
         button.classList.remove("loading");
-        setTimeout(() => { button.textContent = "保存草稿"; }, 1200);
+        setTimeout(() => { button.textContent = "保存设置"; }, 1200);
       }, 650);
     });
 
-    byId("testButton").addEventListener("click", () => openLayer(byId("testDrawer")));
-    byId("publishButton").addEventListener("click", () => openLayer(byId("publishModal")));
     byId("newAgentButton").addEventListener("click", () => openLayer(byId("newAgentModal")));
     byId("mobileMenuButton").addEventListener("click", () => openLayer(byId("mobileNavDrawer")));
     document.querySelectorAll("[data-mobile-step]").forEach((button) => {

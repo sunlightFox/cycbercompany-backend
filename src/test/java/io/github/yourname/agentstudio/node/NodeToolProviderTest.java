@@ -8,6 +8,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.yourname.agentstudio.execution.InProcessLocalToolProvider;
 import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.tool.CodingWorkspaceScope;
 import io.github.yourname.agentstudio.tool.ResolvedToolBinding;
@@ -25,6 +26,15 @@ import org.mockito.ArgumentCaptor;
 class NodeToolProviderTest {
 
     private static final ActorContext ACTOR = new ActorContext("tenant", "user", Set.of(), Set.of());
+
+    @Test
+    void ignoresTheInProcessLocalTarget() {
+        NodeService nodes = mock(NodeService.class);
+        NodeToolProvider provider = new NodeToolProvider(nodes, new ObjectMapper());
+
+        assertThat(provider.discover(new ToolDiscoveryRequest(
+                "run-1", InProcessLocalToolProvider.TARGET_ID, List.of(), ACTOR))).isEmpty();
+    }
 
     @Test
     void scopesPathsAndKeepsTheBoundNodeEvenWhenArgumentsTryToOverrideIt() {

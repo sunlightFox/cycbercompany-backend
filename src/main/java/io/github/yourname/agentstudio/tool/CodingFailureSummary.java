@@ -43,19 +43,45 @@ public final class CodingFailureSummary {
         searchTerms.addAll(failedTests);
 
         Map<String, Object> summary = new LinkedHashMap<>();
-        summary.put("kind", Boolean.TRUE.equals(result == null ? null : result.get("timedOut"))
-                ? "command_timeout"
-                : "command_failure");
+        String kind = failureKind(result, output);
+        summary.put("kind", kind);
         summary.put("message", errorMessage == null || errorMessage.isBlank()
                 ? "The command failed. Inspect the captured output before changing code."
                 : errorMessage);
         summary.put("sourceLocations", locations);
         summary.put("failedTests", failedTests);
         summary.put("suggestedSearchTerms", searchTerms.stream().limit(MAX_ITEMS).toList());
-        summary.put("nextStep", locations.isEmpty() && failedTests.isEmpty()
-                ? "Read the captured stderr/stdout, then inspect only the files named by the error."
-                : "Use fs.search or fs.read on the reported locations before making one focused correction.");
+        summary.put("nextStep", nextStep(kind, locations.isEmpty(), failedTests.isEmpty()));
         return summary;
+    }
+
+    private static String failureKind(Map<String, Object> result, String output) {
+        if (Boolean.TRUE.equals(result == null ? null : result.get("timedOut"))) {
+            return "command_timeout";
+        }
+        String normalized = output == null ? "" : output.toLowerCase(java.util.Locale.ROOT);
+        if (normalized.contains("is not recognized as the name of a cmdlet")
+                || normalized.contains("is not recognized as an internal or external command")
+                || normalized.contains("command not found")
+                || normalized.contains("no such file or directory")) {
+            return "missing_prerequisite";
+        }
+        if (normalized.contains("access is denied") || normalized.contains("permission denied")) {
+            return "permission_denied";
+        }
+        return "command_failure";
+    }
+
+    private static String nextStep(String kind, boolean noLocations, boolean noFailedTests) {
+        if ("missing_prerequisite".equals(kind)) {
+            return "Treat the missing command or runtime as an environment precondition: inspect a project-local wrapper or configured tool path; if unavailable, use an advertised structured software capability when authorized, then rerun the original command.";
+        }
+        if ("permission_denied".equals(kind)) {
+            return "Inspect the required permission or ownership with an advertised read-only capability, correct it only when authorized, then rerun the original command.";
+        }
+        return noLocations && noFailedTests
+                ? "Read the captured stderr/stdout, then inspect only the files named by the error."
+                : "Use fs.search or fs.read on the reported locations before making one focused correction.";
     }
 
     private static List<Map<String, Object>> sourceLocations(String output) {

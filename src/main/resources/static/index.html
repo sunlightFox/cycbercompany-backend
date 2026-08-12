@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Agent Studio</title>
+  <style>
+    :root { color-scheme: light; --bg:#f5f5f2; --panel:#fff; --ink:#161817; --muted:#747873; --line:#dfdfda; --soft:#f0f1ee; --blue:#2459c7; --blue-soft:#eaf0ff; --green:#2f8a61; --orange:#ad6700; }
+    *{box-sizing:border-box} html,body{margin:0;height:100%;overflow:hidden} body{background:var(--bg);color:var(--ink);font:14px/1.45 "Segoe UI Variable","Noto Sans SC","Microsoft YaHei UI",sans-serif;letter-spacing:0}
+    button,input{font:inherit;letter-spacing:0} button{cursor:pointer} button:focus-visible,input:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+    .app{height:100vh;display:grid;grid-template-columns:68px minmax(320px,1fr) 0;transition:grid-template-columns 220ms ease;background:var(--panel)}
+    .app.mod-open{grid-template-columns:68px minmax(350px,1fr) minmax(430px,47vw)}
+    .rail{display:flex;flex-direction:column;align-items:center;gap:8px;padding:14px 8px;background:#202321;color:#d9ddd8;border-right:1px solid #303430}.mark{display:grid;place-items:center;width:38px;height:38px;margin-bottom:12px;border:1px solid #59605a;border-radius:6px;color:#fff;font-size:12px;font-weight:700}.rail-btn{width:44px;height:42px;border:0;border-radius:5px;background:transparent;color:#b9c0ba}.rail-btn:hover{background:#303530;color:#fff}.rail-btn.active{background:#f2f4f0;color:#202321}.rail-spacer{flex:1}
+    .chat{min-width:0;display:grid;grid-template-rows:64px minmax(0,1fr) auto;background:var(--panel)}.topbar{display:flex;align-items:center;justify-content:space-between;padding:0 24px;border-bottom:1px solid var(--line)}.brand{font-size:17px;font-weight:650}.presence{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}.presence i{width:7px;height:7px;border-radius:50%;background:var(--green)}
+    .thread{min-height:0;overflow:auto;padding:32px clamp(20px,6vw,84px) 24px}.thread-inner{width:min(100%,720px);margin:0 auto}.eyebrow{color:var(--blue);font-size:12px;font-weight:700;letter-spacing:.03em}.hero{margin:10px 0 28px}.hero h1{margin:0;font-size:28px;line-height:1.15;font-weight:650}.hero p{max-width:600px;margin:10px 0 0;color:var(--muted)}.message{display:flex;gap:12px;margin:22px 0}.message.user{justify-content:flex-end}.bubble{max-width:78%;padding:12px 15px;border:1px solid var(--line);border-radius:8px;background:var(--soft);white-space:pre-wrap}.user .bubble{background:#202321;color:#fff;border-color:#202321}.agent-label{padding-top:5px;color:var(--muted);font-size:12px}.result-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:18px 0 26px}.media-card{min-width:0;padding:12px;border:1px solid var(--line);border-radius:7px;background:var(--panel);cursor:pointer;text-align:left}.media-card:hover{border-color:#9db4eb;background:#fafcff}.poster{aspect-ratio:16/9;display:grid;place-items:center;border-radius:4px;background:linear-gradient(135deg,#303835,#101311);color:#cbd6cf;font-size:11px}.media-card strong{display:block;margin-top:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.media-meta{margin-top:3px;color:var(--muted);font-size:12px}.card-action{margin-top:9px;color:var(--blue);font-size:12px;font-weight:650}.composer{display:flex;gap:10px;align-items:flex-end;padding:14px 24px 18px;border-top:1px solid var(--line);background:var(--panel)}.composer-wrap{width:min(100%,840px);margin:0 auto;display:flex;gap:10px;align-items:flex-end}.composer textarea{flex:1;min-height:44px;max-height:130px;resize:vertical;padding:12px 13px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink)}.send{height:44px;padding:0 17px;border:1px solid var(--blue);border-radius:6px;background:var(--blue);color:#fff;font-weight:650}.send:hover{background:#1d4cab}
+    .mod{min-width:0;display:flex;flex-direction:column;background:#171a19;color:#ecf0eb;border-left:1px solid #303531}.mod-head{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:64px;padding:0 18px;border-bottom:1px solid #303531}.mod-title{display:flex;align-items:center;gap:10px;min-width:0}.mod-icon{display:grid;place-items:center;width:29px;height:29px;border:1px solid #57605a;border-radius:5px;color:#b8d6c2;font-size:12px}.mod-title strong{display:block;font-size:14px}.mod-title span{display:block;color:#9ea8a0;font-size:12px}.mod-actions{display:flex;gap:6px}.mod-btn{height:31px;padding:0 9px;border:1px solid #4b544e;border-radius:5px;background:transparent;color:#dce4dc;font-size:12px}.mod-btn:hover{background:#28302b}.mod-btn.primary{border-color:#6094df;background:#315eac;color:#fff}.mod-body{min-height:0;display:grid;grid-template-rows:minmax(0,1fr) auto;overflow:hidden}.player-zone{min-height:0;display:grid;grid-template-rows:auto minmax(0,1fr) auto;gap:16px;padding:18px}.now-playing{display:flex;justify-content:space-between;gap:12px;color:#bac4bc;font-size:12px}.now-playing strong{display:block;color:#f0f3ef;font-size:15px}.player-frame{position:relative;display:grid;place-items:center;min-height:230px;border:1px solid #39423b;border-radius:7px;background:radial-gradient(circle at 70% 20%,#34453b,#151817 62%);overflow:hidden}.player-frame::before{content:"";position:absolute;inset:0;background:linear-gradient(125deg,transparent 0 45%,rgba(113,170,133,.13) 46% 48%,transparent 49%)}.player-video{position:relative;z-index:1;width:100%;height:100%;min-height:230px;object-fit:contain;background:#050706}.play-orb{position:relative;z-index:2;display:grid;place-items:center;width:68px;height:68px;border:1px solid #9fc6a7;border-radius:50%;background:rgba(20,30,24,.5);color:#d9f1dd;font-size:22px}.player-frame .hint{position:absolute;z-index:2;bottom:14px;left:16px;color:#aebbb0;font-size:11px}.timeline{display:grid;gap:7px}.track{height:4px;border-radius:4px;background:#3d4840;overflow:hidden}.track span{display:block;width:34%;height:100%;background:#86c099}.time-row{display:flex;justify-content:space-between;color:#9ca79e;font-size:11px}.controls{display:flex;align-items:center;gap:7px}.control{width:34px;height:32px;border:1px solid #414b44;border-radius:5px;background:#202722;color:#dce8de}.control:hover{background:#2b362f}.control.wide{width:auto;padding:0 10px;font-size:12px}.source-line{display:flex;align-items:center;justify-content:space-between;gap:10px;color:#9ea8a0;font-size:11px}.source-line b{color:#c7d8ca;font-weight:500}.mod-lower{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid #303531;background:#1d211e}.lower-pane{min-width:0;padding:14px 16px}.lower-pane+ .lower-pane{border-left:1px solid #303531}.lower-head{display:flex;justify-content:space-between;gap:8px;margin-bottom:10px;color:#d9e1da;font-size:12px;font-weight:650}.lower-head span{color:#87938a;font-weight:400}.episode-list,.source-list{display:grid;gap:5px;max-height:150px;overflow:auto}.episode,.source{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:29px;padding:0 8px;border:1px solid transparent;border-radius:4px;background:transparent;color:#b9c4bb;text-align:left;font-size:11px}.episode:hover,.source:hover{background:#29312b;color:#fff}.episode.active,.source.active{border-color:#4f7558;background:#243229;color:#dff3e2}.source small{color:#8d9b91}.mod-status{display:flex;justify-content:space-between;gap:8px;padding:10px 16px;border-top:1px solid #303531;color:#89958d;font-size:11px}.status-ready{color:#8bc79c}.status-warn{color:#e2b171}
+    .catalog-drawer{position:absolute;right:16px;top:62px;z-index:4;width:min(360px,calc(100% - 32px));max-height:70vh;padding:14px;border:1px solid #465047;border-radius:7px;background:#202621;box-shadow:0 18px 44px rgba(0,0,0,.32);overflow:auto}.catalog-drawer[hidden]{display:none}.catalog-drawer h3{margin:0 0 5px;font-size:14px}.catalog-note{margin:0 0 12px;color:#aeb8b0;font-size:11px}.source-grid{display:grid;gap:5px}.source-row{width:100%;display:flex;justify-content:space-between;gap:8px;padding:7px 0;border:0;border-bottom:1px solid #303831;background:transparent;color:#ced7cf;font-size:11px;text-align:left}.source-row:hover:not(:disabled){color:#fff;background:#29312b}.source-row:disabled,.source:disabled{cursor:not-allowed;opacity:.45}.source-row span:last-child{color:#dcae72;font-size:10px}
+    @media(max-width:1050px){.app.mod-open{grid-template-columns:56px minmax(330px,1fr) minmax(380px,47vw)}.rail{padding-inline:4px}.thread{padding-inline:28px}.result-row{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media(max-width:760px){html,body{overflow:auto}.app,.app.mod-open{height:auto;min-height:100vh;display:block}.rail{display:none}.chat{min-height:100vh}.mod{position:fixed;inset:0;z-index:10;transform:translateX(100%);transition:transform 220ms ease}.app.mod-open .mod{transform:translateX(0)}.topbar{padding:0 16px}.thread{padding:24px 16px 18px}.composer{padding:12px}.bubble{max-width:90%}.result-row{grid-template-columns:1fr 1fr}.mod-head{padding-inline:14px}.mod-lower{grid-template-columns:1fr}.lower-pane+ .lower-pane{border-left:0;border-top:1px solid #303531}.player-frame{min-height:210px}}
+    @media(max-width:430px){.result-row{grid-template-columns:1fr}.hero h1{font-size:24px}.composer-wrap{align-items:stretch;flex-direction:column}.send{width:100%}}
+    .player-page{position:relative;z-index:1;width:100%;height:100%;min-height:230px;border:0;background:#fff}
+  </style>
+</head>
+<body>
+  <main class="app" id="app">
+    <nav class="rail" aria-label="主导航">
+      <div class="mark">AS</div>
+      <button class="rail-btn active" type="button" aria-label="聊天">聊</button>
+      <button class="rail-btn" type="button" aria-label="创意工坊" onclick="location.href='/mod-marketplace.html'">工</button>
+      <button class="rail-btn" type="button" aria-label="记忆">忆</button>
+      <div class="rail-spacer"></div>
+      <button class="rail-btn" type="button" aria-label="设置">设</button>
+    </nav>
+    <section class="chat" aria-label="Agent 对话">
+      <header class="topbar"><div class="brand">Agent Studio</div><div class="presence"><i></i> Agent 在线</div></header>
+      <div class="thread" id="thread"><div class="thread-inner">
+        <div class="hero"><div class="eyebrow">DAILY AGENT</div><h1>今天想做什么？</h1><p>直接告诉我目标。需要专业操作时，我会把对应的 Mod 带到右侧工作区。</p></div>
+        <div class="message agent"><div class="agent-label">Agent</div><div class="bubble">我已经准备好视频 Mod。你可以说“我想看机器猫”“继续播放”或“推荐最近的电影”。</div></div>
+        <div class="result-row" id="results" hidden></div>
+      </div></div>
+      <footer class="composer"><div class="composer-wrap"><textarea id="prompt" rows="1" placeholder="输入：播放、暂停、继续上次的视频，或搜索影片"></textarea><button class="send" id="send" type="button">发送</button></div></footer>
+    </section>
+    <aside class="mod" id="videoMod" aria-label="Video Mod 工作区">
+      <header class="mod-head"><div class="mod-title"><div class="mod-icon">▶</div><div><strong>Video Mod</strong><span id="modSubtitle">视频播放器 · 影视仓源</span></div></div><div class="mod-actions"><button class="mod-btn" id="loginBtn" type="button" hidden>登录网盘</button><button class="mod-btn" id="catalogBtn" type="button">源目录</button><button class="mod-btn" id="closeMod" type="button" aria-label="关闭视频 Mod">关闭</button></div></header>
+      <div class="mod-body"><section class="player-zone"><div class="now-playing"><div><strong id="mediaTitle">尚未选择影片</strong><span id="mediaMeta">搜索结果会在这里打开播放器</span></div><span id="playState">待播放</span></div><div class="player-frame" id="playerFrame"><video id="mediaVideo" class="player-video" controls playsinline hidden></video><button class="play-orb" id="playOrb" type="button" aria-label="播放">▶</button><span class="hint" id="playerHint">Video Mod Surface · docked</span></div><div class="timeline"><div class="track"><span id="progressBar"></span></div><div class="time-row"><span id="elapsed">00:00</span><span id="duration">--:--</span></div><div class="controls"><button class="control" id="prevBtn" type="button" aria-label="上一集">|‹</button><button class="control" id="pauseBtn" type="button" aria-label="播放或暂停">Ⅱ</button><button class="control" id="nextBtn" type="button" aria-label="下一集">›|</button><button class="control wide" id="sourceBtn" type="button">换源</button><button class="control wide" id="fullscreenBtn" type="button">全屏</button></div><div class="source-line"><span>当前来源：<b id="currentSource">等待选择</b></span><span id="memoryState">进度记忆已连接</span></div></div></section><section class="mod-lower"><div class="lower-pane"><div class="lower-head">剧集 <span id="episodeCount">0 集</span></div><div class="episode-list" id="episodes"><button class="episode active" type="button">选择影片后显示剧集</button></div></div><div class="lower-pane"><div class="lower-head">已配置来源 <span id="sourceCount">读取中</span></div><div class="source-list" id="sources"><button class="source" type="button">正在读取源目录</button></div></div></section></div><div class="mod-status"><span id="runtimeStatus">影视仓配置：读取中</span><span id="runtimeNote">Provider ready</span></div><div class="catalog-drawer" id="catalogDrawer" hidden><h3>影视仓源目录</h3><p class="catalog-note">已导入配置元数据。Spider 执行需要隔离兼容运行时，当前仅展示状态，不在后端主进程加载远程代码。</p><div class="source-grid" id="sourceGrid"></div></div>
+    </aside>
+  </main>
+  <script>
+    const state={sessionId:null,mediaId:null,title:null,playing:false,positionMs:0,source:'影视仓源目录',sourceKey:null,episodeId:null,catalog:null};
+    const $=id=>document.getElementById(id); const app=$('app');
+    function addMessage(role,text){const row=document.createElement('div');row.className='message '+role;row.innerHTML='<div class="'+(role==='agent'?'agent-label':'')+'">'+(role==='agent'?'Agent':'你')+'</div><div class="bubble"></div>';row.querySelector('.bubble').textContent=text;$('thread').querySelector('.thread-inner').appendChild(row);$('thread').scrollTop=$('thread').scrollHeight}
+    async function json(url,options){const r=await fetch(url,options);if(!r.ok)throw new Error('请求失败 '+r.status);return r.json()}
+    async function ensureSession(){if(state.sessionId)return true;try{const data=await json('/api/v1/mod-sessions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({modId:'video-player',surfaceId:'player',presentation:'docked'})});state.sessionId=data.sessionId;return true}catch(error){if(String(error.message).includes('409')){addMessage('agent','Video Mod 尚未安装。请先在创意工坊完成安装，再回来播放。');setTimeout(()=>location.href='/mod-marketplace.html',500);return false}throw error}}
+    async function command(command,arguments={}){if(!await ensureSession())return null;const data=await json('/api/v1/mod-sessions/'+state.sessionId+'/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,arguments})});if(data.context&&data.context.lastCommand) $('playState').textContent=data.context.lastCommand==='pause'?'已暂停':data.context.lastCommand==='play'?'播放中':'已就绪';return data}
+    function openMod(){app.classList.add('mod-open')}
+    function formatMs(ms){const total=Math.floor((ms||0)/1000),m=Math.floor(total/60),s=total%60;return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0')}
+    function renderCatalog(c){state.catalog=c;$('runtimeStatus').textContent='影视仓配置：'+(c.runtimeStatus==='CONFIG_IMPORTED'?'已导入':'不可用');$('runtimeStatus').className=c.runtimeStatus==='CONFIG_IMPORTED'?'status-ready':'status-warn';$('sourceCount').textContent=c.sources.length+' 个源';$('sources').innerHTML='';$('sourceGrid').innerHTML='';c.sources.forEach(x=>{const b=document.createElement('button');b.className='source';b.innerHTML='<span>'+x.name+'</span><small>'+x.adapter+'</small>';b.onclick=()=>{state.source=x.name;state.sourceKey=x.key;$('currentSource').textContent=x.name};$('sources').appendChild(b);const row=document.createElement('div');row.className='source-row';row.innerHTML='<span>'+x.name+'</span><span>'+x.status+'</span>';$('sourceGrid').appendChild(row)});$('runtimeNote').textContent=c.warnings&&c.warnings.length?'隔离运行时待接入':'Provider ready'}
+    async function loadCatalog(){try{const [c,runtime]=await Promise.all([json('/api/v1/media/catalog'),json('/api/v1/media/runtime')]);renderCatalog(c);$('runtimeNote').textContent=runtime.status==='CONFIGURED'?'隔离运行时已配置':'隔离运行时待接入'}catch(e){$('runtimeStatus').textContent='影视仓配置：连接失败';$('runtimeStatus').className='status-warn'}}
+    function showResults(items){const el=$('results');el.hidden=false;el.innerHTML='';(items.length?items:[{id:'demo-doraemon',title:'哆啦A梦 · 示例入口',type:'series',sourceName:'影视仓 Video Mod',playable:true,availability:'等待隔离 Spider Runtime'}]).forEach(item=>{const card=document.createElement('button');card.className='media-card';card.innerHTML='<span class="poster">VIDEO MOD</span><strong></strong><span class="media-meta"></span><span class="card-action">打开播放器 →</span>';card.querySelector('strong').textContent=item.title;card.querySelector('.media-meta').textContent=(item.sourceName||'影视仓')+' · '+(item.availability||'可用');card.onclick=()=>selectMedia(item);el.appendChild(card)})}
+    async function search(query){addMessage('agent','我正在 Video Mod 中搜索“'+query+'”。先读取已配置的影视仓源目录，再为你准备播放入口。');try{const result=await json('/api/v1/media/search?query='+encodeURIComponent(query));showResults(result.items||[]);if(result.status==='RUNTIME_REQUIRED')addMessage('agent','源目录已读取，但当前配置中的 csp_* Spider 需要隔离兼容运行时。播放器界面已经打开，接入该运行时后即可继续搜索和播放。')}catch(e){showResults([]);addMessage('agent','已打开 Video Mod。当前后端能读取源目录，但播放 Spider 运行时尚未启用。')}}
+      async function selectMedia(item){openMod();state.mediaId=item.id;state.title=item.title;state.sourceKey=item.sourceKey||null;state.episodeId='1';$('mediaTitle').textContent=item.title;$('mediaMeta').textContent='影视仓源 · 等待播放解析';$('currentSource').textContent=item.sourceName||'影视仓源';$('playState').textContent='待播放';$('playerHint').textContent='播放会话将在 Provider Runtime 就绪后建立';$('mediaVideo').hidden=true;$('mediaVideo').removeAttribute('src');$('episodes').innerHTML='';['第 1 集','第 2 集','第 3 集','第 4 集','第 5 集'].forEach((name,i)=>{const b=document.createElement('button');b.className='episode'+(i===0?' active':'');b.textContent=name;b.onclick=()=>{document.querySelectorAll('.episode').forEach(x=>x.classList.remove('active'));b.classList.add('active');state.episodeId=String(i+1);$('mediaMeta').textContent='影视仓源 · '+name};$('episodes').appendChild(b)});$('episodeCount').textContent='5 集';await command('open',{resourceId:item.id,title:item.title,sourceId:state.sourceKey,episodeId:state.episodeId});addMessage('agent','已在右侧打开 Video Mod。你可以继续说“播放”“暂停”“下一集”或“换源”。')}
+      async function resolvePlayback(){const result=await json('/api/v1/media/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mediaId:state.mediaId,sourceId:state.sourceKey,episodeId:state.episodeId})});if(result.status==='READY'&&result.streamUrl){const video=$('mediaVideo');video.src=result.streamUrl;video.hidden=false;video.play().catch(()=>{});$('playerHint').textContent='Provider Runtime 已解析 · '+(result.mimeType||'stream');$('duration').textContent=formatMs(result.durationMs);return true}if(result.status==='WEBSITE_PAGE'&&result.playbackPageUrl){$('playerHint').textContent='已找到站点播放器，正在打开新页面';window.open(result.playbackPageUrl,'_blank','noopener');addMessage('agent','已为你打开资源站点的公开播放器。');return false}$('playerHint').textContent=result.message||'Provider Runtime 尚未返回播放地址';addMessage('agent',result.message||'当前还没有可播放地址。');return false}
+    async function handle(text){const t=text.trim();if(!t)return;addMessage('user',t);if(/继续|续播/.test(t)){openMod();await command('resume');$('playState').textContent='正在恢复';addMessage('agent','我正在读取 Video Mod 的播放进度并恢复上次内容。');return}if(/暂停|停一下/.test(t)){openMod();state.playing=false;await command('pause');$('playState').textContent='已暂停';addMessage('agent','已暂停播放，当前位置会写入 Video Mod 记忆。');return}if(/播放|看|搜|推荐|电影|视频|机器猫|哆啦/.test(t)){await search(t.replace(/播放|我想看|帮我找|推荐/g,'').trim()||'热门影片');return}addMessage('agent','我可以通过 Video Mod 搜片、打开播放器、播放、暂停、切换来源和恢复上次进度。')}
+    $('send').onclick=()=>{const v=$('prompt').value; $('prompt').value='';handle(v)};$('prompt').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('send').click()}});$('playOrb').onclick=async()=>{openMod();if(!state.mediaId)return;state.playing=true;$('playState').textContent='解析中';$('playOrb').textContent='Ⅱ';const ready=await resolvePlayback();if(ready){$('playState').textContent='播放中';await command('play',{mediaId:state.mediaId,sourceId:state.sourceKey,episodeId:state.episodeId,positionMs:state.positionMs})}else{state.playing=false;$('playState').textContent='待播放'};};$('pauseBtn').onclick=async()=>{openMod();state.playing=!state.playing;const video=$('mediaVideo');if(state.playing){if(video.src){await video.play().catch(()=>{});$('playState').textContent='播放中'}else{await resolvePlayback();$('playState').textContent='播放中'}}else{video.pause();$('playState').textContent='已暂停'};$('playOrb').textContent=state.playing?'Ⅱ':'▶';await command(state.playing?'play':'pause',{mediaId:state.mediaId,sourceId:state.sourceKey,episodeId:state.episodeId,positionMs:Math.floor((video.currentTime||0)*1000)})};$('nextBtn').onclick=async()=>{openMod();await command('next-episode',{episodeId:String(Number(state.episodeId||1)+1)});state.episodeId=String(Number(state.episodeId||1)+1);$('mediaMeta').textContent='影视仓源 · 下一集';addMessage('agent','已切换到下一集。')};$('prevBtn').onclick=async()=>{openMod();await command('previous-episode');$('mediaMeta').textContent='影视仓源 · 上一集'};$('sourceBtn').onclick=()=>{openMod();$('catalogDrawer').hidden=!$('catalogDrawer').hidden};$('catalogBtn').onclick=()=>{$('catalogDrawer').hidden=!$('catalogDrawer').hidden};$('closeMod').onclick=()=>app.classList.remove('mod-open');$('fullscreenBtn').onclick=()=>{$('playerFrame').requestFullscreen?.()};loadCatalog();
+  </script>
+  <script>
+    // The chat is the intent surface; a single confident result should not require a second click.
+    const authProviderLabel = provider => ({
+      BAIDU_NETDISK:'百度网盘', QUARK_DRIVE:'夸克网盘', UC_DRIVE:'UC 网盘',
+      ALIYUN_DRIVE:'阿里云盘', XUNLEI_DRIVE:'迅雷云盘', TIANYI_CLOUD:'天翼云盘', CLOUD_DRIVE:'网盘'
+    })[provider] || '网盘';
+    const accessLabel = value => value === 'ANONYMOUS' ? '免登录优先' :
+      value === 'LOGIN_REQUIRED' ? '需要网盘登录' :
+      value === 'LOGIN_MAY_BE_REQUIRED' ? '可能需要网盘登录' : '接入状态待确认';
+    const officialLoginUrl = provider => ({
+      BAIDU_NETDISK:'https://passport.baidu.com/v2/?login&tpl=netdisk&u=https%3A%2F%2Fpan.baidu.com%2F',
+      QUARK_DRIVE:'https://pan.quark.cn/', UC_DRIVE:'https://drive.uc.cn/',
+      ALIYUN_DRIVE:'https://www.alipan.com/', XUNLEI_DRIVE:'https://pan.xunlei.com/',
+      TIANYI_CLOUD:'https://cloud.189.cn/'
+    })[provider] || null;
+    const syncLoginAction = () => {
+      const url=officialLoginUrl(state.authProvider); const button=$('loginBtn');
+      button.hidden=state.accessMode!=='LOGIN_REQUIRED'||!url; button.dataset.loginUrl=url||'';
+      button.textContent=state.authProvider?('登录'+authProviderLabel(state.authProvider)):'登录网盘';
+    };
+    $('loginBtn').onclick=()=>{const url=$('loginBtn').dataset.loginUrl;if(url)window.open(url,'_blank','noopener')};
+    const originalSelectMedia = selectMedia;
+    selectMedia = async function(item){
+      state.accessMode=item.accessMode||'UNKNOWN'; state.authProvider=item.authProvider||null;
+      state.source=item.sourceName||state.source;
+      syncLoginAction(); await originalSelectMedia(item);
+    };
+    const mediaItemRank = item => item.playable||item.availability==='READY'?0:
+      item.accessMode==='ANONYMOUS'?1:item.accessMode==='LOGIN_REQUIRED'?3:2;
+    const activateMedia = async item => {
+      await selectMedia(item);
+      const ready=await resolvePlayback();
+      if(ready){
+        state.playing=true; $('playState').textContent='播放中';
+        await command('play',{mediaId:state.mediaId,sourceId:state.sourceKey,episodeId:state.episodeId,positionMs:state.positionMs});
+      }
+      return ready;
+    };
+    const switchMediaSource = async source => {
+      if(!source.searchable){addMessage('agent','“'+source.name+'”不支持搜索，已保留当前来源。');return}
+      const query=state.lastQuery||state.title;
+      if(!query){state.source=source.name;state.sourceKey=source.key;$('currentSource').textContent=source.name;return}
+      const previous={source:state.source,sourceKey:state.sourceKey};
+      $('playState').textContent='切换来源中';
+      addMessage('agent','正在切换到“'+source.name+'”并重新解析当前影片。');
+      try{
+        const result=await json('/api/v1/media/search?query='+encodeURIComponent(query)+'&sourceId='+encodeURIComponent(source.key));
+        const items=[...(result.items||[])].sort((a,b)=>mediaItemRank(a)-mediaItemRank(b));
+        if(!items.length){
+          state.source=previous.source;state.sourceKey=previous.sourceKey;$('currentSource').textContent=previous.source||'等待选择';
+          $('playState').textContent='来源不可用';
+          addMessage('agent','“'+source.name+'”当前没有匹配结果或可用适配器，已保留原来源。');return;
+        }
+        const playable=items.find(item=>mediaItemRank(item)===0);
+        if(!playable){
+          state.source=previous.source;state.sourceKey=previous.sourceKey;$('currentSource').textContent=previous.source||'等待选择';
+          $('playState').textContent='未发现直播放地址';showResults(items);
+          addMessage('agent','“'+source.name+'”找到了候选内容，但没有通过媒体流快速验证。已保留当前播放器，你仍可在结果中手动打开站点页面。');return;
+        }
+        await activateMedia(playable);
+        addMessage('agent','已切换到“'+source.name+'”。');
+      }catch(error){
+        state.source=previous.source;state.sourceKey=previous.sourceKey;$('currentSource').textContent=previous.source||'等待选择';
+        $('playState').textContent='切换失败';addMessage('agent','切换来源失败，已保留原来源。');
+      }
+    };
+    renderCatalog = function(c){
+      state.catalog=c;
+      $('runtimeStatus').textContent='影视仓配置：'+(c.runtimeStatus==='CONFIG_IMPORTED'?'已导入':'不可用');
+      $('runtimeStatus').className=c.runtimeStatus==='CONFIG_IMPORTED'?'status-ready':'status-warn';
+      $('sourceCount').textContent=c.sources.length+' 个源'; $('sources').innerHTML=''; $('sourceGrid').innerHTML='';
+      const orderedSources=[...c.sources].sort((a,b)=>{
+        const rank=x=>x.accessMode==='ANONYMOUS'?0:x.accessMode==='LOGIN_MAY_BE_REQUIRED'?2:1;
+        return rank(a)-rank(b);
+      });
+      orderedSources.forEach(x=>{
+        const access=accessLabel(x.accessMode);
+        const b=document.createElement('button'); b.className='source';
+        b.innerHTML='<span></span><small></small>'; b.querySelector('span').textContent=x.name;
+        b.querySelector('small').textContent=access;
+        b.disabled=!x.searchable; b.onclick=()=>switchMediaSource(x);
+        $('sources').appendChild(b);
+        const row=document.createElement('button'); row.type='button'; row.className='source-row'; row.innerHTML='<span></span><span></span>';
+        row.children[0].textContent=x.name; row.children[1].textContent=x.searchable?access:'不可搜索';
+        row.disabled=!x.searchable; row.onclick=()=>switchMediaSource(x); $('sourceGrid').appendChild(row);
+      });
+      $('runtimeNote').textContent=c.sources.some(x=>x.websiteUrl)?'公开站点适配已就绪':'隔离运行时待接入';
+    };
+    if(state.catalog) renderCatalog(state.catalog);
+    // The initial catalog request may finish before this enhancement script is parsed.
+    // Refresh once so the full source directory and access badges are rendered.
+    loadCatalog();
+    showResults = function(items){
+      const el=$('results'); el.hidden=false; el.innerHTML='';
+      const ordered=[...(items||[])].sort((a,b)=>mediaItemRank(a)-mediaItemRank(b));
+      ordered.forEach(item=>{
+        const card=document.createElement('button'); card.className='media-card';
+        card.innerHTML='<span class="poster">VIDEO MOD</span><strong></strong><span class="media-meta"></span><span class="card-action">打开播放器 →</span>';
+        card.querySelector('strong').textContent=item.title;
+        const provider=item.authProvider?' · '+authProviderLabel(item.authProvider):'';
+        const availability=item.playable||item.availability==='READY'?'已验证可直接播放':accessLabel(item.accessMode);
+        card.querySelector('.media-meta').textContent=(item.sourceName||'影视仓')+' · '+availability+provider;
+        card.onclick=()=>activateMedia(item); el.appendChild(card);
+      });
+    };
+    resolvePlayback = async function(){
+      const result=await json('/api/v1/media/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mediaId:state.mediaId,sourceId:state.sourceKey,episodeId:state.episodeId})});
+      const video=$('mediaVideo');
+      if(result.status==='READY'&&result.streamUrl){
+        const page=$('mediaPage'); if(page)page.remove();
+        video.src=result.streamUrl; video.hidden=false; video.play().catch(()=>{});
+        $('playerHint').textContent='已解析媒体流 · '+(result.mimeType||'stream'); $('duration').textContent=formatMs(result.durationMs); return true;
+      }
+      if(result.status==='WEBSITE_PAGE'&&result.playbackPageUrl){
+        video.pause(); video.hidden=true; video.removeAttribute('src');
+        let page=$('mediaPage');
+        if(!page){page=document.createElement('iframe');page.id='mediaPage';page.className='player-page';page.title='站点播放器';page.referrerPolicy='no-referrer';$('playerFrame').prepend(page)}
+        page.src=result.playbackPageUrl; page.hidden=false;
+        const provider=state.authProvider?authProviderLabel(state.authProvider):null;
+        $('playerHint').textContent=provider?'已打开'+provider+'官方页面 · 登录状态由网盘保存':'已在 Video Mod 中打开公开播放页面';
+        $('playState').textContent=state.accessMode==='LOGIN_REQUIRED'?'等待网盘登录':'播放页已打开';
+        addMessage('agent',provider?'已在右侧打开'+provider+'页面；如需登录，请使用网盘官方二维码，登录状态会由该网盘保留。':'已在右侧 Video Mod 中打开来源播放页。'); return false;
+      }
+      $('playerHint').textContent=result.message||'当前没有可播放地址'; addMessage('agent',result.message||'当前还没有可播放地址。'); return false;
+    };
+    const originalSearch = search;
+    search = async function(query){
+      state.lastQuery=query;
+      addMessage('agent','我正在通过 Video Mod 查找“'+query+'”。');
+      try {
+        const result = await json('/api/v1/media/search?query='+encodeURIComponent(query));
+        const items = result.items || [];
+        showResults(items);
+        const directItems=items.filter(item=>mediaItemRank(item)===0);
+        if (directItems.length > 0) {
+          await activateMedia(directItems[0]);
+          addMessage('agent','已通过媒体流验证并选择当前最快的可播放来源。');
+          return;
+        }
+        if (items.length > 1) {
+          addMessage('agent','我找到多个可能的结果，请选择最符合你要看的版本。');
+        } else if (result.status === 'RUNTIME_REQUIRED') {
+          addMessage('agent','当前没有可直接检索的公开站点结果。你可以补充片名、年份或指定来源，我再继续缩小范围。');
+        } else {
+          addMessage('agent','暂时没有找到明确结果。请补充片名、年份、演员或来源。');
+        }
+      } catch (error) {
+        showResults([]);
+        addMessage('agent','搜索暂时失败。请补充更完整的片名，或告诉我指定的视频来源。');
+      }
+    };
+    const refreshWebsiteStatus = () => {
+      if (state.catalog && state.catalog.sources.some(source=>source.websiteUrl)) {
+        $('runtimeNote').textContent='公开站点适配已就绪';
+        $('runtimeStatus').textContent='影视仓配置：已导入 · 网站适配可用';
+        $('runtimeStatus').className='status-ready';
+      }
+    };
+    setInterval(refreshWebsiteStatus, 500);
+  </script>
+</body>
+</html>

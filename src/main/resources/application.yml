@@ -98,6 +98,18 @@ app:
     user-id: ${APP_SECURITY_USER_ID:remote-owner}
   run:
     timeout-seconds: 120
+  demos:
+    video:
+      # Video Demo private runtime. The platform core never executes remote
+      # DEX/JNI/JS source code and has no dependency on TVBox compatibility.
+      runtime-endpoint: ${VIDEO_DEMO_RUNTIME_ENDPOINT:}
+      # Shared secret for a non-loopback runtime deployment. Leave empty when
+      # the Demo Worker remains bound to 127.0.0.1.
+      runtime-token: ${VIDEO_DEMO_RUNTIME_TOKEN:}
+      # Optional JSON argv array. The Video Demo starts this Worker lazily; no
+      # shell command or remote download is performed by the platform core.
+      runtime-command: ${VIDEO_DEMO_RUNTIME_COMMAND:}
+      runtime-working-directory: ${VIDEO_DEMO_RUNTIME_WORKING_DIRECTORY:}
   execution:
     # Shared interactive deployments must not be switched to sandbox-only routing.
     # Dedicated evaluation backends opt in explicitly with this environment variable.
@@ -105,15 +117,11 @@ app:
   web-search:
     enabled: ${WEB_SEARCH_ENABLED:true}
     max-results: ${WEB_SEARCH_MAX_RESULTS:5}
-    # Legacy SearXNG compatibility path. Tavily is selected automatically when
-    # TAVILY_API_KEY is present.
-    endpoint: ${SEARXNG_ENDPOINT:http://localhost:8888}
+    # Online search is served exclusively by Tavily; no local fallback is used.
+    tavily-endpoint: ${TAVILY_ENDPOINT:https://api.tavily.com/search}
+    tavily-api-key: ${TAVILY_API_KEY:}
     per-domain-limit: ${WEB_SEARCH_PER_DOMAIN_LIMIT:2}
     min-unique-domains: ${WEB_SEARCH_MIN_UNIQUE_DOMAINS:3}
-    language: ${SEARXNG_LANGUAGE:zh-CN}
-    safe-search: ${SEARXNG_SAFESEARCH:1}
-    general-engines: ${SEARXNG_GENERAL_ENGINES:mwmbl,bing,baidu}
-    news-engines: ${SEARXNG_NEWS_ENGINES:bing news,reuters}
     planning:
       max-queries: ${WEB_SEARCH_MAX_QUERIES:3}
       cache-ttl-seconds: ${WEB_SEARCH_CACHE_TTL_SECONDS:90}
@@ -123,11 +131,6 @@ app:
       max-excerpt-chars: ${WEB_SEARCH_PAGE_READER_MAX_EXCERPT_CHARS:1500}
       max-response-bytes: ${WEB_SEARCH_PAGE_READER_MAX_RESPONSE_BYTES:1000000}
       allow-private-hosts: ${WEB_SEARCH_PAGE_READER_ALLOW_PRIVATE_HOSTS:false}
-    news-sources:
-      gdelt-enabled: ${GDELT_NEWS_ENABLED:true}
-      gdelt-endpoint: ${GDELT_NEWS_ENDPOINT:https://api.gdeltproject.org/api/v2/doc/doc}
-      jina-reader-enabled: ${JINA_READER_ENABLED:true}
-      jina-reader-endpoint: ${JINA_READER_ENDPOINT:https://r.jina.ai/}
   skills:
     install-dir: ${SKILL_INSTALL_DIR:${APP_DATA_DIR:./data}/skills}
     max-archive-bytes: ${SKILL_MAX_ARCHIVE_BYTES:15728640}

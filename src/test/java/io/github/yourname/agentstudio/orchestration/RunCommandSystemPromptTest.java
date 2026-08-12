@@ -120,8 +120,27 @@ class RunCommandSystemPromptTest {
                 .contains("when those parameters are advertised by its schema")
                 .contains("only when both tools are available")
                 .contains("finite tool budget")
+                .contains("remediable environment precondition")
+                .contains("Do not stop after merely reporting")
                 .contains("system.shell.run capability only for short-lived commands")
                 .contains("Project scope for this run: task-board");
+    }
+
+    @Test
+    void inProcessLocalRunsTellTheAgentThatToolsOperateOnTheUserMachine() {
+        CreateRunCommand command = new CreateRunCommand(
+                "conversation-1", "启动一下项目", null, null,
+                List.of(), List.of(), List.of(), List.of(), "in-process-local", null);
+
+        String prompt = RunCommandService.buildSystemPrompt(
+                "You are an execution assistant.", command, new EvidenceBundle(List.of()),
+                List.of(), List.of(), "", "", "", RunExecutionMode.NODE_INTERACTION);
+
+        assertThat(prompt)
+                .contains("not in a separate assistant sandbox")
+                .contains("server-integrated local executor")
+                .contains("the user's local computer")
+                .contains("do not replace it with a tutorial");
     }
 
     @Test
@@ -236,6 +255,8 @@ class RunCommandSystemPromptTest {
                 "system.process.logs",
                 "system.process.wait_http",
                 "system.process.stop",
+                "system.software.query",
+                "system.software.install",
                 "system.shell.run");
         assertThat(RunCommandService.desktopProjectToolSet())
                 .doesNotContain("browser.open", "system.desktop.clipboard.set", "skill.create_draft");
@@ -251,6 +272,11 @@ class RunCommandSystemPromptTest {
                 .isTrue();
         assertThat(RunCommandService.requestsLocalProject(
                 "Fix the login endpoint in this project and run its tests."))
+                .isTrue();
+        assertThat(RunCommandService.requestsLocalProject(
+                "C:\\Users\\61040\\Desktop\\talent-management-system 启动一下这个项目"))
+                .isTrue();
+        assertThat(RunCommandService.requestsLocalProject("启动一下项目"))
                 .isTrue();
         assertThat(RunCommandService.requestsLocalProject(
                 "Fix the project at \\\\build-server\\shared\\shop-api and run its tests."))
@@ -301,9 +327,12 @@ class RunCommandSystemPromptTest {
         assertThat(RunCommandService.requestsWindowsSystemOperation(
                 "\u68c0\u67e5\u4e00\u4e0b\u4e3a\u4ec0\u4e48\u670d\u52a1 QQPCRTP \u505c\u6b62\u5931\u8d25"))
                 .isTrue();
+        assertThat(RunCommandService.requestsWindowsSystemOperation("Install VS Code for me.")).isTrue();
+        assertThat(RunCommandService.requestsWindowsSystemOperation("\u5e2e\u6211\u5b89\u88c5 Docker Desktop")).isTrue();
 
         assertThat(RunCommandService.windowsRemediationToolSet()).containsExactly(
                 "system.privilege.query",
+                "system.software.list",
                 "system.software.query",
                 "system.software.install",
                 "system.software.uninstall",
@@ -382,6 +411,20 @@ class RunCommandSystemPromptTest {
         assertThat(RunCommandService.requestsWindowsSystemOperation(
                 "\u4ec0\u4e48\u662f winget\uff0c\u5b83\u600e\u4e48\u5378\u8f7d\u8f6f\u4ef6"))
                 .isFalse();
+    }
+
+    @Test
+    void localInspectionRequestsAreSeparatedFromGeneralQuestions() {
+        assertThat(RunCommandService.requestsDesktopInspection("\u684c\u9762\u6709\u4ec0\u4e48\u8f6f\u4ef6\uff1f")).isTrue();
+        assertThat(RunCommandService.requestsDesktopInspection("\u67e5\u770b\u684c\u9762\u6709\u54ea\u4e9b\u6587\u4ef6\u5939")).isTrue();
+        assertThat(RunCommandService.requestsDesktopInspection("What software is on my desktop?")).isTrue();
+        assertThat(RunCommandService.requestsDesktopInspection("Explain how to organize desktop files.")).isFalse();
+        assertThat(RunCommandService.requestsInstalledSoftware("\u7535\u8111\u4e0a\u6709\u4ec0\u4e48\u8f6f\u4ef6\uff1f")).isTrue();
+        assertThat(RunCommandService.requestsInstalledSoftware("\u67e5\u770b\u672c\u673a\u5df2\u5b89\u88c5\u5e94\u7528")).isTrue();
+        assertThat(RunCommandService.requestsInstalledSoftware("What is installed software?")).isFalse();
+        assertThat(RunCommandService.desktopInspectionToolSet())
+                .containsExactly("system.desktop.organize.list", "system.fs.list");
+        assertThat(RunCommandService.installedSoftwareToolSet()).containsExactly("system.software.list");
     }
 
     @Test

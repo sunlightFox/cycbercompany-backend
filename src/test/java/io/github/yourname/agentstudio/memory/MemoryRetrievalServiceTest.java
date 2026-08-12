@@ -46,12 +46,55 @@ class MemoryRetrievalServiceTest {
                 .containsExactly("semantic", "lexical");
     }
 
+    @Test
+    void defaultPolicyStillRetrievesConfirmedMemory() {
+        MemoryItemRepository repository = mock(MemoryItemRepository.class);
+        KnowledgeEmbeddingService embeddings = mock(KnowledgeEmbeddingService.class);
+        MemoryRetrievalService service = new MemoryRetrievalService(
+                repository, new ObjectMapper(), embeddings);
+        Instant now = Instant.now();
+        MemoryItemEntity preference = memory("preference", "The agent prefers red.", null, now);
+        when(repository.search(
+                        eq("tenant"), eq("user"), eq("agent"), eq(null),
+                        eq(false), eq(null), eq(MemoryStatus.CONFIRMED.name()), eq(null), any(Instant.class), any()))
+                .thenReturn(List.of(preference));
+        when(embeddings.embedForSearch("what color do you like?")).thenReturn(Optional.empty());
+        ActorContext actor = new ActorContext("tenant", "user", Set.of(), Set.of());
+
+        assertThat(service.retrieve("agent", "What color do you like?", "{\"mode\":\"CONVERSATION\"}", actor))
+                .extracting(MemorySnapshot::id)
+                .containsExactly("preference");
+    }
+
+    @Test
+    void agentMemoryIsRecalledForAnyUserPersona() {
+        MemoryItemRepository repository = mock(MemoryItemRepository.class);
+        KnowledgeEmbeddingService embeddings = mock(KnowledgeEmbeddingService.class);
+        MemoryRetrievalService service = new MemoryRetrievalService(repository, new ObjectMapper(), embeddings);
+        Instant now = Instant.now();
+        MemoryItemEntity preference = new MemoryItemEntity(
+                "agent-preference", "tenant", "creator", "agent", MemoryScope.AGENT, null,
+                MemoryType.PROFILE, MemoryStatus.CONFIRMED, MemorySensitivity.NORMAL,
+                "The agent prefers red.", 1.0, 0.9, null, null, null, null, now, null);
+        when(repository.search(eq("tenant"), eq("user"), eq("agent"), eq(null), eq(false), eq(null),
+                eq(MemoryStatus.CONFIRMED.name()), eq(null), any(Instant.class), any())).thenReturn(List.of());
+        when(repository.findActiveAgentMemories(eq("tenant"), eq("agent"), eq(MemoryStatus.CONFIRMED.name()),
+                any(Instant.class), any())).thenReturn(List.of(preference));
+        when(embeddings.embedForSearch("what color do you like?")).thenReturn(Optional.empty());
+
+        assertThat(service.retrieve("agent", "persona-a", "What color do you like?", "{}",
+                new ActorContext("tenant", "user", Set.of(), Set.of())))
+                .extracting(MemorySnapshot::id)
+                .containsExactly("agent-preference");
+    }
+
     private static MemoryItemEntity memory(String id, String content, String vector, Instant now) {
         return new MemoryItemEntity(
                 id,
                 "tenant",
                 "user",
                 "agent",
+                MemoryScope.USER,
                 null,
                 MemoryType.PROCEDURAL,
                 MemoryStatus.CONFIRMED,

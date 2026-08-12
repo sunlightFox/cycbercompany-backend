@@ -38,10 +38,9 @@ public class MemoryRetrievalService {
             String memoryPolicyJson,
             ActorContext actor) {
         JsonNode policy = parse(memoryPolicyJson);
-        if (!"PERSONALIZED".equals(policy.path("mode").asText())
-                || !policy.path("longTerm").path("enabled").asBoolean(false)) {
-            return List.of();
-        }
+        // A memory policy configures retrieval; it does not gate it. In particular,
+        // legacy agents use CONVERSATION mode but can still have user-created,
+        // confirmed long-term memories that must be available to the run.
         int topK = Math.max(1, Math.min(policy.path("longTerm").path("topK").asInt(3), 12));
         double minRelevance = policy.path("longTerm").path("minRelevance").asDouble(0.0);
         String retrievalMode = policy.path("longTerm").path("retrievalMode").asText("HYBRID");
@@ -51,10 +50,18 @@ public class MemoryRetrievalService {
                 ? null
                 : embeddings.embedForSearch(normalizedQuery).orElse(null);
         Instant now = Instant.now();
-        return memories.search(
+        List<MemoryItemEntity> userMemories = memories.search(
                         actor.tenantId(), actor.userId(), agentId, null, false, null, MemoryStatus.CONFIRMED.name(), null, now,
                         PageRequest.of(0, 100)).stream()
-                .filter(item -> item.personaId() == null || item.personaId().equals(personaId))
+                .filter(item -> item.scope() == MemoryScope.USER)
+                .toList();
+        List<MemoryItemEntity> agentMemories = memories.findActiveAgentMemories(
+                actor.tenantId(), agentId, MemoryStatus.CONFIRMED.name(), now, PageRequest.of(0, 100));
+        return java.util.stream.Stream.concat(agentMemories.stream(), userMemories.stream())
+                .filter(item -> item.supersededBy() == null || item.supersededBy().isBlank())
+                .filter(item -> item.scope() == MemoryScope.AGENT
+                        || (item.scope() == MemoryScope.USER
+                                && (item.personaId() == null || item.personaId().equals(personaId))))
                 .filter(item -> item.expiresAt() == null || item.expiresAt().isAfter(now))
                 .map(item -> score(item, normalizedQuery, queryTerms, queryVector, retrievalMode))
                 .filter(scored -> normalizedQuery.isBlank() || scored.score() >= minRelevance)

@@ -45,6 +45,32 @@ public interface MemoryItemRepository extends JpaRepository<MemoryItemEntity, St
             @Param("now") Instant now,
             Pageable pageable);
 
+    @Query("""
+            select m from memory_item m
+            where m.tenantId = :tenantId and m.agentId = :agentId
+              and m.scope = 'AGENT' and m.status = :status
+              and (m.expiresAt is null or m.expiresAt > :now)
+            order by m.updatedAt desc
+            """)
+    List<MemoryItemEntity> findActiveAgentMemories(
+            @Param("tenantId") String tenantId,
+            @Param("agentId") String agentId,
+            @Param("status") String status,
+            @Param("now") Instant now,
+            Pageable pageable);
+
+    @Query("""
+            select m from memory_item m
+            where m.tenantId = :tenantId and m.agentId = :agentId
+              and m.scope = :scope and m.memoryKey = :memoryKey
+              and m.status = :status and m.supersededBy is null
+              and ((:personaId is null and m.personaId is null) or m.personaId = :personaId)
+            """)
+    List<MemoryItemEntity> findActiveByKey(
+            @Param("tenantId") String tenantId, @Param("agentId") String agentId,
+            @Param("scope") String scope, @Param("personaId") String personaId,
+            @Param("memoryKey") String memoryKey, @Param("status") String status);
+
     @Modifying
     @Query("""
             delete from memory_item m

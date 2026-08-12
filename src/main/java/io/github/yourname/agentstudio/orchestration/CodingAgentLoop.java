@@ -1,6 +1,7 @@
 package io.github.yourname.agentstudio.orchestration;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.yourname.agentstudio.execution.InProcessLocalToolProvider;
 import io.github.yourname.agentstudio.model.ModelGateway;
 import io.github.yourname.agentstudio.model.ModelRateLimitException;
 import io.github.yourname.agentstudio.model.ModelTransientException;
@@ -103,7 +104,13 @@ class CodingAgentLoop {
             4. Read each structured tool result before deciding the next step. FAILED or DEFERRED means
                the requested effect did not occur. UNKNOWN means a node-side effect could not be confirmed,
                so wait for the node to reconnect and inspect the affected state before deciding what remains.
-               Diagnose the reported cause, correct the arguments or use a justified alternative, and do not repeat an identical failed call unless external state changed.
+               Diagnose the reported cause, correct the arguments or use a justified alternative, and do not repeat an identical failed call unless external state changed. A missing executable, runtime, package manager,
+               dependency, permission, or service is an environmental precondition to resolve, not a completed task:
+               inspect the available project-local wrapper or configured runtime first; then use an advertised
+               structured environment/software capability when the requested task authorizes it and approval permits.
+               After remediation, repeat the failed operation (or a directly equivalent verification) before
+               reporting completion. Do not stop at "Maven is missing", "command not found", or a similar
+               diagnosis when an advertised safe remediation path exists.
                Do not repeat an identical unknown call until the affected state has been inspected after reconnection.
                On Windows, shell.run uses cmd.exe unless the advertised capability explicitly says otherwise. Use CMD
                syntax (for example dir and &&); never send POSIX-only syntax such as ls, ';', $?, xxd, or PowerShell
@@ -300,11 +307,11 @@ class CodingAgentLoop {
         return execute(
                 runId, modelProfileId, bindings, messages, actor, workspaceScope, approvalMode,
                 agentApprovalPolicy,
-                requiresFirstNodeToolCall(bindings, messages),
+                requiresFirstNativeToolCall(bindings, messages),
                 NODE_INTERACTION_PROTOCOL);
     }
 
-    private static boolean requiresFirstNodeToolCall(
+    private static boolean requiresFirstNativeToolCall(
             List<ResolvedToolBinding> bindings,
             List<ModelGateway.ModelMessage> messages) {
         String request = "";
@@ -321,20 +328,25 @@ class CodingAgentLoop {
             return false;
         }
         String normalizedRequest = request.toLowerCase(Locale.ROOT);
-        boolean hasAdvertisedNodeTool = bindings.stream()
-                .filter(binding -> "node".equals(binding.providerId()))
+        boolean hasAdvertisedNativeTool = bindings.stream()
+                .filter(CodingAgentLoop::isNativeExecutorTool)
                 .map(ResolvedToolBinding::logicalName)
                 .filter(name -> name != null && !name.isBlank())
                 .map(name -> name.toLowerCase(Locale.ROOT))
                 .anyMatch(normalizedRequest::contains);
-        if (hasAdvertisedNodeTool) {
+        if (hasAdvertisedNativeTool) {
             return true;
         }
         // A selected node may still be used for ordinary conversation. However, an explicit
         // request to change local or external state cannot be truthfully completed without at
         // least one successful native-tool attempt from the advertised node capability set.
-        return bindings.stream().anyMatch(binding -> "node".equals(binding.providerId()))
+        return bindings.stream().anyMatch(CodingAgentLoop::isNativeExecutorTool)
                 && EXPLICIT_STATE_CHANGE_REQUEST.matcher(request).find();
+    }
+
+    private static boolean isNativeExecutorTool(ResolvedToolBinding binding) {
+        return "node".equals(binding.providerId())
+                || InProcessLocalToolProvider.PROVIDER_ID.equals(binding.providerId());
     }
 
     String resume(

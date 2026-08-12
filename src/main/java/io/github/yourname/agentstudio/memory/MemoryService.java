@@ -44,7 +44,23 @@ public class MemoryService {
             String query,
             int limit,
             ActorContext actor) {
-        return list(agentId, personaId, false, type, status, query, limit, actor);
+        return list(agentId, personaId, false, type, status, null, query, limit, actor);
+    }
+
+    @Transactional(readOnly = true)
+    public List<MemoryView> list(
+            String agentId,
+            String personaId,
+            boolean sharedOnly,
+            MemoryType type,
+            MemoryStatus status,
+            MemoryOrigin origin,
+            String query,
+            int limit,
+            ActorContext actor) {
+        return list(agentId, personaId, sharedOnly, type, status, query, limit, actor).stream()
+                .filter(memory -> origin == null || memory.origin() == origin)
+                .toList();
     }
 
     @Transactional(readOnly = true)
@@ -97,7 +113,11 @@ public class MemoryService {
     @Transactional
     public MemoryView create(CreateMemoryCommand command, ActorContext actor) {
         requireVisibleAgent(command.agentId(), actor);
-        if (command.personaId() != null && !command.personaId().isBlank()) {
+        MemoryScope scope = command.scope() == null ? MemoryScope.AGENT : command.scope();
+        if (scope == MemoryScope.AGENT && command.personaId() != null && !command.personaId().isBlank()) {
+            throw new IllegalArgumentException("Agent memory cannot target a user persona.");
+        }
+        if (scope == MemoryScope.USER && command.personaId() != null && !command.personaId().isBlank()) {
             requirePersona(command.personaId(), actor);
         }
         safety.validateUserMemory(command.content());
@@ -107,6 +127,9 @@ public class MemoryService {
                 actor.tenantId(),
                 actor.userId(),
                 command.agentId(),
+                scope,
+                MemoryOrigin.USER_CREATED,
+                MemoryKey.infer(scope, command.type(), command.content()),
                 blankToNull(command.personaId()),
                 command.type(),
                 MemoryStatus.CONFIRMED,
@@ -130,12 +153,24 @@ public class MemoryService {
             throw new MemoryRevisionConflictException(id, command.expectedRevision(), item.revision());
         }
         safety.validateUserMemory(command.content());
+        MemoryScope scope = command.scope() == null ? item.scope() : command.scope();
+        if (scope == MemoryScope.AGENT && command.personaId() != null && !command.personaId().isBlank()) {
+            throw new IllegalArgumentException("Agent memory cannot target a user persona.");
+        }
+        if (scope == MemoryScope.USER && command.personaId() != null && !command.personaId().isBlank()) {
+            requirePersona(command.personaId(), actor);
+        }
         item.revise(
                 command.type(),
                 command.content().trim(),
                 command.importance() == null ? item.importance() : command.importance(),
                 command.expiresAt(),
                 embeddings.embedForStorage(command.content().trim()).orElse(null),
+                Instant.now());
+        item.changeScope(
+                scope,
+                MemoryKey.infer(scope, command.type(), command.content()),
+                scope == MemoryScope.AGENT ? null : blankToNull(command.personaId()),
                 Instant.now());
         return MemoryView.from(memories.saveAndFlush(item));
     }

@@ -3,6 +3,7 @@ package io.github.yourname.agentstudio.web;
 import io.github.yourname.agentstudio.memory.ClearMemoryCommand;
 import io.github.yourname.agentstudio.memory.CreateMemoryCommand;
 import io.github.yourname.agentstudio.memory.MemoryService;
+import io.github.yourname.agentstudio.memory.MemoryOrigin;
 import io.github.yourname.agentstudio.memory.MemoryStatus;
 import io.github.yourname.agentstudio.memory.MemoryType;
 import io.github.yourname.agentstudio.memory.UpdateMemoryCommand;
@@ -43,10 +44,11 @@ class MemoryController {
             @RequestParam(defaultValue = "false") boolean sharedOnly,
             @RequestParam(required = false) MemoryType type,
             @RequestParam(required = false) MemoryStatus status,
+            @RequestParam(required = false) MemoryOrigin origin,
             @RequestParam(required = false) String query,
             @RequestParam(defaultValue = "50") int limit,
             HttpServletRequest request) {
-        return memories.list(agentId, personaId, sharedOnly, type, status, query, limit, actors.current(request));
+        return memories.list(agentId, personaId, sharedOnly, type, status, origin, query, limit, actors.current(request));
     }
 
     @PostMapping

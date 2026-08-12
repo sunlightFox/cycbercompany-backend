@@ -28,6 +28,7 @@ public final class SoftwareTool {
     private static final int HTTP_STATUS_NOT_FOUND = 0x80190194;
     private static final int MAX_OUTPUT_BYTES = 64 * 1024;
     private static final int DEFAULT_QUERY_TIMEOUT_SECONDS = 60;
+    private static final int DEFAULT_LIST_TIMEOUT_SECONDS = 90;
     private static final int DEFAULT_INSTALL_TIMEOUT_SECONDS = 600;
     private static final int DEFAULT_UNINSTALL_TIMEOUT_SECONDS = 300;
     private static final int MAX_STANDARD_TIMEOUT_SECONDS = 600;
@@ -82,6 +83,50 @@ public final class SoftwareTool {
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             return ToolExecutionResult.failure("Software query was interrupted.");
+        } catch (ExecutionException ex) {
+            return ToolExecutionResult.failure("Failed to read winget output.");
+        }
+    }
+
+    /** Lists the bounded winget inventory without accepting search text or shell syntax. */
+    public ToolExecutionResult list(Map<String, Object> arguments) {
+        try {
+            if (!windows) {
+                throw new IllegalArgumentException("system.software currently supports Windows winget only.");
+            }
+            int timeoutSeconds = boundedTimeout(value(arguments, "timeoutSeconds"), DEFAULT_LIST_TIMEOUT_SECONDS,
+                    MAX_STANDARD_TIMEOUT_SECONDS);
+            CommandResult commandResult = runner.run(List.of(
+                    "winget", "list", "--accept-source-agreements", "--disable-interactivity"), timeoutSeconds);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("operation", "list");
+            result.put("manager", "winget");
+            result.put("timeoutSeconds", timeoutSeconds);
+            result.put("durationMs", commandResult.durationMs());
+            result.put("timedOut", commandResult.timedOut());
+            result.put("exitCode", commandResult.timedOut() ? null : commandResult.exitCode());
+            result.put("exitCodeHex", commandResult.timedOut() ? null : hexExitCode(commandResult.exitCode()));
+            result.put("stdout", commandResult.stdout().text());
+            result.put("stderr", commandResult.stderr().text());
+            result.put("stdoutTruncated", commandResult.stdout().truncated());
+            result.put("stderrTruncated", commandResult.stderr().truncated());
+            result.put("outputTruncated", commandResult.stdout().truncated() || commandResult.stderr().truncated());
+            result.put("limitations", "Lists packages known to winget; it may not include every application installed outside winget.");
+            if (commandResult.timedOut()) {
+                return ToolExecutionResult.failure(result, "Software inventory timed out after " + timeoutSeconds + " seconds.");
+            }
+            if (commandResult.exitCode() != 0) {
+                return ToolExecutionResult.failure(result,
+                        "winget list exited with code " + formatExitCode(commandResult.exitCode()) + ".");
+            }
+            return ToolExecutionResult.success(result);
+        } catch (IllegalArgumentException ex) {
+            return ToolExecutionResult.failure(ex.getMessage());
+        } catch (IOException ex) {
+            return ToolExecutionResult.failure("Failed to start winget. Ensure Windows Package Manager is installed and available on PATH.");
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            return ToolExecutionResult.failure("Software inventory was interrupted.");
         } catch (ExecutionException ex) {
             return ToolExecutionResult.failure("Failed to read winget output.");
         }

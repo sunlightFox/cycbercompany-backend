@@ -802,7 +802,48 @@ class RunCommandServiceSkillSnapshotTest {
     }
 
     @Test
-    void createRoutesAnExplicitLocalProjectPathToTheReadyNode() {
+    void createRoutesDesktopInspectionToTheInProcessLocalProviderWithReadOnlyTools() {
+        ResolvedToolBinding desktopList = new ResolvedToolBinding(
+                "node:node-system:system.desktop.organize.list",
+                "tool_system_desktop_organize_list",
+                "system.desktop.organize.list",
+                "node",
+                "system.desktop.organize.list",
+                "Inspect the desktop",
+                RiskLevel.HIGH,
+                true,
+                Map.of("type", "object"),
+                Map.of("nodeId", "node-system"));
+        ResolvedToolBinding fsList = new ResolvedToolBinding(
+                "node:node-system:system.fs.list",
+                "tool_system_fs_list",
+                "system.fs.list",
+                "node",
+                "system.fs.list",
+                "List a local directory",
+                RiskLevel.MEDIUM,
+                true,
+                Map.of("type", "object"),
+                Map.of("nodeId", "node-system"));
+        when(skills.resolveForRun(List.of())).thenReturn(List.of());
+        when(skills.compileInstructions(List.of())).thenReturn("");
+        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of(desktopList, fsList));
+
+        service.create(new CreateRunCommand(
+                "conversation-1", "\u684c\u9762\u6709\u4ec0\u4e48\u8f6f\u4ef6\uff1f", "model-1", "agent-1", List.of(), List.of(), List.of(),
+                List.of(), null, null), ACTOR);
+
+        ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(runs).save(runCaptor.capture());
+        assertThat(runCaptor.getValue().runSpecJson())
+                .contains("in-process-local")
+                .contains("system.desktop.organize.list")
+                .contains("system.fs.list")
+                .contains("\"executionMode\":\"NODE_INTERACTION\"");
+    }
+
+    @Test
+    void createRoutesAnExplicitLocalProjectPathToTheInProcessLocalProvider() {
         ResolvedToolBinding binding = new ResolvedToolBinding(
                 "node:node-system:system.fs.list",
                 "tool_system_fs_list",
@@ -814,14 +855,8 @@ class RunCommandServiceSkillSnapshotTest {
                 true,
                 Map.of("type", "object"),
                 Map.of("nodeId", "node-system"));
-        when(nodes.resolveComputerControlNodeId(ACTOR)).thenReturn("node-system");
         when(skills.resolveForRun(List.of())).thenReturn(List.of());
         when(skills.compileInstructions(List.of())).thenReturn("");
-        when(nodes.get("node-system", ACTOR)).thenReturn(new NodeDetailView(
-                new NodeConnectionView(
-                        "node-system", "My PC", "host", "Windows", "amd64", "test", NodeKind.REGISTERED, null,
-                        Map.of(), Set.of(), true, NodeStatus.ONLINE, null, null, null),
-                List.of()));
         when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of(binding));
 
         service.create(new CreateRunCommand(
@@ -829,10 +864,9 @@ class RunCommandServiceSkillSnapshotTest {
                 "model-1", "agent-1", List.of(), List.of(), List.of(), List.of(), null, null), ACTOR);
 
         ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
-        verify(nodes).resolveComputerControlNodeId(ACTOR);
         verify(runs).save(runCaptor.capture());
         assertThat(runCaptor.getValue().runSpecJson())
-                .contains("node-system")
+                .contains("in-process-local")
                 .contains("system.fs.list")
                 .contains("system.process.start")
                 .contains("\"executionMode\":\"NODE_INTERACTION\"");

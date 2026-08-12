@@ -21,6 +21,10 @@ public class MemoryItemEntity {
     private String tenantId;
     private String userId;
     private String agentId;
+    private String scope;
+    private String origin;
+    private String memoryKey;
+    private String supersededBy;
     private String personaId;
     private String type;
     private String status;
@@ -50,6 +54,9 @@ public class MemoryItemEntity {
             String tenantId,
             String userId,
             String agentId,
+            MemoryScope scope,
+            MemoryOrigin origin,
+            String memoryKey,
             String personaId,
             MemoryType type,
             MemoryStatus status,
@@ -67,6 +74,9 @@ public class MemoryItemEntity {
         this.tenantId = tenantId;
         this.userId = userId;
         this.agentId = agentId;
+        this.scope = scope.name();
+        this.origin = origin.name();
+        this.memoryKey = memoryKey;
         this.personaId = personaId;
         this.type = type.name();
         this.status = status.name();
@@ -81,6 +91,16 @@ public class MemoryItemEntity {
         this.createdAt = now;
         this.updatedAt = now;
         this.expiresAt = expiresAt;
+    }
+
+    public MemoryItemEntity(
+            String id, String tenantId, String userId, String agentId, MemoryScope scope, String personaId,
+            MemoryType type, MemoryStatus status, MemorySensitivity sensitivity, String content,
+            double confidence, double importance, String sourceConversationId, String sourceRunId,
+            String evidenceSummary, String embeddingVector, Instant now, Instant expiresAt) {
+        this(id, tenantId, userId, agentId, scope, MemoryOrigin.USER_CREATED, null, personaId, type, status,
+                sensitivity, content, confidence, importance, sourceConversationId, sourceRunId,
+                evidenceSummary, embeddingVector, now, expiresAt);
     }
 
     public void revise(
@@ -98,6 +118,13 @@ public class MemoryItemEntity {
         this.updatedAt = now;
     }
 
+    public void changeScope(MemoryScope scope, String memoryKey, String personaId, Instant now) {
+        this.scope = scope.name();
+        this.memoryKey = memoryKey;
+        this.personaId = personaId;
+        this.updatedAt = now;
+    }
+
     public void confirm(Instant now) {
         status = MemoryStatus.CONFIRMED.name();
         updatedAt = now;
@@ -112,6 +139,15 @@ public class MemoryItemEntity {
     public String tenantId() { return tenantId; }
     public String userId() { return userId; }
     public String agentId() { return agentId; }
+    public MemoryScope scope() { return scope == null || scope.isBlank() ? MemoryScope.USER : MemoryScope.valueOf(scope); }
+    public MemoryOrigin origin() { return origin == null || origin.isBlank() ? MemoryOrigin.USER_CREATED : MemoryOrigin.valueOf(origin); }
+    public String memoryKey() { return memoryKey; }
+    public String supersededBy() { return supersededBy; }
+
+    public void supersede(String replacementId, Instant now) {
+        this.supersededBy = replacementId;
+        this.updatedAt = now;
+    }
     public String personaId() { return personaId; }
     public MemoryType type() { return MemoryType.valueOf(type); }
     public MemoryStatus status() { return MemoryStatus.valueOf(status); }

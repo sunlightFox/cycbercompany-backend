@@ -1,0 +1,20 @@
+{
+  "id": "video-demo-tvbox-compat",
+  "version": "0.1.0",
+  "entrypoint": "scripts/tvbox-compatible-adapter.py",
+  "protocol": "agentstudio.tvbox.engine.v1",
+  "operations": ["media.search", "media.resolvePlayback"],
+  "sourceSelectors": {
+    "csp_App99Guard": ["视界"]
+  },
+  "isolation": {
+    "required": true,
+    "execution": "external-android-tvbox-engine",
+    "springJvm": false,
+    "browser": false
+  },
+  "configuration": {
+    "VIDEO_DEMO_TVBOX_CONFIG": "output/tvbox-config.json",
+    "VIDEO_DEMO_TVBOX_ENGINE_ENDPOINT": "http://127.0.0.1:18220/v1/execute"
+  }
+}

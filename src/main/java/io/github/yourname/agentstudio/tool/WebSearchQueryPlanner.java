@@ -16,7 +16,7 @@ final class WebSearchQueryPlanner {
         int maxQueries = Math.min(4, Math.max(1, requestedMaxQueries));
         List<PlannedQuery> planned = new ArrayList<>(maxQueries);
         Set<String> seen = new LinkedHashSet<>();
-        add(planned, seen, query, intent, "searxng/" + categoryFor(intent));
+        add(planned, seen, query, intent, "tavily/" + categoryFor(intent));
 
         if ((intent != WebSearchMode.NEWS && intent != WebSearchMode.RECENT) || maxQueries == 1) {
             return List.copyOf(planned);
@@ -26,18 +26,18 @@ final class WebSearchQueryPlanner {
         String normalizedTopic = topic == null ? "" : topic.trim();
         if (normalizedTopic.isBlank()) {
             add(planned, seen, chinese ? "今日要闻" : "today top stories",
-                    WebSearchMode.GENERAL, "searxng/general/expanded-1");
+                    WebSearchMode.GENERAL, "tavily/general/expanded-1");
             add(planned, seen, chinese ? "今日科技新闻" : "today technology news",
-                    WebSearchMode.GENERAL, "searxng/general/expanded-2");
+                    WebSearchMode.GENERAL, "tavily/general/expanded-2");
             add(planned, seen, chinese ? "今日财经国际新闻" : "today business world news",
-                    WebSearchMode.GENERAL, "searxng/general/expanded-3");
+                    WebSearchMode.GENERAL, "tavily/general/expanded-3");
         } else {
             String first = chinese
                     ? normalizedTopic + " 今日新闻 最新消息"
                     : normalizedTopic + " latest news today";
-            add(planned, seen, first, WebSearchMode.GENERAL, "searxng/general/expanded-1");
+            add(planned, seen, first, WebSearchMode.GENERAL, "tavily/general/expanded-1");
             add(planned, seen, verticalQuery(normalizedTopic, chinese),
-                    WebSearchMode.GENERAL, "searxng/general/expanded-2");
+                    WebSearchMode.GENERAL, "tavily/general/expanded-2");
         }
         return List.copyOf(planned.subList(0, Math.min(maxQueries, planned.size())));
     }

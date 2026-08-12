@@ -35,4 +35,18 @@ class CodingFailureSummaryTest {
         assertThat(CodingFailureSummary.from("shell.run", true, Map.of(), null)).isEmpty();
         assertThat(CodingFailureSummary.from("fs.read", false, Map.of(), "failed")).isEmpty();
     }
+
+    @Test
+    void identifiesMissingToolchainsAsEnvironmentPrerequisites() {
+        Map<String, Object> summary = CodingFailureSummary.from(
+                "shell.run",
+                false,
+                Map.of("stderr", "mvn : The term 'mvn' is not recognized as the name of a cmdlet.\n"),
+                "Command exited with code 1.");
+
+        assertThat(summary).containsEntry("kind", "missing_prerequisite");
+        assertThat(summary.get("nextStep").toString())
+                .contains("project-local wrapper")
+                .contains("rerun the original command");
+    }
 }

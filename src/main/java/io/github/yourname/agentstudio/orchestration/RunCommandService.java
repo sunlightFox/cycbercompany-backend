@@ -36,6 +36,7 @@ import io.github.yourname.agentstudio.tool.WebSearchMode;
 import io.github.yourname.agentstudio.tool.WebSearchResponse;
 import io.github.yourname.agentstudio.tool.WebSearchResult;
 import io.github.yourname.agentstudio.tool.WebSearchTrace;
+import io.github.yourname.agentstudio.execution.InProcessLocalToolProvider;
 import io.github.yourname.agentstudio.tool.CodingWorkspaceScope;
 import io.github.yourname.agentstudio.tool.ApprovalMode;
 import io.github.yourname.agentstudio.tool.AgentApprovalPolicy;
@@ -194,7 +195,8 @@ public class RunCommandService {
         conversations.ensureWritable(command.conversationId(), actor);
         ApprovalMode approvalMode = ApprovalMode.from(command.approvalMode());
         RunExecutionMode executionMode = RunExecutionMode.from(command);
-        if (executionMode.usesNativeToolLoop()) {
+        if (executionMode.usesNativeToolLoop()
+                && !InProcessLocalToolProvider.TARGET_ID.equals(command.nodeId())) {
             nodes.validateExecutionTarget(command.nodeId(), actor);
         }
         CodingWorkspaceScope.from(command.workingDirectory());
@@ -268,7 +270,8 @@ public class RunCommandService {
                         != io.github.yourname.agentstudio.tool.AgentApprovalPolicy.Decision.DENY)
                 .toList();
         if (executionMode.usesNativeToolLoop()
-                && toolBindings.stream().noneMatch(binding -> "node".equals(binding.providerId()))) {
+                && toolBindings.stream().noneMatch(binding -> "node".equals(binding.providerId())
+                        || InProcessLocalToolProvider.PROVIDER_ID.equals(binding.providerId()))) {
             throw new IllegalArgumentException(
                     "The selected Agent and Run policy expose no enabled tools on node " + command.nodeId() + ".");
         }
@@ -277,6 +280,7 @@ public class RunCommandService {
                 skillAnalyses,
                 toolBindings,
                 !executionMode.usesNativeToolLoop()
+                        || InProcessLocalToolProvider.TARGET_ID.equals(command.nodeId())
                         ? null
                         : nodes.get(command.nodeId(), actor));
         if (!compatibilityReport.compatible()) {
@@ -1640,7 +1644,7 @@ public class RunCommandService {
             // Existing persisted coding runs retain their original specialized protocol.
             appendCodingWorkflow(builder, CodingWorkspaceScope.from(command.workingDirectory()));
         } else if (executionMode == RunExecutionMode.NODE_INTERACTION) {
-            appendNodeInteractionWorkflow(builder);
+            appendNodeInteractionWorkflow(builder, command);
         } else {
             builder.append("- This is a conversational run. Answer from stable general knowledge when appropriate, "
                     + "but do not substitute general knowledge for missing current, private, or selected-source evidence.\n");
@@ -1836,8 +1840,12 @@ public class RunCommandService {
                 .replace("\t", "\\t");
     }
 
-    private static void appendNodeInteractionWorkflow(StringBuilder builder) {
+    private static void appendNodeInteractionWorkflow(StringBuilder builder, CreateRunCommand command) {
         builder.append("""
+                - The selected node is the execution environment for this run. Its advertised tools execute on that node,
+                  not in a separate assistant sandbox. Do not claim that an advertised node tool cannot access the selected
+                  node, its files, processes, or installed software. For an explicit action request, inspect with the
+                  relevant tool and perform the requested action when approval permits; do not replace it with a tutorial.
                 - This is a node interaction task, not automatically a repository coding task. Use only the
                   advertised tool that directly addresses the user's request. Do not scan projects, inspect
                   unrelated files, start processes, or invoke shell/git tools unless the user explicitly asks for
@@ -1893,6 +1901,15 @@ public class RunCommandService {
                   examples that were not executed; they can be wrong for the node's operating system and must not
                   be presented as part of this result.
                 """);
+        if (command != null && InProcessLocalToolProvider.TARGET_ID.equals(command.nodeId())) {
+            builder.append("""
+                    - This deployment uses the server-integrated local executor. Its system.* tools run on this server's
+                      host machine, which is the user's local computer for this deployment. They are not remote sandbox
+                      tools. For a project start request without a path, first inspect the configured local workspace or
+                      Desktop to locate the project; do not claim that local Java, Node, databases, or files are inaccessible
+                      unless an actual tool result proves that specific limitation.
+                    """);
+        }
     }
 
     private static void appendCodingWorkflow(StringBuilder builder, CodingWorkspaceScope workspaceScope) {
@@ -1904,7 +1921,7 @@ public class RunCommandService {
                 - The delivery gate requires structured project evidence, not only shell output: before the first project-file change, make one successful exposed project or system.fs.list/read/search inspection of the existing parent or target directory. After the final change, make one successful exposed system.fs.read or project inspection of a changed file for review. Do not give the final answer until both inspections have succeeded.
                 - Start with only the minimum inspection needed for the requested files. For an existing or unfamiliar repository, use project.map once when it is available to identify module, source, test, and configuration boundaries. If the target may contain separate frontend, backend, or modules, use project.discover once when available and use project.inspect for the specific module when available before choosing build, test, package-manager, or start commands. If those project tools are not exposed, derive the same facts from the narrowest available file search/read operations and manifests. Use only manifest-backed recommendations unless later inspection proves a different command is required. Once the target is known, use fs.search when available to locate symbols or error text and then read only the matching files inside it. For a large file, use fs.read with startLine and endLine when those parameters are advertised by its schema; otherwise use the smallest supported read. Do not repeatedly inspect the workspace root or browse unrelated README files for inspiration.
                 - Work in coherent stages: create or edit the implementation, run the smallest relevant compile/test command, then start a managed development process, when that capability is exposed, only if live verification is needed. If a command fails, use its structured stdout/stderr and exit code as the diagnosis input before changing code. Use HTTP or browser tools, when exposed, to validate the user-facing path before reporting completion. For browser verification, use browser.snapshot when available to get visible controls and their selectors, use browser.wait when available after asynchronous transitions, and use browser.wait_response when available to wait for an asynchronous API result after the triggering action. Then interact and snapshot again to prove the result. For a non-trivial browser interaction, capture browser.trace.start/browser.trace.stop only when both tools are available; never substitute raw or invented tool calls.
-                - When a check fails, first read the returned diagnosis (failedTests, sourceLocations, suggestedSearchTerms) and the relevant error output. Use fs.search or fs.read when available on those reported files, or the narrowest exposed equivalent; make one focused correction, then repeat the same check. Do not make unrelated edits before reproducing the failure. Prefer direct file writes for new files and focused patches for changes. Keep tool calls purposeful because each coding run has a finite tool budget.
+                - When a check fails, first read the returned diagnosis (failedTests, sourceLocations, suggestedSearchTerms) and the relevant error output. Use fs.search or fs.read when available on those reported files, or the narrowest exposed equivalent; make one focused correction, then repeat the same check. Do not make unrelated edits before reproducing the failure. Treat a missing executable, runtime, package manager, dependency, permission, or local service as a remediable environment precondition, not as the final answer: first inspect a project-local wrapper or configured tool path; if that cannot satisfy it, use an advertised structured software/environment capability when the requested task authorizes the change and approval permits it. Then rerun the failed command or directly verify its intended effect. Do not stop after merely reporting that Maven, npm, Java, a dependency, or another prerequisite is missing while a safe advertised remediation path exists. Prefer direct file writes for new files and focused patches for changes. Keep tool calls purposeful because each coding run has a finite tool budget.
                 - In the final answer, state the files changed, the concrete verification performed, any process URL that remains running, and any limitation that was not verified.
                 """);
         builder.append("- Project scope for this run: ")
@@ -2287,7 +2304,11 @@ public class RunCommandService {
 
     private CreateRunCommand resolveComputerControlTarget(CreateRunCommand command, ActorContext actor) {
         List<String> requestedTools = normalizeComputerControlTools(command.toolNames());
-        if ((requestedTools == null || requestedTools.isEmpty())
+        if ((requestedTools == null || requestedTools.isEmpty()) && requestsDesktopInspection(command.text())) {
+            requestedTools = desktopInspectionToolSet();
+        } else if ((requestedTools == null || requestedTools.isEmpty()) && requestsInstalledSoftware(command.text())) {
+            requestedTools = installedSoftwareToolSet();
+        } else if ((requestedTools == null || requestedTools.isEmpty())
                 && (requestsDesktopProject(command.text()) || requestsLocalProject(command.text()))) {
             requestedTools = desktopProjectToolSet();
         } else if ((requestedTools == null || requestedTools.isEmpty()) && requestsWindowsSystemOperation(command.text())) {
@@ -2297,6 +2318,8 @@ public class RunCommandService {
         boolean automaticNode = requestedNodeId != null && "auto".equalsIgnoreCase(requestedNodeId.trim());
         boolean systemOperationRequested = requestedTools != null
                 && requestedTools.stream().anyMatch(tool -> tool.startsWith("system."));
+        systemOperationRequested = systemOperationRequested || requestsDesktopInspection(command.text());
+        systemOperationRequested = systemOperationRequested || requestsInstalledSoftware(command.text());
         systemOperationRequested = systemOperationRequested || requestsDesktopOperation(command.text());
         systemOperationRequested = systemOperationRequested || requestsWindowsSystemOperation(command.text());
         boolean labelsRequested = command.nodeLabels() != null && !command.nodeLabels().isEmpty();
@@ -2306,7 +2329,7 @@ public class RunCommandService {
             resolvedNodeId = nodes.resolveSandboxNodeId(command.nodeLabels(), requestedTools, actor);
         } else if (automaticNode || (isBlank(requestedNodeId) && systemOperationRequested)) {
             // 桌面/系统操作保留原有安全语义：多个个人设备时必须由用户显式选择。
-            resolvedNodeId = nodes.resolveComputerControlNodeId(actor);
+            resolvedNodeId = InProcessLocalToolProvider.TARGET_ID;
         } else if (isBlank(requestedNodeId) && labelsRequested) {
             // 标签本身即表示请求服务端受信任沙箱；不要求调用方额外填入魔法字符串 auto。
             resolvedNodeId = nodes.resolveSandboxNodeId(command.nodeLabels(), requestedTools, actor);
@@ -2366,6 +2389,38 @@ public class RunCommandService {
         return mentionsDesktop && (requestsAction || requestsTextFile || requestsProject);
     }
 
+    /**
+     * Read-only Desktop questions still need the local node.  They are deliberately
+     * narrower than a generic "what is" question: the user must name the Desktop
+     * and ask for its files, icons, shortcuts, folders, or contents.
+     */
+    static boolean requestsDesktopInspection(String text) {
+        String normalized = text == null ? "" : text.toLowerCase(java.util.Locale.ROOT);
+        if (suppressesLocalToolAutoSelection(normalized)) {
+            return false;
+        }
+        boolean mentionsDesktop = normalized.contains("desktop") || normalized.contains("\u684c\u9762");
+        boolean inspection = normalized.matches("(?s).*(?:what(?:'s| is)?\\s+(?:on|in)|show|list|inspect|check|view|"
+                + "what files|what apps|\u6709\u4ec0\u4e48|\u6709\u54ea\u4e9b|\u54ea\u4e9b|\u67e5\u770b|\u67e5\u8be2|\u68c0\u67e5|\u5217\u51fa|\u770b\u4e00\u4e0b|\u770b\u770b).*");
+        boolean desktopContent = normalized.matches("(?s).*(?:file|files|folder|folders|icon|icons|shortcut|shortcuts|"
+                + "app|apps|software|\u6587\u4ef6|\u6587\u4ef6\u5939|\u76ee\u5f55|\u56fe\u6807|\u5feb\u6377\u65b9\u5f0f|\u8f6f\u4ef6|\u5e94\u7528).*");
+        return mentionsDesktop && (inspection || desktopContent
+                && (normalized.contains("\u4ec0\u4e48") || normalized.matches("(?s).*\\bwhat\\b.*")));
+    }
+
+    /** Detects a request to inspect installed Windows applications, not a software recommendation. */
+    static boolean requestsInstalledSoftware(String text) {
+        String normalized = text == null ? "" : text.toLowerCase(java.util.Locale.ROOT);
+        if (suppressesLocalToolAutoSelection(normalized)) {
+            return false;
+        }
+        boolean installedContext = normalized.matches("(?s).*(?:installed|installed apps|installed software|programs on (?:my|this) (?:pc|computer)|"
+                + "\u5df2\u5b89\u88c5|\u7535\u8111\u4e0a.*\u8f6f\u4ef6|\u672c\u673a\u8f6f\u4ef6|\u672c\u673a\u5e94\u7528).*");
+        boolean inspection = normalized.matches("(?s).*(?:what(?:'s| is)?|show|list|inspect|check|view|"
+                + "\u6709\u4ec0\u4e48|\u6709\u54ea\u4e9b|\u54ea\u4e9b|\u67e5\u770b|\u67e5\u8be2|\u68c0\u67e5|\u5217\u51fa|\u770b\u4e00\u4e0b|\u770b\u770b).*");
+        return installedContext && inspection;
+    }
+
     static boolean requestsDesktopProject(String text) {
         String normalized = text == null ? "" : text.toLowerCase(java.util.Locale.ROOT);
         if (suppressesLocalToolAutoSelection(normalized)) {
@@ -2391,9 +2446,9 @@ public class RunCommandService {
         boolean namesLocalPath = normalized.matches(
                 "(?s).*(?:(?<![a-z0-9])[a-z]:[\\\\/]|\\\\\\\\[^\\s]+|(?:^|\\s)/(?:home|users|workspace|mnt|opt|srv|var|tmp)/|(?:^|\\s)~/).*");
         boolean requestsChange = normalized.matches(
-                "(?s).*(create|build|make|develop|implement|fix|refactor|update|modify|run|test|debug|"
+                "(?s).*(create|build|make|develop|implement|fix|refactor|update|modify|run|start|launch|test|debug|"
                         + "\\u521b\\u5efa|\\u65b0\\u5efa|\\u5f00\\u53d1|\\u5b9e\\u73b0|\\u4fee\\u590d|\\u91cd\\u6784|"
-                        + "\\u4fee\\u6539|\\u8fd0\\u884c|\\u6d4b\\u8bd5|\\u8c03\\u8bd5).*");
+                        + "\\u4fee\\u6539|\\u8fd0\\u884c|\\u542f\\u52a8|\\u6d4b\\u8bd5|\\u8c03\\u8bd5).*");
         boolean namesProject = normalized.matches(
                 "(?s).*(project|repo|repository|workspace|codebase|frontend|backend|service|application|"
                         + "\\u9879\\u76ee|\\u4ee3\\u7801\\u5e93|\\u5de5\\u4f5c\\u533a|\\u524d\\u7aef|\\u540e\\u7aef|\\u670d\\u52a1|\\u5e94\\u7528).*");
@@ -2401,6 +2456,15 @@ public class RunCommandService {
             return false;
         }
         if (namesLocalPath) {
+            return true;
+        }
+        // "启动一下项目" is an imperative local action, even when the user
+        // omits a path. Route it to the local executor so it can inspect the
+        // configured workspace instead of returning a generic tutorial.
+        boolean directProjectStart = normalized.matches(
+                "(?s).*(?:\\b(?:start|launch)\\b|\\u542f\\u52a8).*(?:project|repo|repository|workspace|codebase|frontend|backend|service|application|"
+                        + "\\u9879\\u76ee|\\u4ee3\\u7801\\u5e93|\\u4ed3\\u5e93|\\u5de5\\u4f5c\\u533a|\\u524d\\u7aef|\\u540e\\u7aef|\\u670d\\u52a1|\\u5e94\\u7528).*");
+        if (directProjectStart) {
             return true;
         }
         // The personal companion has one user-confirmed workspace. These phrases
@@ -2465,7 +2529,18 @@ public class RunCommandService {
                 || normalized.matches("(?s).*\\b(app|application|program|software|package)\\b.*\\b(uninstall|remove)\\b.*");
         boolean installIntent = normalized.matches("(?s).*\\binstall\\b.*\\b(app|application|program|software)\\b.*")
                 || normalized.matches("(?s).*\\b(app|application|program|software)\\b.*\\binstall\\b.*");
-        return serviceIntent || processIntent || uninstallIntent || installIntent;
+        boolean standaloneInstallIntent = requestsStandaloneSoftwareInstall(normalized);
+        return serviceIntent || processIntent || uninstallIntent || installIntent || standaloneInstallIntent;
+    }
+
+    private static boolean requestsStandaloneSoftwareInstall(String normalized) {
+        boolean install = normalized.matches("(?s).*(?:\\binstall\\b|\u5b89\u88c5).*" );
+        if (!install) {
+            return false;
+        }
+        boolean developmentDependency = normalized.matches("(?s).*(?:\\bnpm\\b|\\bpnpm\\b|\\byarn\\b|\\bpip(?:x)?\\b|\\bgradle\\b|\\bmaven\\b|"
+                + "\\bdependency|\\bdependencies|\\bpackage\\.json|\u4f9d\u8d56|\u4f9d\u8d56\u5305|\u9879\u76ee\u4f9d\u8d56).*" );
+        return !developmentDependency;
     }
 
     private static boolean isExplanatoryRequest(String normalized) {
@@ -2510,12 +2585,23 @@ public class RunCommandService {
                 "system.process.logs",
                 "system.process.wait_http",
                 "system.process.stop",
+                "system.software.query",
+                "system.software.install",
                 "system.shell.run");
+    }
+
+    static List<String> desktopInspectionToolSet() {
+        return List.of("system.desktop.organize.list", "system.fs.list");
+    }
+
+    static List<String> installedSoftwareToolSet() {
+        return List.of("system.software.list");
     }
 
     static List<String> windowsRemediationToolSet() {
         return List.of(
                 "system.privilege.query",
+                "system.software.list",
                 "system.software.query",
                 "system.software.install",
                 "system.software.uninstall",

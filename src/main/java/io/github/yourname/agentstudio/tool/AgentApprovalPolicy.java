@@ -69,8 +69,13 @@ public record AgentApprovalPolicy(String preset, List<Rule> rules) {
                     .filter(rule -> rule.riskLevel() == risk)
                     .map(Rule::decision)
                     .findFirst()
+                    .map(AgentApprovalPolicy::approvalDecision)
                     .orElse(Decision.ASK);
             default -> throw new IllegalStateException("Unsupported Agent approval preset: " + preset);
         };
+    }
+
+    private static Decision approvalDecision(Decision decision) {
+        return decision == Decision.DENY ? Decision.ASK : decision;
     }
 }
