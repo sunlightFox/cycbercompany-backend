@@ -283,6 +283,72 @@ class ToolRegistryTest {
     }
 
     @Test
+    void linuxSystemModeAdvertisesAptAndDoesNotMisreportWindowsTools() throws Exception {
+        ToolRegistry registry = new ToolRegistry(
+                HttpClient.newHttpClient(),
+                Files.createTempDirectory("agent-studio-linux-system-tools"),
+                NodeAccessMode.SYSTEM,
+                null,
+                null,
+                null,
+                false);
+
+        var install = registry.capabilities().stream()
+                .filter(item -> "system.software.install".equals(item.name()))
+                .findFirst()
+                .orElseThrow();
+        assertTrue(install.description().contains("apt-get"));
+        assertEquals(java.util.List.of("packageId"), install.inputSchema().get("required"));
+        var serviceQuery = registry.capabilities().stream()
+                .filter(item -> "system.service.query".equals(item.name()))
+                .findFirst()
+                .orElseThrow();
+        assertTrue(serviceQuery.description().contains("systemd"));
+        assertFalse(registry.capabilities().stream().anyMatch(item -> "system.uninstall.execute".equals(item.name())));
+        assertTrue(registry.features().contains("system-software.apt.v1"));
+        assertTrue(registry.features().contains("system-service.systemd.v1"));
+        assertFalse(registry.features().contains("system-service.v1"));
+        registry.close();
+    }
+
+    @Test
+    void otherSystemModeDoesNotMisreportEitherWindowsOrAptTools() throws Exception {
+        ToolRegistry registry = new ToolRegistry(
+                HttpClient.newHttpClient(),
+                Files.createTempDirectory("agent-studio-other-system-tools"),
+                NodeAccessMode.SYSTEM,
+                null,
+                null,
+                null,
+                ToolRegistry.Platform.OTHER);
+
+        assertFalse(registry.capabilities().stream().anyMatch(item -> item.name().startsWith("system.software.")));
+        assertFalse(registry.capabilities().stream().anyMatch(item -> item.name().startsWith("system.service.")));
+        assertFalse(registry.features().contains("system-software.v1"));
+        registry.close();
+    }
+
+    @Test
+    void platformSelectionUsesReportedSystemNameWhenProvided() throws Exception {
+        ToolRegistry linux = new ToolRegistry(
+                HttpClient.newHttpClient(), Files.createTempDirectory("agent-studio-reported-linux"),
+                NodeAccessMode.SYSTEM, null, null, "Linux");
+        ToolRegistry windows = new ToolRegistry(
+                HttpClient.newHttpClient(), Files.createTempDirectory("agent-studio-reported-windows"),
+                NodeAccessMode.SYSTEM, null, null, "Windows 11");
+
+        assertTrue(linux.features().contains("system-software.apt.v1"));
+        assertTrue(linux.features().contains("platform.linux.v1"));
+        assertFalse(linux.features().contains("system-service.v1"));
+        assertTrue(windows.features().contains("system-service.v1"));
+        assertTrue(windows.features().contains("platform.windows.v1"));
+        assertFalse(windows.features().contains("platform.linux.v1"));
+        assertFalse(windows.features().contains("system-software.apt.v1"));
+        linux.close();
+        windows.close();
+    }
+
+    @Test
     void advertisesReadOnlyGitReviewBeforeCodingDelivery() throws Exception {
         ToolRegistry registry = new ToolRegistry(HttpClient.newHttpClient(), Files.createTempDirectory("agent-studio-git-review-tools"));
 
@@ -514,12 +580,14 @@ class ToolRegistryTest {
     @Test
     void reportsRuntimeAndFeatureFactsSeparatelyFromToolPermissions() throws Exception {
         ToolRegistry registry = new ToolRegistry(
-                HttpClient.newHttpClient(), Files.createTempDirectory("agent-studio-runtime-facts"), NodeAccessMode.WORKSPACE);
+                HttpClient.newHttpClient(), Files.createTempDirectory("agent-studio-runtime-facts"), NodeAccessMode.WORKSPACE,
+                null, null, "Linux");
 
         assertTrue(registry.runtimeVersions().containsKey("java"));
         assertFalse(registry.runtimeVersions().containsKey("privilege.mode"));
         assertTrue(registry.features().contains("workspace.scope.v1"));
         assertTrue(registry.features().contains("managed-process.v1"));
+        assertTrue(registry.features().contains("platform.linux.v1"));
         assertTrue(registry.features().stream().noneMatch("system-access.v1"::equals));
         assertTrue(registry.capabilities().stream().allMatch(capability -> capability.version() != null));
         registry.close();

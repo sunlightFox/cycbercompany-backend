@@ -8,6 +8,8 @@ import io.github.yourname.agentstudio.nodeclient.tools.DesktopOrganizationTool;
 import io.github.yourname.agentstudio.nodeclient.tools.DesktopTool;
 import io.github.yourname.agentstudio.nodeclient.tools.FileTool;
 import io.github.yourname.agentstudio.nodeclient.tools.GitTool;
+import io.github.yourname.agentstudio.nodeclient.tools.LinuxSoftwareTool;
+import io.github.yourname.agentstudio.nodeclient.tools.LinuxServiceTool;
 import io.github.yourname.agentstudio.nodeclient.tools.ManagedProcessTool;
 import io.github.yourname.agentstudio.nodeclient.tools.OsProcessTool;
 import io.github.yourname.agentstudio.nodeclient.tools.PrivilegeTool;
@@ -31,12 +33,20 @@ import java.util.Map;
  */
 public class ToolRegistry {
 
+    public enum Platform {
+        WINDOWS,
+        LINUX,
+        OTHER
+    }
+
     // capabilities() 声明“可用什么”，execute() 决定“实际上能执行什么”，两者必须同步维护。
 
     private final BrowserTool browserTool;
     private final FileTool fileTool;
     private final ShellTool shellTool;
     private final SoftwareTool softwareTool;
+    private final LinuxSoftwareTool linuxSoftwareTool;
+    private final LinuxServiceTool linuxServiceTool;
     private final ServiceTool serviceTool;
     private final OsProcessTool osProcessTool;
     private final UninstallPreflightTool uninstallPreflightTool;
@@ -49,6 +59,8 @@ public class ToolRegistry {
     private final DesktopOrganizationTool desktopOrganizationTool;
     private final SkillTool skillTool;
     private final boolean systemAccess;
+    private final boolean windows;
+    private final boolean linux;
 
     public ToolRegistry(HttpClient httpClient, Path workspaceRoot) {
         this(httpClient, workspaceRoot, NodeAccessMode.WORKSPACE);
@@ -82,33 +94,84 @@ public class ToolRegistry {
             Path desktopRoot,
             SkillTool skillTool,
             Path artifactRoot) {
+        this(httpClient, workspaceRoot, accessMode, desktopRoot, skillTool, artifactRoot,
+                platformFor(System.getProperty("os.name", "")));
+    }
+
+    public ToolRegistry(
+            HttpClient httpClient,
+            Path workspaceRoot,
+            NodeAccessMode accessMode,
+            Path desktopRoot,
+            SkillTool skillTool,
+            Path artifactRoot,
+            String osName) {
+        this(httpClient, workspaceRoot, accessMode, desktopRoot, skillTool, artifactRoot, platformFor(osName));
+    }
+
+    public ToolRegistry(
+            HttpClient httpClient,
+            Path workspaceRoot,
+            NodeAccessMode accessMode,
+            SkillTool skillTool,
+            Path artifactRoot,
+            String osName) {
+        this(httpClient, workspaceRoot, accessMode, defaultDesktopRoot(), skillTool, artifactRoot, platformFor(osName));
+    }
+
+    ToolRegistry(
+            HttpClient httpClient,
+            Path workspaceRoot,
+            NodeAccessMode accessMode,
+            Path desktopRoot,
+            SkillTool skillTool,
+            Path artifactRoot,
+            boolean windows) {
+        this(httpClient, workspaceRoot, accessMode, desktopRoot, skillTool, artifactRoot,
+                windows ? Platform.WINDOWS : Platform.LINUX);
+    }
+
+    ToolRegistry(
+            HttpClient httpClient,
+            Path workspaceRoot,
+            NodeAccessMode accessMode,
+            Path desktopRoot,
+            SkillTool skillTool,
+            Path artifactRoot,
+            Platform platform) {
         this.systemAccess = accessMode != null && accessMode.permitsSystemAccess();
+        this.windows = platform == Platform.WINDOWS;
+        this.linux = platform == Platform.LINUX;
         Path resolvedArtifactRoot = artifactRoot == null
                 ? Path.of(System.getProperty("java.io.tmpdir"), "agent-studio-node", "artifacts")
                 : artifactRoot;
         this.browserTool = new BrowserTool(httpClient, resolvedArtifactRoot, workspaceRoot);
         this.fileTool = workspaceRoot == null ? null : new FileTool(workspaceRoot, systemAccess);
         this.shellTool = workspaceRoot == null ? null : new ShellTool(workspaceRoot, systemAccess);
-        SoftwareTool resolvedSoftwareTool = systemAccess ? new SoftwareTool() : null;
-        ServiceTool resolvedServiceTool = systemAccess ? new ServiceTool() : null;
-        OsProcessTool resolvedOsProcessTool = systemAccess ? new OsProcessTool() : null;
-        PrivilegeTool resolvedPrivilegeTool = systemAccess ? new PrivilegeTool() : null;
+        SoftwareTool resolvedSoftwareTool = systemAccess && windows ? new SoftwareTool() : null;
+        LinuxSoftwareTool resolvedLinuxSoftwareTool = systemAccess && linux ? new LinuxSoftwareTool() : null;
+        LinuxServiceTool resolvedLinuxServiceTool = systemAccess && linux ? new LinuxServiceTool() : null;
+        ServiceTool resolvedServiceTool = systemAccess && windows ? new ServiceTool() : null;
+        OsProcessTool resolvedOsProcessTool = systemAccess && windows ? new OsProcessTool() : null;
+        PrivilegeTool resolvedPrivilegeTool = systemAccess && windows ? new PrivilegeTool() : null;
         this.softwareTool = resolvedSoftwareTool;
+        this.linuxSoftwareTool = resolvedLinuxSoftwareTool;
+        this.linuxServiceTool = resolvedLinuxServiceTool;
         this.serviceTool = resolvedServiceTool;
         this.osProcessTool = resolvedOsProcessTool;
         this.privilegeTool = resolvedPrivilegeTool;
-        this.uninstallPreflightTool = systemAccess
+        this.uninstallPreflightTool = systemAccess && windows
                 ? new UninstallPreflightTool(resolvedPrivilegeTool, resolvedSoftwareTool, resolvedServiceTool, resolvedOsProcessTool)
                 : null;
-        this.uninstallWorkflowTool = systemAccess
+        this.uninstallWorkflowTool = systemAccess && windows
                 ? new UninstallWorkflowTool(this.uninstallPreflightTool, resolvedSoftwareTool, resolvedServiceTool, resolvedOsProcessTool)
                 : null;
         this.gitTool = workspaceRoot == null ? null : new GitTool(workspaceRoot);
         this.managedProcessTool = workspaceRoot == null ? null : new ManagedProcessTool(workspaceRoot, systemAccess);
         this.projectTool = workspaceRoot == null ? null : new ProjectTool(workspaceRoot);
         // 是否允许系统级命令由节点注册时的显式模式决定；是否真正执行仍由服务端审批决定。
-        this.desktopTool = systemAccess ? new DesktopTool(resolvedArtifactRoot) : null;
-        this.desktopOrganizationTool = systemAccess && desktopRoot != null
+        this.desktopTool = systemAccess && windows ? new DesktopTool(resolvedArtifactRoot) : null;
+        this.desktopOrganizationTool = systemAccess && windows && desktopRoot != null
                 ? new DesktopOrganizationTool(desktopRoot)
                 : null;
         this.skillTool = skillTool;
@@ -227,7 +290,7 @@ public class ToolRegistry {
                                 "description", "Bounded stdout/stderr excerpt from an already completed command. Supported formats include Maven, Gradle/Kotlin, TypeScript, and compiler locations.")), "output")),
                 new NodeCapability(
                         "fs.list",
-                        "List at most 200 immediate entries in one allowed workspace directory. Returns entry metadata and a 'truncated' flag; does not recurse or read file contents.",
+                        "List at most 200 immediate entries in one directory under the configured project workspace. This is not the server host root; for the server/executor filesystem or '/' use system.fs.list. Returns entry metadata and a 'truncated' flag; does not recurse or read file contents.",
                         "LOW",
                         fileTool != null,
                         false,
@@ -672,7 +735,13 @@ public class ToolRegistry {
                             "skillId", "releaseDigest", "bundleDigest", "entrypoint", "runtime", "network")));
         }
         if (systemAccess) {
-            capabilities.addAll(systemCapabilities());
+            List<NodeCapability> systemCapabilities = systemCapabilities();
+            capabilities.addAll(windows ? systemCapabilities : systemCapabilities.stream()
+                    .filter(capability -> capability.name().startsWith("system.fs.")
+                            || capability.name().startsWith("system.shell.")
+                            || (linux && (capability.name().startsWith("system.software.")
+                                    || capability.name().startsWith("system.service."))))
+                    .toList());
         }
         boolean managedProcessAvailable = managedProcessTool != null;
         if (!managedProcessAvailable) {
@@ -733,6 +802,11 @@ public class ToolRegistry {
         result.add("managed-process.v1");
         result.add("browser-session.v1");
         result.add("browser-snapshot-ref.v1");
+        if (windows) {
+            result.add("platform.windows.v1");
+        } else if (linux) {
+            result.add("platform.linux.v1");
+        }
         if (skillTool != null) {
             result.add("skill.bundle.v1");
             result.add("skill.resource.read.v1");
@@ -743,12 +817,18 @@ public class ToolRegistry {
         }
         if (systemAccess) {
             result.add("system-access.v1");
-            result.add("system-software.v1");
-            result.add("system-service.v1");
-            result.add("system-os-process.v1");
-            result.add("system-privilege.v1");
-            result.add("system-uninstall-preflight.v1");
-            result.add("system-uninstall-execute.v1");
+            if (windows) {
+                result.add("system-software.v1");
+                result.add("system-service.v1");
+                result.add("system-os-process.v1");
+                result.add("system-privilege.v1");
+                result.add("system-uninstall-preflight.v1");
+                result.add("system-uninstall-execute.v1");
+            } else if (linux) {
+                result.add("system-software.v1");
+                result.add("system-software.apt.v1");
+                result.add("system-service.systemd.v1");
+            }
         }
         return List.copyOf(result);
     }
@@ -756,7 +836,7 @@ public class ToolRegistry {
     private List<NodeCapability> systemCapabilities() {
         List<NodeCapability> capabilities = new ArrayList<>(List.of(
                 new NodeCapability("system.fs.list",
-                        "List at most 200 immediate entries in an explicitly chosen directory anywhere on this computer. Does not recurse or read contents. Requires human approval.",
+                        "List at most 200 immediate entries in an explicitly chosen absolute directory anywhere on the server host running this executor. For the host root, pass path '/'. This is the server filesystem tool, distinct from workspace-only fs.list. Does not recurse or read contents. Requires human approval.",
                         "MEDIUM", true, true,
                         objectSchema(Map.of("path", Map.of("type", "string", "minLength", 1,
                                 "description", "Concrete absolute directory path to list, from user input or a prior inspection result.")), "path")),
@@ -820,74 +900,82 @@ public class ToolRegistry {
                                 "timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 120, "default", 30,
                                         "description", "Timeout in seconds.")), "command")),
                 new NodeCapability("system.software.query",
-                        "Query one installed Windows package by exact winget packageId. Does not accept display names, wildcards, paths, or shell syntax. Requires human approval.",
-                        "HIGH", softwareTool != null, true,
+                        windows
+                                ? "Query one installed Windows package by exact winget packageId. Does not accept display names, wildcards, paths, or shell syntax. Requires human approval."
+                                : linux ? "Query one installed Debian or Ubuntu package by exact apt package name. Does not accept paths, flags, or shell syntax. Requires human approval."
+                                        : "Structured software queries are unavailable on this operating system.",
+                        "HIGH", softwareTool != null || linuxSoftwareTool != null, true,
                         objectSchema(Map.of(
                                 "packageId", Map.of("type", "string", "minLength", 1, "maxLength", 200,
-                                        "description", "Exact winget id such as Tencent.QQ; not a display name or search query."),
-                                "manager", Map.of("type", "string", "enum", List.of("winget"), "default", "winget",
-                                        "description", "Package manager; only winget is supported."),
+                                        "description", windows ? "Exact winget id such as Tencent.QQ; not a display name or search query."
+                                                : "Exact lowercase apt package name such as docker.io; not a display name or search query."),
+                                "manager", Map.of("type", "string", "enum", List.of(windows ? "winget" : "apt"), "default", windows ? "winget" : "apt",
+                                        "description", windows ? "Package manager; only winget is supported." : "Package manager; only apt is supported."),
                                 "timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 600, "default", 60,
                                         "description", "Timeout in seconds.")), "packageId")),
                 new NodeCapability("system.software.list",
-                        "List installed Windows packages known to winget. Returns bounded plain-text inventory only and does not change the system. It may not include applications installed outside winget. Requires human approval.",
-                        "HIGH", softwareTool != null, true,
+                        windows
+                                ? "List installed Windows packages known to winget. Returns bounded plain-text inventory only and does not change the system. It may not include applications installed outside winget. Requires human approval."
+                                : "List Debian packages recorded by dpkg-query. Returns bounded plain-text inventory only and does not change the system. Requires human approval.",
+                        "HIGH", softwareTool != null || linuxSoftwareTool != null, true,
                         objectSchema(Map.of("timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 600, "default", 90,
                                 "description", "Timeout in seconds.")))),
                 new NodeCapability("system.software.install",
-                        "Install one Windows package by exact winget packageId using winget --id and --exact. Does not accept display names, custom installer arguments, force flags, hash bypasses, reboot allowance, paths, or shell syntax. Defaults to --no-upgrade; use a future upgrade tool for upgrades. Requires human approval.",
-                        "HIGH", softwareTool != null, true,
+                        windows
+                                ? "Install one Windows package by exact winget packageId using winget --id and --exact. Does not accept display names, custom installer arguments, force flags, hash bypasses, reboot allowance, paths, or shell syntax. Defaults to --no-upgrade; use a future upgrade tool for upgrades. Requires human approval."
+                                : "Install one Debian or Ubuntu package by exact apt package name. Uses non-interactive apt-get with no shell, defaults to --no-upgrade, and requires passwordless sudo on the node. Requires human approval.",
+                        "HIGH", softwareTool != null || linuxSoftwareTool != null, true,
                         objectSchema(Map.of(
                                 "packageId", Map.of("type", "string", "minLength", 1, "maxLength", 200,
-                                        "description", "Exact winget id such as Microsoft.VisualStudioCode or Tencent.QQ.NT; not a display name or search query."),
-                                "manager", Map.of("type", "string", "enum", List.of("winget"), "default", "winget",
-                                        "description", "Package manager; only winget is supported."),
-                                "source", Map.of("type", "string", "enum", List.of("winget", "msstore"),
-                                        "description", "Optional trusted winget source filter."),
-                                "scope", Map.of("type", "string", "enum", List.of("user", "machine"),
-                                        "description", "Optional install scope. machine usually requires an elevated/admin node."),
-                                "version", Map.of("type", "string", "minLength", 1, "maxLength", 128,
-                                        "description", "Optional literal winget version without spaces or shell syntax."),
-                                "silent", Map.of("type", "boolean", "default", true,
-                                        "description", "When true, request a silent install. When false, omits --silent but still disables interactive prompts."),
+                                        "description", windows ? "Exact winget id such as Microsoft.VisualStudioCode; not a display name or search query."
+                                                : "Exact lowercase apt package name such as docker.io; not a display name or search query."),
+                                "manager", Map.of("type", "string", "enum", List.of(windows ? "winget" : "apt"), "default", windows ? "winget" : "apt",
+                                        "description", windows ? "Package manager; only winget is supported." : "Package manager; only apt is supported."),
                                 "allowUpgrade", Map.of("type", "boolean", "default", false,
-                                        "description", "When false, adds --no-upgrade so install does not upgrade an existing package."),
+                                        "description", "When false, prevents upgrading an existing package."),
                                 "timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 1200, "default", 600,
                                         "description", "Timeout in seconds.")), "packageId")),
                 new NodeCapability("system.software.uninstall",
-                        "Uninstall one Windows package by exact winget packageId using winget --id and --exact. Does not run arbitrary commands or bypass Windows ACLs, protected services, file locks, vendor uninstallers, or reboot requirements. Requires human approval.",
-                        "HIGH", softwareTool != null, true,
+                        windows
+                                ? "Uninstall one Windows package by exact winget packageId using winget --id and --exact. Does not run arbitrary commands or bypass Windows ACLs, protected services, file locks, vendor uninstallers, or reboot requirements. Requires human approval."
+                                : "Remove one Debian or Ubuntu package by exact apt package name using non-interactive apt-get. Does not accept arbitrary apt options or shell commands and requires passwordless sudo on the node. Requires human approval.",
+                        "HIGH", softwareTool != null || linuxSoftwareTool != null, true,
                         objectSchema(Map.of(
                                 "packageId", Map.of("type", "string", "minLength", 1, "maxLength", 200,
-                                        "description", "Exact winget id such as Tencent.QQ; not a display name or search query."),
-                                "manager", Map.of("type", "string", "enum", List.of("winget"), "default", "winget",
-                                        "description", "Package manager; only winget is supported."),
-                                "silent", Map.of("type", "boolean", "default", true,
-                                        "description", "When true, request a silent uninstall. When false, omits --silent but still disables interactive prompts."),
+                                        "description", windows ? "Exact winget id such as Tencent.QQ; not a display name or search query."
+                                                : "Exact lowercase apt package name such as docker.io; not a display name or search query."),
+                                "manager", Map.of("type", "string", "enum", List.of(windows ? "winget" : "apt"), "default", windows ? "winget" : "apt",
+                                        "description", windows ? "Package manager; only winget is supported." : "Package manager; only apt is supported."),
                                 "timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 600, "default", 300,
                                         "description", "Timeout in seconds.")), "packageId")),
                 new NodeCapability("system.service.query",
-                        "Query one exact Windows service name. Returns status, start mode, processId, and canStop metadata without exposing an arbitrary shell. Requires human approval.",
-                        "HIGH", serviceTool != null, true,
+                        windows ? "Query one exact Windows service name. Returns status, start mode, processId, and canStop metadata without exposing an arbitrary shell. Requires human approval."
+                                : "Query one exact Linux systemd .service unit. Does not accept paths, flags, or shell syntax. Requires human approval.",
+                        "HIGH", serviceTool != null || linuxServiceTool != null, true,
                         objectSchema(Map.of(
                                 "serviceName", Map.of("type", "string", "minLength", 1, "maxLength", 256,
-                                        "description", "Exact Windows service name such as QQPCRTP; not a display name or search query."),
+                                        "description", windows ? "Exact Windows service name such as QQPCRTP; not a display name or search query."
+                                                : "Exact systemd unit such as docker.service; not a display name or search query."),
                                 "timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 120, "default", 30,
                                         "description", "Timeout in seconds.")), "serviceName")),
                 new NodeCapability("system.service.stop",
-                        "Stop one exact Windows service by serviceName. The node cannot bypass protected or not-stoppable services and may still fail when Windows or security software blocks the request. Requires human approval.",
-                        "HIGH", serviceTool != null, true,
+                        windows ? "Stop one exact Windows service by serviceName. The node cannot bypass protected or not-stoppable services and may still fail when Windows or security software blocks the request. Requires human approval."
+                                : "Stop one exact Linux systemd .service unit using passwordless sudo. Does not accept arbitrary systemctl options or shell commands. Requires human approval.",
+                        "HIGH", serviceTool != null || linuxServiceTool != null, true,
                         objectSchema(Map.of(
                                 "serviceName", Map.of("type", "string", "minLength", 1, "maxLength", 256,
-                                        "description", "Exact Windows service name such as QQPCRTP; not a display name or search query."),
+                                        "description", windows ? "Exact Windows service name such as QQPCRTP; not a display name or search query."
+                                                : "Exact systemd unit such as docker.service; not a display name or search query."),
                                 "timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 120, "default", 30,
                                         "description", "Timeout in seconds.")), "serviceName")),
                 new NodeCapability("system.service.set_start_mode",
-                        "Set one exact Windows service start mode to automatic, manual, or disabled. This is the controlled path for disabling protected services before uninstall attempts. Requires human approval.",
-                        "HIGH", serviceTool != null, true,
+                        windows ? "Set one exact Windows service start mode to automatic, manual, or disabled. This is the controlled path for disabling protected services before uninstall attempts. Requires human approval."
+                                : "Set one exact Linux systemd .service startup mode: automatic enables it, manual disables it, and disabled masks it. Requires passwordless sudo and human approval.",
+                        "HIGH", serviceTool != null || linuxServiceTool != null, true,
                         objectSchema(Map.of(
                                 "serviceName", Map.of("type", "string", "minLength", 1, "maxLength", 256,
-                                        "description", "Exact Windows service name such as QQPCRTP; not a display name or search query."),
+                                        "description", windows ? "Exact Windows service name such as QQPCRTP; not a display name or search query."
+                                                : "Exact systemd unit such as docker.service; not a display name or search query."),
                                 "startMode", Map.of("type", "string", "enum", List.of("automatic", "manual", "disabled"),
                                         "description", "Desired Windows startup mode."),
                                 "timeoutSeconds", Map.of("type", "integer", "minimum", 1, "maximum", 120, "default", 30,
@@ -1198,25 +1286,32 @@ public class ToolRegistry {
             return shellTool == null ? unavailable(toolName) : shellTool.run(arguments);
         }
         if ("system.software.query".equals(toolName)) {
-            return softwareTool == null ? unavailable(toolName) : softwareTool.query(arguments);
+            if (softwareTool != null) return softwareTool.query(arguments);
+            return linuxSoftwareTool == null ? unavailable(toolName) : linuxSoftwareTool.query(arguments);
         }
         if ("system.software.list".equals(toolName)) {
-            return softwareTool == null ? unavailable(toolName) : softwareTool.list(arguments);
+            if (softwareTool != null) return softwareTool.list(arguments);
+            return linuxSoftwareTool == null ? unavailable(toolName) : linuxSoftwareTool.list(arguments);
         }
         if ("system.software.install".equals(toolName)) {
-            return softwareTool == null ? unavailable(toolName) : softwareTool.install(arguments);
+            if (softwareTool != null) return softwareTool.install(arguments);
+            return linuxSoftwareTool == null ? unavailable(toolName) : linuxSoftwareTool.install(arguments);
         }
         if ("system.software.uninstall".equals(toolName)) {
-            return softwareTool == null ? unavailable(toolName) : softwareTool.uninstall(arguments);
+            if (softwareTool != null) return softwareTool.uninstall(arguments);
+            return linuxSoftwareTool == null ? unavailable(toolName) : linuxSoftwareTool.uninstall(arguments);
         }
         if ("system.service.query".equals(toolName)) {
-            return serviceTool == null ? unavailable(toolName) : serviceTool.query(arguments);
+            if (serviceTool != null) return serviceTool.query(arguments);
+            return linuxServiceTool == null ? unavailable(toolName) : linuxServiceTool.query(arguments);
         }
         if ("system.service.stop".equals(toolName)) {
-            return serviceTool == null ? unavailable(toolName) : serviceTool.stop(arguments);
+            if (serviceTool != null) return serviceTool.stop(arguments);
+            return linuxServiceTool == null ? unavailable(toolName) : linuxServiceTool.stop(arguments);
         }
         if ("system.service.set_start_mode".equals(toolName)) {
-            return serviceTool == null ? unavailable(toolName) : serviceTool.setStartMode(arguments);
+            if (serviceTool != null) return serviceTool.setStartMode(arguments);
+            return linuxServiceTool == null ? unavailable(toolName) : linuxServiceTool.setStartMode(arguments);
         }
         if ("system.os_process.query".equals(toolName)) {
             return osProcessTool == null ? unavailable(toolName) : osProcessTool.query(arguments);
@@ -1465,6 +1560,17 @@ public class ToolRegistry {
 
     private static ToolExecutionResult unavailable(String toolName) {
         return ToolExecutionResult.failure(toolName + " is unavailable because this node has no configured workspace.");
+    }
+
+    private static Platform platformFor(String osName) {
+        String normalized = osName == null ? "" : osName.toLowerCase(java.util.Locale.ROOT);
+        if (normalized.contains("win")) {
+            return Platform.WINDOWS;
+        }
+        if (normalized.contains("linux")) {
+            return Platform.LINUX;
+        }
+        return Platform.OTHER;
     }
 
     private static Path defaultDesktopRoot() {

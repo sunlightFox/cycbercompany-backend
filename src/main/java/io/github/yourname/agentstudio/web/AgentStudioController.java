@@ -951,6 +951,7 @@ class AgentStudioController {
             @RequestHeader(name = "Last-Event-ID", required = false) Long lastEventId,
             HttpServletRequest request) throws IOException {
         var actor = actors.current(request);
+        runQueries.get(id, actor);
         var emitter = new SseEmitter(0L);
         // SSE 支持断线续传：客户端带 Last-Event-ID 时，先补发遗漏事件，再注册实时推送。
         for (var event : runEvents.replay(id, lastEventId == null ? 0 : lastEventId, actor)) {

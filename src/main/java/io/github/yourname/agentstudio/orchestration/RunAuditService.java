@@ -38,6 +38,7 @@ public class RunAuditService {
     @Transactional(readOnly = true)
     public RunAuditView get(String runId, ActorContext actor) {
         AgentRunEntity run = runs.findByIdAndTenantId(runId, actor.tenantId())
+                .filter(value -> value.userId() == null || actor.userId().equals(value.userId()))
                 .orElseThrow(() -> new IllegalArgumentException("Run not found: " + runId));
         List<RunEventEntity> runEvents = events
                 .findByRunIdAndTenantIdAndSequenceGreaterThanOrderBySequenceAsc(runId, actor.tenantId(), 0);

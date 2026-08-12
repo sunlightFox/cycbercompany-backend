@@ -44,6 +44,7 @@ public class ConversationAttachmentService {
     public List<ConversationAttachmentView> upload(
             String conversationId, List<MultipartFile> files, ActorContext actor) {
         var conversation = conversations.findByIdAndTenantId(conversationId, actor.tenantId())
+                .filter(value -> value.userId() == null || actor.userId().equals(value.userId()))
                 .orElseThrow(() -> new IllegalArgumentException("Conversation not found: " + conversationId));
         if (conversation.archived()) {
             throw new ConversationArchivedException(conversationId);
@@ -219,6 +220,7 @@ public class ConversationAttachmentService {
 
     private void requireConversation(String conversationId, ActorContext actor) {
         conversations.findByIdAndTenantId(conversationId, actor.tenantId())
+                .filter(value -> value.userId() == null || actor.userId().equals(value.userId()))
                 .orElseThrow(() -> new IllegalArgumentException("Conversation not found: " + conversationId));
     }
 

@@ -432,7 +432,7 @@ public final class SoftwareTool {
     private record PackageRequest(String packageId, String manager, int timeoutSeconds) {
     }
 
-    private static final class ProcessCommandRunner implements CommandRunner {
+    static final class ProcessCommandRunner implements CommandRunner {
         @Override
         public CommandResult run(List<String> command, int timeoutSeconds)
                 throws IOException, InterruptedException, ExecutionException {

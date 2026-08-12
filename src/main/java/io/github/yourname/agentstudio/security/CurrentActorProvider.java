@@ -2,6 +2,7 @@ package io.github.yourname.agentstudio.security;
 
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.Set;
+import java.util.Locale;
 import org.springframework.security.authentication.AuthenticationCredentialsNotFoundException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -24,7 +25,14 @@ public class CurrentActorProvider {
 
     public ActorContext current(HttpServletRequest request) {
         if (!properties.tokenMode()) {
-            return ActorContext.local();
+            // LOCAL mode is intentionally temporary demo identity. Keep the tenant shared so
+            // seeded models/agents remain available, while conversation ownership is per client IP.
+            String address = request == null ? null : firstForwardedAddress(request.getHeader("X-Forwarded-For"));
+            if (address == null || address.isBlank()) {
+                address = request == null ? null : request.getRemoteAddr();
+            }
+            String ip = address == null || address.isBlank() ? "unknown" : address.trim().toLowerCase(Locale.ROOT);
+            return new ActorContext("local", "ip:" + ip, Set.of("LOCAL_USER"), Set.of("agent:run"));
         }
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication != null
@@ -37,5 +45,11 @@ public class CurrentActorProvider {
                     Set.of("agent:run"));
         }
         throw new AuthenticationCredentialsNotFoundException("No authenticated Agent Studio principal.");
+    }
+
+    private static String firstForwardedAddress(String header) {
+        if (header == null || header.isBlank()) return null;
+        String first = header.split(",", 2)[0].trim();
+        return first.isBlank() ? null : first;
     }
 }

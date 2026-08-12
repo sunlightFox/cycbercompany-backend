@@ -17,11 +17,18 @@ const types = {
 }
 
 function proxy(request, response) {
+  const forwardedHeaders = {
+    ...request.headers,
+    host: '127.0.0.1:8080',
+    // The backend uses this only in temporary LOCAL demo mode. Do not trust a
+    // client-supplied value: overwrite it with the proxy's socket address.
+    'x-forwarded-for': request.socket.remoteAddress ?? '',
+  }
   const upstreamRequest = http.request({
     ...upstream,
     method: request.method,
     path: request.url,
-    headers: { ...request.headers, host: '127.0.0.1:8080' },
+    headers: forwardedHeaders,
   }, (upstreamResponse) => {
     response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers)
     upstreamResponse.pipe(response)

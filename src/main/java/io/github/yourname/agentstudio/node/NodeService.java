@@ -2030,6 +2030,17 @@ public class NodeService {
         Instant now = Instant.now();
         node.updateCapabilitySnapshot(capabilityRevision, runtimeVersions, features, now);
         nodes.save(node);
+        Set<String> reportedNames = capabilities.stream()
+                .filter(java.util.Objects::nonNull)
+                .map(NodeCapabilityPayload::name)
+                .filter(name -> name != null && !name.isBlank())
+                .map(String::trim)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        for (NodeToolEntity existing : tools.findByTenantIdAndNodeIdOrderByNameAsc(node.tenantId(), node.id())) {
+            if (!reportedNames.contains(existing.name())) {
+                tools.delete(existing);
+            }
+        }
         for (NodeCapabilityPayload capability : capabilities) {
             if (capability == null) {
                 continue;
@@ -2040,7 +2051,9 @@ public class NodeService {
             String name = capability.name().trim();
             // 风险、审批和默认启用状态只由服务端策略目录产生。不能把节点上报的
             // 元数据当成权限来源，否则被篡改或过期的客户端可能扩大权限。
-            NodeToolPolicy policy = NodeToolPolicyCatalog.policyFor(name);
+            NodeToolPolicy policy = node.kind() == NodeKind.MANAGED_LOCAL
+                    ? NodeToolPolicyCatalog.managedLocalPolicyFor(name)
+                    : NodeToolPolicyCatalog.policyFor(name);
             String schemaJson = toJson(capability.inputSchema());
             NodeToolEntity tool = tools.findByTenantIdAndNodeIdAndName(node.tenantId(), node.id(), name)
                     .orElseGet(() -> new NodeToolEntity(
@@ -2056,6 +2069,11 @@ public class NodeService {
             // Reconnection reports capabilities again. Preserve policy set through the management API.
             tool.refreshCapability(
                     capability.description(), policy.riskLevel(), schemaJson, capability.version(), now);
+            if (node.kind() == NodeKind.MANAGED_LOCAL) {
+                // A managed-local node is backend-owned. Re-apply its explicit full-access
+                // policy on every reconnect so upgrades also repair stale approval flags.
+                tool.updatePolicy(true, false, now);
+            }
             tools.save(tool);
         }
         return listToolsForNodeEntity(node);

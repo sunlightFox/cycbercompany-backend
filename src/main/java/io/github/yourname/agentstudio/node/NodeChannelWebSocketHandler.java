@@ -4,12 +4,15 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.MissingNode;
+import jakarta.annotation.PreDestroy;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.springframework.http.HttpHeaders;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -32,6 +35,7 @@ public class NodeChannelWebSocketHandler extends TextWebSocketHandler {
     private final NodeService nodes;
     private final NodeSessionRegistry sessions;
     private final ObjectMapper objectMapper;
+    private final AtomicBoolean stopping = new AtomicBoolean();
 
     public NodeChannelWebSocketHandler(NodeService nodes, NodeSessionRegistry sessions, ObjectMapper objectMapper) {
         this.nodes = nodes;
@@ -65,6 +69,12 @@ public class NodeChannelWebSocketHandler extends TextWebSocketHandler {
                         "argumentsDigest", request.argumentsDigest(),
                         "attempt", request.attempt()));
             }
+        } catch (DataAccessException ex) {
+            // A transient or unrecoverable store fault must not be presented to the node as an
+            // authentication/policy failure. The client reconnect loop can recover after the
+            // supervised control plane restarts, while a 1008 response falsely suggests that
+            // the node has no permission or no tools.
+            session.close(CloseStatus.SERVER_ERROR);
         } catch (Exception ex) {
             // 握手失败时没有可信 node session，因此只发送最小拒绝信封后立刻关闭。
             sendUnauthenticated(session, "node.rejected", Map.of("error", "Node authentication failed."));
@@ -198,21 +208,29 @@ public class NodeChannelWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
-        String nodeId = (String) session.getAttributes().get(NODE_ID_ATTR);
-        if (nodeId != null && !nodeId.isBlank()) {
-            sessions.unregister(nodeId, session);
-            nodes.markOffline(nodeId);
-        }
+        releaseNode(session);
     }
 
     @Override
     public void handleTransportError(WebSocketSession session, Throwable exception) throws Exception {
+        releaseNode(session);
+        session.close(CloseStatus.SERVER_ERROR);
+    }
+
+    @PreDestroy
+    void beginShutdown() {
+        stopping.set(true);
+    }
+
+    private void releaseNode(WebSocketSession session) {
         String nodeId = (String) session.getAttributes().get(NODE_ID_ATTR);
-        if (nodeId != null && !nodeId.isBlank()) {
-            sessions.unregister(nodeId, session);
+        if (nodeId == null || nodeId.isBlank()) {
+            return;
+        }
+        sessions.unregister(nodeId, session);
+        if (!stopping.get()) {
             nodes.markOffline(nodeId);
         }
-        session.close(CloseStatus.SERVER_ERROR);
     }
 
     private void sendUnauthenticated(WebSocketSession session, String type, Object payload) throws Exception {

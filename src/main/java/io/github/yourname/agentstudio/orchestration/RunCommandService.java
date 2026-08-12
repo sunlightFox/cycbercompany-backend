@@ -1878,6 +1878,12 @@ public class RunCommandService {
                   project roots, sample paths, or angle-bracket labels; an invalid cwd makes an otherwise valid
                   command fail. If no working directory is requested, leave cwd absent and let the node use its
                   configured default.
+                - Distinguish workspace tools from host-system tools. fs.list/fs.read/fs.search inspect only the
+                  configured project workspace. When the user asks about the local executor, server, host machine,
+                  Linux server, or the root directory, use system.fs.list/read/search and pass the concrete absolute
+                  path requested. In particular, "server root" or "root directory" means system.fs.list with
+                  {"path":"/"}; never substitute fs.list for that request and never report the project workspace
+                  as the host root.
                 - For Windows software, service, process, install, uninstall, or remediation requests, prefer the
                   exposed structured system tools: system.software.*, system.service.*, system.os_process.*,
                   system.privilege.query, system.uninstall.preflight, and system.uninstall.execute. Do not encode

@@ -452,6 +452,9 @@ class RunCommandSystemPromptTest {
                 .contains("Do not create temporary files in the desktop root")
                 .contains("Do not invent placeholder path strings")
                 .contains("For a long-running local server or watch process")
+                .contains("server root\" or \"root directory\" means system.fs.list with")
+                .contains("{\"path\":\"/\"}")
+                .contains("never substitute fs.list for that request")
                 .doesNotContain("when no exposed native directory-creation or long-running process capability exists, use the exposed system.shell.run capability instead")
                 .contains("angle-bracket labels");
     }

@@ -18,7 +18,7 @@ class CurrentActorProviderTest {
     }
 
     @Test
-    void localModeIgnoresForgedTenantAndUserHeaders() {
+    void localModeUsesRequestIpAsTemporaryUserIdentity() {
         CurrentActorProvider provider = new CurrentActorProvider(new SecurityProperties(
                 SecurityProperties.Mode.LOCAL, "", "ignored", "ignored"));
         MockHttpServletRequest request = new MockHttpServletRequest();
@@ -28,7 +28,30 @@ class CurrentActorProviderTest {
         ActorContext actor = provider.current(request);
 
         assertThat(actor.tenantId()).isEqualTo("local");
-        assertThat(actor.userId()).isEqualTo("local-user");
+        assertThat(actor.userId()).isEqualTo("ip:127.0.0.1");
+    }
+
+    @Test
+    void localModeSeparatesDifferentClientIps() {
+        CurrentActorProvider provider = new CurrentActorProvider(new SecurityProperties(
+                SecurityProperties.Mode.LOCAL, "", "ignored", "ignored"));
+        MockHttpServletRequest first = new MockHttpServletRequest();
+        first.setRemoteAddr("192.168.1.10");
+        MockHttpServletRequest second = new MockHttpServletRequest();
+        second.setRemoteAddr("192.168.1.11");
+
+        assertThat(provider.current(first).userId()).isNotEqualTo(provider.current(second).userId());
+    }
+
+    @Test
+    void localModeUsesFirstForwardedAddressFromTrustedProxy() {
+        CurrentActorProvider provider = new CurrentActorProvider(new SecurityProperties(
+                SecurityProperties.Mode.LOCAL, "", "ignored", "ignored"));
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setRemoteAddr("127.0.0.1");
+        request.addHeader("X-Forwarded-For", "203.0.113.10, 127.0.0.1");
+
+        assertThat(provider.current(request).userId()).isEqualTo("ip:203.0.113.10");
     }
 
     @Test

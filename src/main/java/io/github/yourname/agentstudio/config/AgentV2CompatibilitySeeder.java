@@ -72,7 +72,7 @@ class AgentV2CompatibilitySeeder implements ApplicationRunner {
                 "",
                 "通用",
                 "[]",
-                "PRIVATE",
+                tenantId.equals("local") ? "PUBLIC" : "PRIVATE",
                 now);
         AgentVersionEntity version = new AgentVersionEntity(
                 UUID.randomUUID().toString(), legacy.id(), tenantId, 1, compiled, userId, now);

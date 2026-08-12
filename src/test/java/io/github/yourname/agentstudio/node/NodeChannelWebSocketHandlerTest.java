@@ -7,11 +7,13 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.time.Instant;
 
 import org.junit.jupiter.api.Test;
@@ -19,8 +21,44 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
+import org.springframework.dao.DataAccessResourceFailureException;
 
 class NodeChannelWebSocketHandlerTest {
+
+    @Test
+    void persistenceFailureDuringHandshakeClosesAsRecoverableServerError() throws Exception {
+        NodeService nodes = mock(NodeService.class);
+        NodeSessionRegistry sessions = mock(NodeSessionRegistry.class);
+        WebSocketSession session = mock(WebSocketSession.class);
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(NodeChannelWebSocketHandler.NODE_ID_HEADER, "node-123");
+        headers.setBearerAuth("secret");
+        when(session.getHandshakeHeaders()).thenReturn(headers);
+        when(session.getAttributes()).thenReturn(new java.util.HashMap<>());
+        when(session.isOpen()).thenReturn(true);
+        when(nodes.authenticateNode("node-123", "secret"))
+                .thenThrow(new DataAccessResourceFailureException("database unavailable"));
+
+        new NodeChannelWebSocketHandler(nodes, sessions, new ObjectMapper()).afterConnectionEstablished(session);
+
+        verify(session).close(CloseStatus.SERVER_ERROR);
+        verify(session, never()).close(CloseStatus.POLICY_VIOLATION);
+    }
+
+    @Test
+    void shutdownDisconnectOnlyReleasesTheInMemorySession() {
+        NodeService nodes = mock(NodeService.class);
+        NodeSessionRegistry sessions = mock(NodeSessionRegistry.class);
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.getAttributes()).thenReturn(new java.util.HashMap<>(Map.of("nodeId", "node-123")));
+        NodeChannelWebSocketHandler handler = new NodeChannelWebSocketHandler(nodes, sessions, new ObjectMapper());
+
+        handler.beginShutdown();
+        handler.afterConnectionClosed(session, CloseStatus.NORMAL);
+
+        verify(sessions).unregister("node-123", session);
+        verify(nodes, never()).markOffline(anyString());
+    }
 
     @Test
     void readsNodeCredentialsOnlyFromHandshakeHeaders() {

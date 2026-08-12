@@ -18,6 +18,8 @@ The companion frontend lives in a separate repository named `spring-agent-studio
 - **Local companion node**: an optional Java 21 process that exposes file, Shell, Git, browser, and Windows desktop tools over an authenticated WebSocket protocol, with artifact upload for screenshots, downloads, and Playwright traces.
 - **Security boundaries**: local `LOCAL` mode and remote `TOKEN` mode; workspace paths constrain tool inputs but are not an OS sandbox; high-risk tools remain approval-gated by default.
 
+In `LOCAL` mode, conversations are temporarily isolated by the request IP (`tenant=local`, `user=ip:<address>`) so a shared demo does not show one browser's chat history to another. This is only a demonstration boundary: users behind the same NAT/proxy share an IP and therefore share history. Replace `CurrentActorProvider` with the authenticated principal when login is introduced. The bundled static proxy forwards the client IP in `X-Forwarded-For`.
+
 ## Technology
 
 | Area | Technology |

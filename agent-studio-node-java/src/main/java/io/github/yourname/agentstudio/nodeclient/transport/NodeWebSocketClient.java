@@ -111,9 +111,11 @@ public class NodeWebSocketClient implements WebSocket.Listener {
                 new SkillWorkspaceManager(nodeData.resolve("run-workspaces")),
                 DockerSkillRuntime.fromEnvironment());
         this.toolRegistry = desktopRoot == null
-                ? new ToolRegistry(httpClient, workspaceRoot(config), config.resolvedAccessMode(), skillTool, artifactRoot)
+                ? new ToolRegistry(httpClient, workspaceRoot(config), config.resolvedAccessMode(), skillTool, artifactRoot,
+                        systemInfo.osName())
                 : new ToolRegistry(
-                        httpClient, workspaceRoot(config), config.resolvedAccessMode(), desktopRoot, skillTool, artifactRoot);
+                        httpClient, workspaceRoot(config), config.resolvedAccessMode(), desktopRoot, skillTool, artifactRoot,
+                        systemInfo.osName());
         this.resultBudget = new ToolResultBudget(objectMapper);
         this.artifactUploader = new ArtifactUploadClient(
                 objectMapper, httpClient, config.serverUrl(), config.nodeId(), config.nodeSecret(), artifactRoot);

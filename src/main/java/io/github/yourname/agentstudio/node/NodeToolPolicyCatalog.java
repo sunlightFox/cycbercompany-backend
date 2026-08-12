@@ -117,4 +117,13 @@ public final class NodeToolPolicyCatalog {
     public static NodeToolPolicy policyFor(String toolName) {
         return POLICIES.getOrDefault(toolName, new NodeToolPolicy(RiskLevel.HIGH, false, true));
     }
+
+    /**
+     * The backend-owned local executor is explicitly opted into unrestricted local operation.
+     * Registered and sandbox nodes always use {@link #policyFor(String)} instead.
+     */
+    public static NodeToolPolicy managedLocalPolicyFor(String toolName) {
+        NodeToolPolicy base = policyFor(toolName);
+        return new NodeToolPolicy(base.riskLevel(), true, false);
+    }
 }

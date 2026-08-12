@@ -13,6 +13,8 @@ public class ConversationEntity {
     private String id;
     /** 数据归属租户。 */
     private String tenantId;
+    /** Temporary local-demo owner. Replaced by the authenticated user ID later. */
+    private String userId;
     /** 会话标题。 */
     private String title;
     /** 会话创建时间。 */
@@ -26,8 +28,13 @@ public class ConversationEntity {
     }
 
     public ConversationEntity(String id, String tenantId, String title, Instant createdAt) {
+        this(id, tenantId, null, title, createdAt);
+    }
+
+    public ConversationEntity(String id, String tenantId, String userId, String title, Instant createdAt) {
         this.id = id;
         this.tenantId = tenantId;
+        this.userId = userId;
         this.title = title;
         this.createdAt = createdAt;
         this.lastActivityAt = createdAt;
@@ -53,6 +60,7 @@ public class ConversationEntity {
 
     public String id() { return id; }
     public String tenantId() { return tenantId; }
+    public String userId() { return userId; }
     public String title() { return title; }
     public Instant createdAt() { return createdAt; }
     public Instant lastActivityAt() { return lastActivityAt == null ? createdAt : lastActivityAt; }

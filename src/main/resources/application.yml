@@ -98,6 +98,19 @@ app:
     user-id: ${APP_SECURITY_USER_ID:remote-owner}
   run:
     timeout-seconds: 120
+  persistence:
+    # H2 treats a storage panic as unrecoverable for the running JVM. Keep the
+    # process from serving partial failures forever: the service supervisor can
+    # restart it against the same durable database after consecutive failures.
+    watchdog-enabled: ${APP_PERSISTENCE_WATCHDOG_ENABLED:true}
+    watchdog-interval-ms: ${APP_PERSISTENCE_WATCHDOG_INTERVAL_MS:30000}
+    watchdog-failure-threshold: ${APP_PERSISTENCE_WATCHDOG_FAILURE_THRESHOLD:2}
+  local-executor:
+    # The backend owns one same-host executor by default. Set false only for a separate-node deployment.
+    enabled: ${APP_LOCAL_EXECUTOR_ENABLED:true}
+    workspace: ${APP_LOCAL_EXECUTOR_WORKSPACE:${APP_DATA_DIR:./data}/workspace}
+    # Use the loopback proxy URL when the backend itself terminates TLS.
+    server-url: ${APP_LOCAL_EXECUTOR_SERVER_URL:}
   demos:
     video:
       # Video Demo private runtime. The platform core never executes remote

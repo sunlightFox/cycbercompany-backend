@@ -19,6 +19,7 @@ public class ConversationQueueQueryService {
     @Transactional(readOnly = true)
     public ConversationQueueView get(String conversationId, ActorContext actor) {
         conversations.findByIdAndTenantId(conversationId, actor.tenantId())
+                .filter(value -> value.userId() == null || actor.userId().equals(value.userId()))
                 .orElseThrow(() -> new IllegalArgumentException("Conversation not found: " + conversationId));
         return ConversationQueueView.from(
                 conversationId,

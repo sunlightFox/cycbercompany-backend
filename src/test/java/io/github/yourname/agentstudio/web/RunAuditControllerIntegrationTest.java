@@ -37,7 +37,7 @@ class RunAuditControllerIntegrationTest {
     @Test
     void returnsPersistedAuditContract() throws Exception {
         Instant createdAt = Instant.parse("2026-08-08T08:00:00Z");
-        ActorContext actor = ActorContext.local();
+        ActorContext actor = new ActorContext("local", "ip:127.0.0.1", java.util.Set.of("LOCAL_USER"), java.util.Set.of("agent:run"));
         runs.save(new AgentRunEntity(
                 "run-audit-http", actor.tenantId(), actor.userId(), "conversation-1",
                 "model-1", "agent-1", createdAt));

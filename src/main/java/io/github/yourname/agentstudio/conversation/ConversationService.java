@@ -40,7 +40,7 @@ public class ConversationService {
     public ConversationView create(CreateConversationCommand command, ActorContext actor) {
         // 标题允许省略，前端可以先创建空会话，再随着第一条消息更新显示名称。
         String title = command.title() == null || command.title().isBlank() ? "New conversation" : command.title().trim();
-        var entity = new ConversationEntity(UUID.randomUUID().toString(), actor.tenantId(), title, Instant.now());
+        var entity = new ConversationEntity(UUID.randomUUID().toString(), actor.tenantId(), actor.userId(), title, Instant.now());
         UserPersonaEntity persona = resolveInitialPersona(command.personaId(), actor);
         entity.selectPersona(persona == null ? null : persona.id());
         entity = conversations.save(entity);
@@ -112,7 +112,8 @@ public class ConversationService {
     @Transactional(readOnly = true)
     public List<ConversationSummaryView> list(int limit, boolean includeArchived, ActorContext actor) {
         return conversations.findHistory(actor.tenantId(), includeArchived, PageRequest.of(0, boundedLimit(limit)))
-                .stream().map(conversation -> summary(conversation, actor)).toList();
+                .stream().filter(conversation -> conversation.userId() == null || actor.userId().equals(conversation.userId()))
+                .map(conversation -> summary(conversation, actor)).toList();
     }
 
     @Transactional(readOnly = true)
@@ -120,7 +121,8 @@ public class ConversationService {
         String normalized = query == null ? "" : query.trim();
         if (normalized.isEmpty()) return List.of();
         return conversations.searchHistory(actor.tenantId(), normalized, includeArchived, PageRequest.of(0, boundedLimit(limit)))
-                .stream().map(conversation -> summary(conversation, actor)).toList();
+                .stream().filter(conversation -> conversation.userId() == null || actor.userId().equals(conversation.userId()))
+                .map(conversation -> summary(conversation, actor)).toList();
     }
 
     @Transactional(readOnly = true)
@@ -153,6 +155,7 @@ public class ConversationService {
     private ConversationEntity requireConversation(String id, ActorContext actor) {
         // 所有读取都带 tenantId，避免仅凭猜到的 conversationId 访问其他租户数据。
         return conversations.findByIdAndTenantId(id, actor.tenantId())
+                .filter(conversation -> conversation.userId() == null || actor.userId().equals(conversation.userId()))
                 .orElseThrow(() -> new IllegalArgumentException("Conversation not found: " + id));
     }
 

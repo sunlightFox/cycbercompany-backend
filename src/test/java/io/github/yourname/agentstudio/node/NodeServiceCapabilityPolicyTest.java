@@ -81,6 +81,49 @@ class NodeServiceCapabilityPolicyTest {
     }
 
     @Test
+    void managedLocalExecutorEnablesEveryReportedCapabilityWithoutApproval() {
+        NodeService service = new NodeService(nodes, tokens, tools, invocations, approvals, sessions, new ObjectMapper());
+        NodeConnectionEntity node = new NodeConnectionEntity(
+                "local-1", "tenant-a", "local", "host", "Linux", "amd64", "test", "secret",
+                NodeKind.MANAGED_LOCAL, Instant.now());
+        when(nodes.findById("local-1")).thenReturn(Optional.of(node));
+        when(tools.findByTenantIdAndNodeIdAndName("tenant-a", "local-1", "system.software.uninstall"))
+                .thenReturn(Optional.empty());
+        when(tools.save(any(NodeToolEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(tools.findByTenantIdAndNodeIdOrderByNameAsc("tenant-a", "local-1")).thenReturn(List.of());
+
+        service.saveCapabilities("local-1", "revision", Map.of(), Set.of(), List.of(
+                new NodeCapabilityPayload("system.software.uninstall", "Remove package", "1", Map.of())));
+
+        ArgumentCaptor<NodeToolEntity> saved = ArgumentCaptor.forClass(NodeToolEntity.class);
+        verify(tools).save(saved.capture());
+        assertThat(saved.getValue().enabled()).isTrue();
+        assertThat(saved.getValue().requiresApproval()).isFalse();
+    }
+
+    @Test
+    void managedLocalReconnectRepairsAnOldApprovalPolicy() {
+        NodeService service = new NodeService(nodes, tokens, tools, invocations, approvals, sessions, new ObjectMapper());
+        Instant now = Instant.now();
+        NodeConnectionEntity node = new NodeConnectionEntity(
+                "local-1", "tenant-a", "local", "host", "Linux", "amd64", "test", "secret",
+                NodeKind.MANAGED_LOCAL, now);
+        NodeToolEntity existing = new NodeToolEntity(
+                "tenant-a", "local-1", "system.shell.run", "Run shell", RiskLevel.HIGH, false, true, "{}", now);
+        when(nodes.findById("local-1")).thenReturn(Optional.of(node));
+        when(tools.findByTenantIdAndNodeIdOrderByNameAsc("tenant-a", "local-1")).thenReturn(List.of(existing));
+        when(tools.findByTenantIdAndNodeIdAndName("tenant-a", "local-1", "system.shell.run"))
+                .thenReturn(Optional.of(existing));
+        when(tools.save(any(NodeToolEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.saveCapabilities("local-1", "revision", Map.of(), Set.of(), List.of(
+                new NodeCapabilityPayload("system.shell.run", "Run shell", "1", Map.of())));
+
+        assertThat(existing.enabled()).isTrue();
+        assertThat(existing.requiresApproval()).isFalse();
+    }
+
+    @Test
     void ignoresNullEntriesInReportedCapabilitiesAndMetadata() {
         NodeService service = new NodeService(nodes, tokens, tools, invocations, approvals, sessions, new ObjectMapper());
         NodeConnectionEntity node = new NodeConnectionEntity(
@@ -108,6 +151,29 @@ class NodeServiceCapabilityPolicyTest {
         assertThat(saved.getValue().name()).isEqualTo("system.shell.run");
         assertThat(node.runtimeVersions()).containsExactly(Map.entry("node", "22"));
         assertThat(node.features()).containsExactly("system-access.v1");
+    }
+
+    @Test
+    void removesToolsMissingFromTheLatestCapabilitySnapshot() {
+        NodeService service = new NodeService(nodes, tokens, tools, invocations, approvals, sessions, new ObjectMapper());
+        NodeConnectionEntity node = new NodeConnectionEntity(
+                "node-1", "tenant-a", "linux", "host", "Linux", "amd64", "test", "secret", Instant.now());
+        NodeToolEntity aptInstall = new NodeToolEntity(
+                "tenant-a", "node-1", "system.software.install", "apt install", RiskLevel.HIGH, true, true, "{}", Instant.now());
+        NodeToolEntity oldWindowsService = new NodeToolEntity(
+                "tenant-a", "node-1", "system.service.query", "Windows service", RiskLevel.HIGH, true, true, "{}", Instant.now());
+        when(nodes.findById("node-1")).thenReturn(Optional.of(node));
+        when(tools.findByTenantIdAndNodeIdOrderByNameAsc("tenant-a", "node-1"))
+                .thenReturn(List.of(aptInstall, oldWindowsService));
+        when(tools.findByTenantIdAndNodeIdAndName("tenant-a", "node-1", "system.software.install"))
+                .thenReturn(Optional.of(aptInstall));
+        when(tools.save(any(NodeToolEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.saveCapabilities("node-1", "revision", Map.of("os", "Linux"), Set.of("system-software.apt.v1"), List.of(
+                new NodeCapabilityPayload("system.software.install", "apt install", "1", Map.of("type", "object"))));
+
+        verify(tools).delete(oldWindowsService);
+        verify(tools, never()).delete(aptInstall);
     }
 
     @Test
