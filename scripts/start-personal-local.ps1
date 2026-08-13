@@ -1,6 +1,6 @@
 <#!
 .SYNOPSIS
-Starts the Spring Agent Studio compose stack with its implicit companion for the current Windows desktop.
+Starts the CycberCompany compose stack with its implicit companion for the current Windows desktop.
 
 .DESCRIPTION
 The companion stays outside the backend process. It therefore operates on this signed-in
@@ -49,7 +49,7 @@ if (-not $NoElevation -and -not (Test-AgentStudioAdministrator)) {
 Assert-AgentStudioWindowsUser -ExpectedUser $ExpectedWindowsUser
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$composeRoot = Join-Path (Split-Path -Parent $projectRoot) "spring-agent-studio-web"
+$composeRoot = Join-Path (Split-Path -Parent $projectRoot) "cycbercompany-web"
 $workspacePath = [System.IO.Path]::GetFullPath($Workspace)
 $nodeConfigDir = Join-Path $env:USERPROFILE ".agent-studio-node"
 $statePath = Join-Path $nodeConfigDir "personal-local.state.json"
@@ -133,9 +133,9 @@ function Assert-AgentStudioApiReachable {
             $statusCode = $null
         }
         if ($statusCode -eq 401 -or $statusCode -eq 403) {
-            throw "Agent Studio backend is healthy at $ServerUrl, but $nodesUrl rejected the request with HTTP $statusCode. If TOKEN mode is enabled, set AGENT_STUDIO_API_TOKEN in the current process, User environment, Machine environment, or compose environment."
+            throw "CycberCompany backend is healthy at $ServerUrl, but $nodesUrl rejected the request with HTTP $statusCode. If TOKEN mode is enabled, set AGENT_STUDIO_API_TOKEN in the current process, User environment, Machine environment, or compose environment."
         }
-        throw "The health endpoint is reachable at $ServerUrl, but $nodesUrl is not an Agent Studio API endpoint. Check -Server and make sure the expected backend is running."
+        throw "The health endpoint is reachable at $ServerUrl, but $nodesUrl is not a CycberCompany API endpoint. Check -Server and make sure the expected backend is running."
     }
 }
 
@@ -406,9 +406,9 @@ if (-not $SkipBackend -and -not (Test-AgentStudioHealth -HealthUrl $healthUrl)) 
 if (-not (Test-AgentStudioHealth -HealthUrl $healthUrl)) {
     Stop-BackendStack
     if ($SkipBackend) {
-        throw "Agent Studio backend did not become healthy at $healthUrl. -SkipBackend was set, so start or select an existing backend with -Server."
+    throw "CycberCompany backend did not become healthy at $healthUrl. -SkipBackend was set, so start or select an existing backend with -Server."
     }
-    throw "Agent Studio backend did not become healthy at $healthUrl. See logs: $backendOut and $backendErr"
+    throw "CycberCompany backend did not become healthy at $healthUrl. See logs: $backendOut and $backendErr"
 }
 
 try {
@@ -476,7 +476,7 @@ while ([DateTime]::UtcNow -lt $deadline -and -not (& $nodeOnline $Server)) {
         Stop-Launcher
         Stop-BackendStack
         Clear-State
-        throw "Agent Studio local executor exited before it became online. Exit code: $nodeExitCode. See logs: $nodeOut and $nodeErr"
+    throw "CycberCompany local executor exited before it became online. Exit code: $nodeExitCode. See logs: $nodeOut and $nodeErr"
     }
     Start-Sleep -Seconds 1
 }
@@ -488,12 +488,12 @@ if (-not (& $nodeOnline $Server)) {
     Stop-Launcher
     Stop-BackendStack
     Clear-State
-    throw "Agent Studio local executor did not become online at $Server. See logs: $nodeOut and $nodeErr"
+    throw "CycberCompany local executor did not become online at $Server. See logs: $nodeOut and $nodeErr"
 }
 
 $actualNodePid = Get-NodeProcessId -NodeServer $Server
 Save-State -BackendPid $null -NodePid $(if ($actualNodePid) { $actualNodePid } else { $nodeProcess.Id }) -LauncherPid $launcherPid
-Write-Host "Agent Studio backend and local executor are running."
+Write-Host "CycberCompany backend and local executor are running."
 Write-Host "Server: $Server"
 Write-Host "Workspace: $workspacePath"
 $nodePrivilege = if (Test-AgentStudioAdministrator) { "Administrator" } else { "Standard user" }

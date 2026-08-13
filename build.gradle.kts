@@ -40,6 +40,7 @@ dependencies {
 	implementation("org.apache.poi:poi-scratchpad:5.4.1")
 	implementation("org.jsoup:jsoup:1.18.3")
 	runtimeOnly("com.h2database:h2")
+	runtimeOnly("org.postgresql:postgresql")
 	testImplementation("org.springframework.boot:spring-boot-starter-actuator-test")
 	testImplementation("org.springframework.boot:spring-boot-starter-data-jpa-test")
 	testImplementation("org.springframework.boot:spring-boot-starter-flyway-test")

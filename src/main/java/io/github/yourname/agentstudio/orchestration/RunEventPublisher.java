@@ -20,20 +20,29 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 public class RunEventPublisher {
 
     private final RunEventRepository repository;
+    private final AgentRunRepository runs;
     private final Map<String, List<SseEmitter>> emitters = new ConcurrentHashMap<>();
+    private final Map<String, Object> runLocks = new ConcurrentHashMap<>();
 
-    public RunEventPublisher(RunEventRepository repository) {
+    public RunEventPublisher(RunEventRepository repository, AgentRunRepository runs) {
         this.repository = repository;
+        this.runs = runs;
     }
 
     @Transactional
     public RunEventView publish(String runId, RunEventType type, String payload, ActorContext actor) {
         // 序号是单个 run 内的游标，前端用它判断从哪一条事件继续重放。
-        long nextSequence = repository.countByRunIdAndTenantId(runId, actor.tenantId()) + 1;
-        var saved = repository.save(new RunEventEntity(actor.tenantId(), runId, nextSequence, type, payload, Instant.now()));
-        var view = RunEventView.from(saved);
-        broadcast(runId, view);
-        return view;
+        synchronized (lockFor(runId)) {
+            AgentRunEntity run = runs.findWithLockByIdAndTenantId(runId, actor.tenantId())
+                    .orElseThrow(() -> new IllegalArgumentException("Run not found: " + runId));
+            long persistedMaximum = repository.findMaxSequenceByRunIdAndTenantId(runId, actor.tenantId()).orElse(0L);
+            run.ensureEventSequenceAtLeast(persistedMaximum);
+            var saved = repository.save(new RunEventEntity(
+                    actor.tenantId(), runId, run.nextEventSequence(), type, payload, Instant.now()));
+            var view = RunEventView.from(saved);
+            broadcast(runId, view);
+            return view;
+        }
     }
 
     @Transactional(readOnly = true)
@@ -55,14 +64,27 @@ public class RunEventPublisher {
         emitter.onError(error -> remove(runId, emitter));
     }
 
+    @Transactional
+    public void replayAndRegister(String runId, long afterSequence, ActorContext actor, SseEmitter emitter) throws java.io.IOException {
+        synchronized (lockFor(runId)) {
+            runs.findWithLockByIdAndTenantId(runId, actor.tenantId())
+                    .orElseThrow(() -> new IllegalArgumentException("Run not found: " + runId));
+            for (RunEventView event : replay(runId, afterSequence, actor)) {
+                send(emitter, event);
+                if (isTerminal(event.type())) {
+                    emitter.complete();
+                    return;
+                }
+            }
+            register(runId, emitter);
+        }
+    }
+
     private void broadcast(String runId, RunEventView event) {
         var current = emitters.getOrDefault(runId, List.of());
         for (SseEmitter emitter : current) {
             try {
-                emitter.send(SseEmitter.event()
-                        .id(Long.toString(event.sequence()))
-                        .name(event.type().name())
-                        .data(event));
+                send(emitter, event);
                 if (isTerminal(event.type())) {
                     // 最终事件已送达后主动关闭连接，释放 servlet 异步请求占用的资源。
                     emitter.complete();
@@ -86,5 +108,16 @@ public class RunEventPublisher {
         if (list != null) {
             list.remove(emitter);
         }
+    }
+
+    private Object lockFor(String runId) {
+        return runLocks.computeIfAbsent(runId, ignored -> new Object());
+    }
+
+    private static void send(SseEmitter emitter, RunEventView event) throws java.io.IOException {
+        emitter.send(SseEmitter.event()
+                .id(Long.toString(event.sequence()))
+                .name(event.type().name())
+                .data(event));
     }
 }

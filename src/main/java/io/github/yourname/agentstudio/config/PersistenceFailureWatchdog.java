@@ -11,14 +11,15 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * Fails fast after an unrecoverable persistent-store failure.
+ * Optional fail-fast policy for an externally supervised persistent-store failure.
  *
- * <p>H2 closes its store after an MVStore panic and cannot be repaired inside the same JVM. A
- * live HTTP process would otherwise keep accepting requests while every control-plane operation
- * fails. Exiting lets the process supervisor restart from the durable store.
+ * <p>H2 closes its store after an MVStore panic and cannot be repaired inside the same JVM. In a
+ * supervised deployment an operator may opt in so the supervisor can restart the process. It is
+ * deliberately disabled by default: a transient database or network failure must not turn one
+ * failed Run into an application-wide outage.
  */
 @Component
-@ConditionalOnProperty(prefix = "app.persistence", name = "watchdog-enabled", havingValue = "true", matchIfMissing = true)
+@ConditionalOnProperty(prefix = "app.persistence", name = "watchdog-enabled", havingValue = "true")
 public final class PersistenceFailureWatchdog implements ApplicationListener<ContextRefreshedEvent> {
 
     private final JdbcTemplate jdbc;

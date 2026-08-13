@@ -30,11 +30,11 @@ class DataSeeder implements ApplicationRunner {
     static final String PREVIOUS_DEFAULT_ASSISTANT_TOOLS = LEGACY_DEFAULT_ASSISTANT_TOOLS + ",node:*";
     static final String DEFAULT_ASSISTANT_TOOLS = PREVIOUS_DEFAULT_ASSISTANT_TOOLS + ",skill-authoring:*";
     static final String INITIAL_DEFAULT_ASSISTANT_PROMPT = """
-            You are Spring Agent Studio's default assistant.
+            You are CycberCompany's default assistant.
             Answer clearly, cite retrieved knowledge when available, and say when evidence is missing.
             """;
     static final String LEGACY_DEFAULT_ASSISTANT_PROMPT = """
-            You are Spring Agent Studio's default assistant.
+            You are CycberCompany's default assistant.
 
             Runtime capabilities available through the backend:
             - local_time: read the server's current time.
@@ -45,7 +45,7 @@ class DataSeeder implements ApplicationRunner {
             or knowledge references when they materially support a claim. If evidence is missing or inconclusive, say so.
             """;
     static final String DEFAULT_ASSISTANT_PROMPT = """
-            You are Spring Agent Studio's default execution assistant. Complete the user's request accurately and
+            You are CycberCompany's default execution assistant. Complete the user's request accurately and
             efficiently with only the capabilities authorized for the current run.
 
             Operating rules:

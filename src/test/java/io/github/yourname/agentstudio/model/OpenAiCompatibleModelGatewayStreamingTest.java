@@ -105,4 +105,75 @@ class OpenAiCompatibleModelGatewayStreamingTest {
                     .hasMessageContaining("stream transport failed");
         }
     }
+
+    @Test
+    void classifiesAnEofWithoutACompletionSignalAsRetryable() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/chat/completions", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, 0);
+            try (OutputStream output = exchange.getResponseBody()) {
+                output.write("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n".getBytes());
+            }
+        });
+        server.start();
+        try {
+            ModelProfileRepository profiles = Mockito.mock(ModelProfileRepository.class);
+            ModelProfileEntity profile = new ModelProfileEntity(
+                    "mock", ProviderType.OPENAI_COMPATIBLE,
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/v1",
+                    "mock", null, "test-key", Set.of(ModelCapability.TEXT), true, Instant.now());
+            when(profiles.findById("mock")).thenReturn(Optional.of(profile));
+            OpenAiCompatibleModelGateway gateway = new OpenAiCompatibleModelGateway(
+                    profiles, RestClient.builder(), new ObjectMapper());
+
+            assertThatThrownBy(() -> gateway.stream(new ModelGateway.ModelCompletionRequest(
+                    "mock", List.of(new ModelGateway.ModelMessage("user", "Continue")),
+                    List.of(), ModelGateway.ToolChoice.AUTO), ignored -> { }))
+                    .isInstanceOf(ModelTransientException.class)
+                    .hasMessageContaining("completion signal");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void acceptsFinishReasonAsTheCompletionSignalWithoutADoneMarker() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/chat/completions", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, 0);
+            try (OutputStream output = exchange.getResponseBody()) {
+                output.write("data: {\"choices\":[{\"delta\":{\"content\":\"complete\"},\"finish_reason\":\"stop\"}]}\n\n".getBytes());
+                output.flush();
+                Thread.sleep(2_000);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        server.start();
+        try {
+            ModelProfileRepository profiles = Mockito.mock(ModelProfileRepository.class);
+            ModelProfileEntity profile = new ModelProfileEntity(
+                    "mock", ProviderType.OPENAI_COMPATIBLE,
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/v1",
+                    "mock", null, "test-key", Set.of(ModelCapability.TEXT), true, Instant.now());
+            when(profiles.findById("mock")).thenReturn(Optional.of(profile));
+            OpenAiCompatibleModelGateway gateway = new OpenAiCompatibleModelGateway(
+                    profiles, RestClient.builder(), new ObjectMapper());
+
+            long started = System.nanoTime();
+            ModelGateway.ModelAnswer answer = gateway.stream(new ModelGateway.ModelCompletionRequest(
+                    "mock", List.of(new ModelGateway.ModelMessage("user", "Continue")),
+                    List.of(), ModelGateway.ToolChoice.AUTO), ignored -> { });
+
+            assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(1));
+            assertThat(answer.content()).isEqualTo("complete");
+            assertThat(answer.finishReason()).isEqualTo("stop");
+        } finally {
+            server.stop(0);
+        }
+    }
 }

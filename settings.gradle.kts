@@ -1,2 +1,2 @@
-rootProject.name = "spring-agent-studio"
+rootProject.name = "cycbercompany"
 include("agent-studio-node-java")

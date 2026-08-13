@@ -228,7 +228,7 @@ public class AgentStudioNodeApplication {
 
     private static void printUsage() {
         System.out.println("""
-                Agent Studio Java Node
+                CycberCompany Java Node
 
                 Commands:
                   register --server http://localhost:8080 --token <registrationToken> [--name my-pc] [--workspace path] [--access workspace|system] [--config node-config.json]

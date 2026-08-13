@@ -195,13 +195,12 @@ public class SkillRepositoryService {
                     merged.merge(key, candidate, SkillRepositoryService::preferSearchHit);
                 }
             } catch (RuntimeException ex) {
-                if (merged.isEmpty() && index == queries.size() - 1) {
-                    throw ex;
-                }
+                // A rate limit or transient GitHub outage must not make the online
+                // repository screen unusable; curatedFallback handles an empty merge.
             }
         }
 
-        return merged.values().stream()
+        List<SkillRepositoryView> results = merged.values().stream()
                 .sorted(Comparator
                         .comparingInt(SearchHit::queryRank)
                         .thenComparing(Comparator.comparingInt((SearchHit hit) -> hit.view().stars()).reversed())
@@ -209,6 +208,7 @@ public class SkillRepositoryService {
                 .limit(limit)
                 .map(SearchHit::view)
                 .toList();
+        return results.isEmpty() ? curatedFallback(query, limit) : results;
     }
 
     /**
@@ -428,7 +428,7 @@ public class SkillRepositoryService {
         return HttpRequest.newBuilder(uri)
                 .timeout(Duration.ofSeconds(20))
                 .header("Accept", "application/vnd.github+json")
-                .header("User-Agent", "spring-agent-studio");
+                .header("User-Agent", "cycbercompany");
     }
 
     private static URI buildUri(URI base, String path) {
@@ -458,6 +458,18 @@ public class SkillRepositoryService {
     private static int clamp(Integer value, int min, int max, int fallback) {
         int resolved = value == null ? fallback : value;
         return Math.max(min, Math.min(max, resolved));
+    }
+
+    private static List<SkillRepositoryView> curatedFallback(String query, int limit) {
+        String needle = sanitizeQuery(query).toLowerCase(Locale.ROOT);
+        List<SkillRepositoryView> matches = CURATED.stream()
+                .filter(entry -> needle.isBlank() || (entry.name() + " " + entry.description())
+                        .toLowerCase(Locale.ROOT).contains(needle))
+                .limit(limit)
+                .toList();
+        // An upstream rate limit should not turn the management page into an empty state,
+        // even when the requested text has no match in the small local index.
+        return matches.isEmpty() ? CURATED.stream().limit(limit).toList() : matches;
     }
 
     private static String normalizeSkillId(String value) {

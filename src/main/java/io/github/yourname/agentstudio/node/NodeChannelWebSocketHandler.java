@@ -229,7 +229,13 @@ public class NodeChannelWebSocketHandler extends TextWebSocketHandler {
         }
         sessions.unregister(nodeId, session);
         if (!stopping.get()) {
-            nodes.markOffline(nodeId);
+            try {
+                nodes.markOffline(nodeId);
+            } catch (DataAccessException | IllegalStateException ignored) {
+                // The session is already gone. During context shutdown the persistence layer can
+                // disappear before this WebSocket callback; a later heartbeat monitor will
+                // reconcile the durable state after the next successful application start.
+            }
         }
     }
 

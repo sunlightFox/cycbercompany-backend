@@ -76,6 +76,11 @@ public class ArtifactController {
                 .body(new FileSystemResource(download.path()));
     }
 
+    @GetMapping("/artifacts/{id}/download")
+    public ResponseEntity<Resource> downloadAlias(@PathVariable String id, HttpServletRequest request) {
+        return download(id, request);
+    }
+
     private static String bearerSecret(String authorization) {
         if (authorization == null || !authorization.regionMatches(true, 0, "Bearer ", 0, 7)) return null;
         String secret = authorization.substring(7).trim();

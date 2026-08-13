@@ -66,4 +66,28 @@ class StreamingOutputFilterTest {
 
         assertThat(String.join("", emitted)).isEqualTo("a < b");
     }
+
+    @Test
+    void dropsMiniMaxInternalMarkerLineWithoutStoppingFollowingText() {
+        List<String> emitted = new ArrayList<>();
+        StreamingOutputFilter filter = new StreamingOutputFilter(emitted::add);
+
+        filter.accept("前文\n]<]minimax[>");
+        filter.accept("内部状态");
+        filter.accept("\n后文");
+        filter.finish();
+
+        assertThat(String.join("", emitted)).isEqualTo("前文\n后文");
+    }
+
+    @Test
+    void dropsMiniMaxMarkerWhenTheProviderEndsBeforeANewline() {
+        List<String> emitted = new ArrayList<>();
+        StreamingOutputFilter filter = new StreamingOutputFilter(emitted::add);
+
+        filter.accept("答案\n]<]minimax[>");
+        filter.finish();
+
+        assertThat(String.join("", emitted)).isEqualTo("答案\n");
+    }
 }

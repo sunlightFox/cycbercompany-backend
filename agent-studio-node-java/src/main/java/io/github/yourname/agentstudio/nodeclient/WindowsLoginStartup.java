@@ -17,7 +17,7 @@ import java.util.Optional;
  */
 final class WindowsLoginStartup {
 
-    private static final String MARKER = ":: Agent Studio managed login startup";
+    private static final String MARKER = ":: CycberCompany managed login startup";
     private static final String FILE_NAME = "AgentStudioNode-startup.cmd";
     private static final Charset STARTUP_ENCODING = StandardCharsets.UTF_16LE;
 
@@ -56,7 +56,7 @@ final class WindowsLoginStartup {
     void setEnabled(boolean enabled) throws IOException {
         if (enabled) {
             if (Files.exists(startupFile) && !isEnabled()) {
-                throw new IOException("The existing startup entry is not managed by Agent Studio: " + startupFile);
+                throw new IOException("The existing startup entry is not managed by CycberCompany: " + startupFile);
             }
             Files.createDirectories(startupFile.getParent());
             Files.writeString(startupFile, content(), STARTUP_ENCODING);
@@ -66,7 +66,7 @@ final class WindowsLoginStartup {
             return;
         }
         if (!isEnabled()) {
-            throw new IOException("The existing startup entry is not managed by Agent Studio: " + startupFile);
+            throw new IOException("The existing startup entry is not managed by CycberCompany: " + startupFile);
         }
         Files.delete(startupFile);
     }

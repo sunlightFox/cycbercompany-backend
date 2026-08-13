@@ -5,5 +5,5 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /** Configuration for the executor embedded in a personal-local backend process. */
 @ConfigurationProperties(prefix = "app.local-executor")
-public record LocalExecutorProperties(boolean enabled, Path workspace, String serverUrl) {
+public record LocalExecutorProperties(boolean enabled, Path workspace) {
 }

@@ -63,6 +63,7 @@ public class AgentRunEntity {
     private String errorMessage;
     /** Run 创建时间。 */
     private Instant createdAt;
+    private long lastEventSequence;
     /** Run 实际开始执行时间。 */
     private Instant startedAt;
     /** Run 进入终态时间。 */
@@ -165,4 +166,8 @@ public class AgentRunEntity {
     public Instant createdAt() { return createdAt; }
     public Instant startedAt() { return startedAt; }
     public Instant finishedAt() { return finishedAt; }
+
+    long nextEventSequence() { return ++lastEventSequence; }
+
+    void ensureEventSequenceAtLeast(long value) { lastEventSequence = Math.max(lastEventSequence, value); }
 }

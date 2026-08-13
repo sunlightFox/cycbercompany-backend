@@ -25,6 +25,7 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
@@ -173,6 +174,8 @@ class CodingAgentLoop {
     private final RunExecutionRegistry executions;
     private final RetrySleeper retrySleeper;
     private final ObjectMapper objectMapper;
+    /** Run-scoped handoff to the outer command service so it does not replay streamed final text. */
+    private final Set<String> streamedFinalAnswers = ConcurrentHashMap.newKeySet();
     /** 生产环境注入；保留为空可让原有的纯单元测试继续使用轻量构造器。 */
     private RunWorkflowCheckpointService checkpoints;
 
@@ -443,6 +446,7 @@ class CodingAgentLoop {
             AgentApprovalPolicy agentApprovalPolicy,
             boolean requireFirstToolCall,
             String executionProtocol) {
+        streamedFinalAnswers.remove(runId);
         boolean waitingForApproval = false;
         try {
             ensureNotCancelled(runId);
@@ -514,7 +518,7 @@ class CodingAgentLoop {
                                 + "A project file changed in this run, so a final Git review is mandatory delivery evidence."));
                         continue;
                     }
-                    return answer.content() == null ? "" : answer.content();
+                    return deliverFinalAnswer(runId, modelProfileId, messages, answer, actor, totalToolCalls);
                 }
 
                 messages.add(ModelGateway.ModelMessage.assistantToolCalls(answer.content(), calls));
@@ -622,6 +626,52 @@ class CodingAgentLoop {
                 cleanupManagedProcesses(runId, actor);
             }
         }
+    }
+
+    /**
+     * Produces the user-facing delivery in a separate, tool-free turn. Tool-planning turns must
+     * remain buffered because a provider can emit prose before it emits a function call. Once the
+     * loop has established that no more tools are requested, this turn has no tools at all and its
+     * safe text can be published immediately without exposing unexecuted plans.
+     */
+    private String deliverFinalAnswer(
+            String runId,
+            String modelProfileId,
+            List<ModelGateway.ModelMessage> messages,
+            ModelGateway.ModelAnswer draft,
+            ActorContext actor,
+            int completedToolTurns) {
+        String draftContent = draft.content() == null ? "" : draft.content();
+        if (!modelGateway.supportsStreaming() || completedToolTurns == 0) {
+            return draftContent;
+        }
+
+        List<ModelGateway.ModelMessage> finalMessages = new ArrayList<>(messages);
+        if (!draftContent.isBlank()) {
+            finalMessages.add(new ModelGateway.ModelMessage("assistant", draftContent));
+        }
+        finalMessages.add(new ModelGateway.ModelMessage(
+                "system",
+                "The tool work is complete. Return the final user-facing answer now. "
+                        + "Do not call tools, do not describe private reasoning, and only state "
+                        + "results supported by the conversation and tool outputs."));
+        StreamingOutputFilter filter = new StreamingOutputFilter(token ->
+                events.publish(runId, RunEventType.TOKEN_DELTA, token, actor));
+        ModelGateway.ModelAnswer finalAnswer = answerWithRateLimitRetry(
+                runId,
+                actor,
+                new ModelGateway.ModelCompletionRequest(modelProfileId, finalMessages));
+        filter.accept(finalAnswer.content());
+        filter.finish();
+        if (filter.emitted()) {
+            streamedFinalAnswers.add(runId);
+        }
+        return finalAnswer.content() == null ? "" : finalAnswer.content();
+    }
+
+    /** Returns and clears whether this run's final answer was already delivered through SSE. */
+    boolean consumeFinalAnswerStreamed(String runId) {
+        return streamedFinalAnswers.remove(runId);
     }
 
     private ToolProviderResult invokeWithProgress(
@@ -881,16 +931,21 @@ class CodingAgentLoop {
             String runId,
             ActorContext actor,
             ModelGateway.ModelCompletionRequest request) {
+        return answerWithRateLimitRetry(runId, actor, request, ignored -> { });
+    }
+
+    private ModelGateway.ModelAnswer answerWithRateLimitRetry(
+            String runId,
+            ActorContext actor,
+            ModelGateway.ModelCompletionRequest request,
+            java.util.function.Consumer<String> onToken) {
         for (int retry = 0; ; retry++) {
             try {
                 ensureNotCancelled(runId);
                 long startedNanos = System.nanoTime();
                 ModelGateway.ModelAnswer answer;
                 if (modelGateway.supportsStreaming()) {
-                    // The surrounding loop owns final output delivery. This consumer intentionally
-                    // buffers no visible text: the complete ModelAnswer below determines whether
-                    // this model turn is a tool-planning turn or the actual final answer.
-                    answer = modelGateway.stream(request, ignored -> { });
+                    answer = modelGateway.stream(request, onToken);
                 } else {
                     answer = modelGateway.complete(request);
                 }

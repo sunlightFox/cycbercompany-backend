@@ -1,7 +1,7 @@
 use_default_settings: true
 
 general:
-  instance_name: Agent Studio SearXNG
+  instance_name: CycberCompany SearXNG
 
 server:
   secret_key: change-this-local-searxng-secret-before-exposing-the-service
@@ -13,7 +13,7 @@ search:
     - json
 
 # The default general engines are frequently rate-limited. These three
-# key-free engines were verified from the same network used by Agent Studio.
+# key-free engines were verified from the same network used by CycberCompany.
 engines:
   - name: brave
     disabled: true

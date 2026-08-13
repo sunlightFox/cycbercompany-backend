@@ -174,7 +174,7 @@ public class ClawHubSkillService {
 
     private HttpRequest request(URI uri) {
         return HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(20))
-                .header("Accept", "application/json").header("User-Agent", "spring-agent-studio").GET().build();
+                .header("Accept", "application/json").header("User-Agent", "cycbercompany").GET().build();
     }
 
     private String baseUrl() {

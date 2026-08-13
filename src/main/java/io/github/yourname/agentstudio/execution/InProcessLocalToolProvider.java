@@ -1,5 +1,6 @@
 package io.github.yourname.agentstudio.execution;
 
+import io.github.yourname.agentstudio.config.LocalExecutorProperties;
 import io.github.yourname.agentstudio.node.NodeToolPolicy;
 import io.github.yourname.agentstudio.node.NodeToolPolicyCatalog;
 import io.github.yourname.agentstudio.nodeclient.NodeAccessMode;
@@ -18,6 +19,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import org.springframework.stereotype.Service;
+import jakarta.annotation.PreDestroy;
 
 /**
  * The local execution implementation hosted by the server process.  It reuses
@@ -32,11 +34,16 @@ public final class InProcessLocalToolProvider implements ToolProvider {
 
     private final ToolRegistry tools;
 
-    public InProcessLocalToolProvider() {
-        Path workspace = Path.of(System.getProperty("user.home")).toAbsolutePath().normalize();
+    public InProcessLocalToolProvider(LocalExecutorProperties properties) {
+        Path workspace = workspace(properties);
         tools = new ToolRegistry(
                 HttpClient.newHttpClient(), workspace, NodeAccessMode.SYSTEM,
                 desktopRoot(), null, null);
+    }
+
+    /** Compatibility constructor for focused runtime tests. */
+    InProcessLocalToolProvider() {
+        this(new LocalExecutorProperties(true, Path.of(System.getProperty("user.home"))));
     }
 
     @Override
@@ -79,7 +86,7 @@ public final class InProcessLocalToolProvider implements ToolProvider {
     }
 
     private ToolDescriptor descriptor(NodeCapability capability) {
-        NodeToolPolicy policy = NodeToolPolicyCatalog.policyFor(capability.name());
+        NodeToolPolicy policy = NodeToolPolicyCatalog.managedLocalPolicyFor(capability.name());
         return new ToolDescriptor(
                 PROVIDER_ID + ":" + capability.name(),
                 capability.name(),
@@ -100,5 +107,20 @@ public final class InProcessLocalToolProvider implements ToolProvider {
         }
         Path fromHome = Path.of(System.getProperty("user.home"), "Desktop");
         return Files.isDirectory(fromHome) ? fromHome : null;
+    }
+
+    private static Path workspace(LocalExecutorProperties properties) {
+        Path configured = properties == null ? null : properties.workspace();
+        Path workspace = configured == null ? Path.of(System.getProperty("user.home")) : configured;
+        try {
+            return Files.createDirectories(workspace.toAbsolutePath().normalize());
+        } catch (Exception ex) {
+            throw new IllegalStateException("Cannot create the in-process local executor workspace: " + workspace, ex);
+        }
+    }
+
+    @PreDestroy
+    void close() {
+        tools.close();
     }
 }

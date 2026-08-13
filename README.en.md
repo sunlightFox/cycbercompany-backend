@@ -1,10 +1,10 @@
-# Spring Agent Studio
+# CycberCompany
 
 [中文](README.md) | [English](README.en.md)
 
-Spring Agent Studio is a **local-first Java backend for AI agents**. It is a modular monolith that brings conversations, models, agents, tools, knowledge bases, Skills, MCP integrations, and local execution nodes into one Spring Boot process. Runs are durable, streamed over SSE, auditable, approval-aware, and designed for safe local development.
+CycberCompany is a **local-first Java backend for AI agents**. It is a modular monolith that brings conversations, models, agents, tools, knowledge bases, Skills, MCP integrations, and local execution nodes into one Spring Boot process. Runs are durable, streamed over SSE, auditable, approval-aware, and designed for safe local development.
 
-The companion frontend lives in a separate repository named `spring-agent-studio-web`.
+The companion frontend lives in a separate repository named `cycbercompany-web`.
 
 ## Highlights
 
@@ -74,7 +74,7 @@ Personal-local mode registers and starts the companion so an agent can use node 
 .\scripts\start-personal-local.ps1 -Workspace D:\work\my-project
 ```
 
-This expects the matching frontend checkout at `../spring-agent-studio-web`, starts the local stack, and publishes the backend at `http://127.0.0.1:8083`. Stop it with:
+This expects the matching frontend checkout at `../cycbercompany-web`, starts the local stack, and publishes the backend at `http://127.0.0.1:8083`. Stop it with:
 
 ```powershell
 .\scripts\stop-personal-local.ps1

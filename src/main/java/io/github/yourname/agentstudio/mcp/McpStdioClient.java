@@ -129,7 +129,7 @@ class McpStdioClient {
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("protocolVersion", "2024-11-05");
         params.put("capabilities", Map.of());
-        params.put("clientInfo", Map.of("name", "spring-agent-studio", "version", "0.0.1"));
+        params.put("clientInfo", Map.of("name", "cycbercompany", "version", "0.0.1"));
         session.request("initialize", params, STARTUP_TIMEOUT);
         session.notify("notifications/initialized", Map.of());
     }

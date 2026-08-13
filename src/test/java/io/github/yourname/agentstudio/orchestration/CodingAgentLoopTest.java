@@ -755,7 +755,7 @@ class CodingAgentLoopTest {
     }
 
     @Test
-    void usesStreamingToolTurnsWithoutPublishingPlanningTextAsFinalOutput() {
+    void streamsOnlyTheFinalDeliveryAfterToolTurnsComplete() {
         ModelGateway gateway = mock(ModelGateway.class);
         ToolRouter tools = mock(ToolRouter.class);
         RunEventPublisher events = mock(RunEventPublisher.class);
@@ -765,26 +765,36 @@ class CodingAgentLoopTest {
         when(gateway.stream(any(), any())).thenAnswer(invocation -> {
             @SuppressWarnings("unchecked")
             java.util.function.Consumer<String> onToken = invocation.getArgument(1);
-            onToken.accept("I will inspect the file first.");
             int turn = invocation.getArgument(0, ModelGateway.ModelCompletionRequest.class)
                     .messages().stream()
                     .mapToInt(message -> message.toolCalls() == null ? 0 : message.toolCalls().size())
                     .sum();
-            return turn == 0
-                    ? new ModelGateway.ModelAnswer(
-                            "I will inspect the file first.",
-                            null,
-                            null,
-                            "stream-model",
-                            List.of(new ModelGateway.ModelToolCall(
-                                    "stream-call-1", "node_tool_stream", Map.of("path", "README.md"))),
-                            "tool_calls")
-                    : new ModelGateway.ModelAnswer("The file was verified.", null, null, "stream-model");
+            boolean finalDelivery = invocation.getArgument(0, ModelGateway.ModelCompletionRequest.class)
+                    .tools().isEmpty();
+            if (turn == 0) {
+                onToken.accept("I will inspect the file first.");
+                return new ModelGateway.ModelAnswer(
+                        "I will inspect the file first.",
+                        null,
+                        null,
+                        "stream-model",
+                        List.of(new ModelGateway.ModelToolCall(
+                                "stream-call-1", "node_tool_stream", Map.of("path", "README.md"))),
+                        "tool_calls");
+            }
+            if (finalDelivery) {
+                onToken.accept("The file ");
+                onToken.accept("was verified.");
+                return new ModelGateway.ModelAnswer("The file was verified.", null, null, "stream-model");
+            }
+            onToken.accept("The file was verified.");
+            return new ModelGateway.ModelAnswer("The file was verified.", null, null, "stream-model");
         });
         when(tools.invoke(any())).thenReturn(new ToolProviderResult("SUCCEEDED", true, Map.of(), "", null));
         when(tools.cleanup("run-stream", actor)).thenReturn(List.of());
 
-        String answer = new CodingAgentLoop(gateway, tools, events).execute(
+        CodingAgentLoop loop = new CodingAgentLoop(gateway, tools, events);
+        String answer = loop.execute(
                 "run-stream",
                 "model-a",
                 List.of(declaredTool),
@@ -793,10 +803,13 @@ class CodingAgentLoopTest {
 
         assertThat(answer).isEqualTo("The file was verified.");
         verify(gateway, never()).complete(any());
-        verify(gateway, times(2)).stream(any(), any());
+        verify(gateway, times(3)).stream(any(), any());
         verify(tools).invoke(any());
-        // 编码循环不会把工具规划阶段的流式文字当成最终答案；外层 Run 服务只发布最终结果。
-        verify(events, never()).publish(eq("run-stream"), eq(RunEventType.TOKEN_DELTA), any(), eq(actor));
+        verify(events).publish("run-stream", RunEventType.TOKEN_DELTA, "The file was verified.", actor);
+        verify(events, never()).publish(
+                eq("run-stream"), eq(RunEventType.TOKEN_DELTA), eq("I will inspect the file first."), eq(actor));
+        assertThat(loop.consumeFinalAnswerStreamed("run-stream")).isTrue();
+        assertThat(loop.consumeFinalAnswerStreamed("run-stream")).isFalse();
     }
 
     @Test

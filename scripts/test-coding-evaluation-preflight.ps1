@@ -51,7 +51,7 @@ function Test-StudioBackend {
             throw "Model API returned no response."
         }
     } catch {
-        Stop-Preflight "Cannot reach an Agent Studio backend at $script:normalizedBaseUrl. $($_.Exception.Message)"
+        Stop-Preflight "Cannot reach a CycberCompany backend at $script:normalizedBaseUrl. $($_.Exception.Message)"
     }
 }
 
@@ -250,7 +250,7 @@ try {
     $models = @(Invoke-StudioJson -Method Get -Path "/api/v1/models")
     $settings = Invoke-StudioJson -Method Get -Path "/api/v1/models/settings"
 } catch {
-    Stop-Preflight "The healthy HTTP service does not expose the Agent Studio model API. $($_.Exception.Message)"
+    Stop-Preflight "The healthy HTTP service does not expose the CycberCompany model API. $($_.Exception.Message)"
 }
 
 $resolvedModelId = if ([string]::IsNullOrWhiteSpace($ModelProfileId)) { $settings.defaultModelProfileId } else { $ModelProfileId }

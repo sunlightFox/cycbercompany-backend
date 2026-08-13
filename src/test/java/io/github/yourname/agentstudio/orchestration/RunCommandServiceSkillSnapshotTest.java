@@ -36,6 +36,8 @@ import io.github.yourname.agentstudio.node.NodeConnectionView;
 import io.github.yourname.agentstudio.node.NodeDetailView;
 import io.github.yourname.agentstudio.node.NodeKind;
 import io.github.yourname.agentstudio.node.NodeStatus;
+import io.github.yourname.agentstudio.execution.ExecutionMode;
+import io.github.yourname.agentstudio.execution.ExecutionSettingsService;
 import io.github.yourname.agentstudio.security.ActorContext;
 import io.github.yourname.agentstudio.skill.SkillCatalog;
 import io.github.yourname.agentstudio.skill.SkillRunBinding;
@@ -870,6 +872,64 @@ class RunCommandServiceSkillSnapshotTest {
                 .contains("system.fs.list")
                 .contains("system.process.start")
                 .contains("\"executionMode\":\"NODE_INTERACTION\"");
+    }
+
+    @Test
+    void localModeStillQueuesAnActionWhenIntentRoutingModelIsTemporarilyUnavailable() {
+        ResolvedToolBinding localBinding = new ResolvedToolBinding(
+                "in_process_local:system.fs.list", "tool_system_fs_list", "system.fs.list",
+                "in_process_local", "system.fs.list", "List a local directory", RiskLevel.LOW, false,
+                Map.of("type", "object"), Map.of("target", "in-process-local"));
+        ExecutionSettingsService settings = mock(ExecutionSettingsService.class);
+        when(settings.mode(ACTOR)).thenReturn(ExecutionMode.PERSONAL_LOCAL);
+        service.configureExecutionSettings(settings);
+        service.configureExecutionIntentRouter(new ExecutionIntentRouter(request -> {
+            throw new IllegalStateException("router provider unavailable");
+        }, new ObjectMapper()));
+        when(skills.resolveForRun(List.of())).thenReturn(List.of());
+        when(skills.compileInstructions(List.of())).thenReturn("");
+        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of(localBinding));
+
+        CreateRunResponse response = service.create(new CreateRunCommand(
+                "conversation-1", "部署刚刚创建的游戏", "model-1", "agent-1",
+                List.of(), List.of(), List.of(), List.of(), null, null), ACTOR);
+
+        ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(runs).save(runCaptor.capture());
+        assertThat(response.status()).isEqualTo(RunStatus.QUEUED);
+        assertThat(runCaptor.getValue().runSpecJson())
+                .contains("in-process-local")
+                .contains("local-model-outage-fallback");
+    }
+
+    @Test
+    void continuationMessageInheritsThePreviousRunTargetWithoutReclassifyingIt() {
+        ResolvedToolBinding localBinding = new ResolvedToolBinding(
+                "in_process_local:system.fs.list", "tool_system_fs_list", "system.fs.list",
+                "in_process_local", "system.fs.list", "List a local directory", RiskLevel.LOW, false,
+                Map.of("type", "object"), Map.of("target", "in-process-local"));
+        when(skills.resolveForRun(List.of())).thenReturn(List.of());
+        when(skills.compileInstructions(List.of())).thenReturn("");
+        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of(localBinding));
+
+        service.create(new CreateRunCommand(
+                "conversation-1", "inspect the project", "model-1", "agent-1",
+                List.of(), List.of(), List.of(), List.of("system.fs.list"), "in-process-local", "."), ACTOR);
+        ArgumentCaptor<AgentRunEntity> firstCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(runs).save(firstCaptor.capture());
+        AgentRunEntity first = firstCaptor.getValue();
+        when(runs.findByConversationIdAndTenantIdOrderByCreatedAtAsc("conversation-1", ACTOR.tenantId()))
+                .thenReturn(List.of(first));
+
+        service.create(new CreateRunCommand(
+                "conversation-1", "继续", "model-1", "agent-1",
+                List.of(), List.of(), List.of(), List.of(), null, null), ACTOR);
+
+        ArgumentCaptor<AgentRunEntity> saved = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(runs, times(2)).save(saved.capture());
+        assertThat(saved.getAllValues().getLast().runSpecJson())
+                .contains("in-process-local")
+                .contains("system.fs.list");
     }
 
     @Test

@@ -37,7 +37,7 @@ import javax.swing.UIManager;
 final class NodeClientWindow {
 
     private static final String EMBEDDED_SERVER_URL = "http://127.0.0.1:8080";
-    private static final String EMBEDDED_NODE_NAME = "Agent Studio Windows Node";
+    private static final String EMBEDDED_NODE_NAME = "CycberCompany Windows Node";
 
     private static final Color PAGE = new Color(243, 246, 249);
     private static final Color SURFACE = Color.WHITE;
@@ -54,7 +54,7 @@ final class NodeClientWindow {
     private final HttpClient httpClient;
     private final NodeConfigStore configStore;
     private final WindowsLoginStartup windowsLoginStartup;
-    private final JFrame frame = new JFrame("Agent Studio Node");
+    private final JFrame frame = new JFrame("CycberCompany Node");
     private final JLabel statusDot = new JLabel("●");
     private final JLabel statusText = new JLabel("等待启动");
     private final JLabel statusDetail = new JLabel("节点尚未连接");
@@ -146,7 +146,7 @@ final class NodeClientWindow {
     private JPanel header() {
         JPanel panel = new JPanel(new BorderLayout(0, 5));
         panel.setOpaque(false);
-        JLabel title = new JLabel("Agent Studio Node");
+        JLabel title = new JLabel("CycberCompany Node");
         title.setFont(title.getFont().deriveFont(Font.BOLD, 24f));
         title.setForeground(TEXT);
         JLabel subtitle = new JLabel("Windows 节点客户端");

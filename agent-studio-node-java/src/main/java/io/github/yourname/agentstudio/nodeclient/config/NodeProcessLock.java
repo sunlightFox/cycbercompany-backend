@@ -51,7 +51,7 @@ public final class NodeProcessLock implements AutoCloseable {
 
     private static IllegalStateException alreadyRunning(Path lockPath) {
         return new IllegalStateException(
-                "Another Agent Studio node process is already running for this config: " + lockPath);
+                "Another CycberCompany node process is already running for this config: " + lockPath);
     }
 
     @Override

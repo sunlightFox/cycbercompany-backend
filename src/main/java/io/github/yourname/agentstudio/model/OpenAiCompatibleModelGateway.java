@@ -232,9 +232,11 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
             try (var reader = new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
                 StringBuilder data = new StringBuilder();
                 String line;
+                boolean stopped = false;
                 while ((line = reader.readLine()) != null) {
                     if (line.isEmpty()) {
                         if (consumeStreamEvent(data, state, onToken)) {
+                            stopped = true;
                             break;
                         }
                         data.setLength(0);
@@ -245,7 +247,13 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
                         data.append(line.substring(5).stripLeading());
                     }
                 }
-                consumeStreamEvent(data, state, onToken);
+                if (!stopped) {
+                    consumeStreamEvent(data, state, onToken);
+                }
+            }
+            if (!state.terminalSignalReceived) {
+                throw new ModelTransientException(
+                        "Model provider closed the stream before sending a completion signal.", null, null);
             }
             return new ModelAnswer(
                     state.content.toString(),
@@ -270,6 +278,7 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
             return false;
         }
         if ("[DONE]".contentEquals(data)) {
+            state.terminalSignalReceived = true;
             return true;
         }
         try {
@@ -290,8 +299,10 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
                 return false;
             }
             JsonNode choice = choices.get(0);
-            if (choice.hasNonNull("finish_reason")) {
+            boolean finished = choice.hasNonNull("finish_reason");
+            if (finished) {
                 state.finishReason = choice.get("finish_reason").asText();
+                state.terminalSignalReceived = true;
             }
             JsonNode content = choice.path("delta").get("content");
             if (content != null && !content.isNull()) {
@@ -304,7 +315,7 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
             // 工具调用与普通文本使用同一条 SSE 流，但它们不能混为 TOKEN_DELTA。
             // 组装器只保存协议字段，流结束后才把完整调用交给 CodingAgentLoop 执行。
             state.toolCalls.accept(choice.path("delta").get("tool_calls"));
-            return false;
+            return finished;
         } catch (Exception ex) {
             throw new ModelGatewayException("Model provider returned an invalid stream event.", ex);
         }
@@ -327,6 +338,7 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
         private Integer completionTokens;
         private String model;
         private String finishReason;
+        private boolean terminalSignalReceived;
     }
 
     private static Duration retryAfter(HttpHeaders headers) {

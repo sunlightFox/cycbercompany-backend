@@ -44,6 +44,7 @@ public record RunSpec(
         List<String> mcpConnectionIds,
         List<String> requestedToolNames,
         List<ResolvedToolBinding> toolBindings,
+        ExecutionIntentDecision executionIntentDecision,
         String nodeId,
         RunExecutionMode executionMode,
         String workingDirectory,
@@ -60,7 +61,7 @@ public record RunSpec(
         String userPersonaId,
         String userPersonaSnapshotJson) {
 
-    public static final int CURRENT_VERSION = 4;
+    public static final int CURRENT_VERSION = 5;
     public static final int MIN_SUPPORTED_VERSION = 1;
 
     public RunSpec {
@@ -90,6 +91,13 @@ public record RunSpec(
                 ? AgentApprovalPolicy.sessionOnly()
                 : agentApprovalPolicySnapshot;
         approvalMode = ApprovalMode.from(approvalMode).wireValue();
+        executionIntentDecision = executionIntentDecision == null
+                ? new ExecutionIntentDecision(
+                        nodeId == null || nodeId.isBlank() ? ExecutionIntent.CHAT : ExecutionIntent.LOCAL_EXECUTION,
+                        1.0d,
+                        "legacy-snapshot",
+                        "Execution intent was not captured by this snapshot version.")
+                : executionIntentDecision;
         executionMode = executionMode == null
                 ? RunExecutionMode.fromPersisted(nodeId, userText, workingDirectory, requestedToolNames)
                 : executionMode;
@@ -138,7 +146,7 @@ public record RunSpec(
                 agentManifestDigest, agentSystemPrompt, agentPromptDigest, agentToolAllowList,
                 agentMemoryPolicySnapshot, AgentApprovalPolicy.sessionOnly(), collaboratorBindings, skillBindings,
                 skillSnapshotDigest, skillInstructionsDigest, skillAnalyses, compatibilityReport, knowledgeBaseIds,
-                mcpConnectionIds, requestedToolNames, toolBindings, nodeId, executionMode, workingDirectory,
+                mcpConnectionIds, requestedToolNames, toolBindings, null, nodeId, executionMode, workingDirectory,
                 attachmentIds, attachmentContext, capabilityRevision, policyRevision, approvalMode, tenantId, userId,
                 actorRoles, actorScopes, memorySnapshots, userPersonaId, userPersonaSnapshotJson);
     }

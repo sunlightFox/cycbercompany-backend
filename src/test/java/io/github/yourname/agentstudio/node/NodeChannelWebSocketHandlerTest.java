@@ -2,6 +2,7 @@ package io.github.yourname.agentstudio.node;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.never;
@@ -58,6 +59,21 @@ class NodeChannelWebSocketHandlerTest {
 
         verify(sessions).unregister("node-123", session);
         verify(nodes, never()).markOffline(anyString());
+    }
+
+    @Test
+    void persistenceClosingDuringDisconnectDoesNotTurnShutdownIntoWebSocketError() {
+        NodeService nodes = mock(NodeService.class);
+        NodeSessionRegistry sessions = mock(NodeSessionRegistry.class);
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.getAttributes()).thenReturn(new java.util.HashMap<>(Map.of("nodeId", "node-123")));
+        doThrow(new IllegalStateException("EntityManagerFactory is closed")).when(nodes).markOffline("node-123");
+
+        new NodeChannelWebSocketHandler(nodes, sessions, new ObjectMapper())
+                .afterConnectionClosed(session, CloseStatus.NORMAL);
+
+        verify(sessions).unregister("node-123", session);
+        verify(nodes).markOffline("node-123");
     }
 
     @Test

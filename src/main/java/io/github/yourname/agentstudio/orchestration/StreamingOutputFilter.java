@@ -20,7 +20,10 @@ final class StreamingOutputFilter {
             new Block("<think>", "</think>"),
             new Block("<mm:think>", "</mm:think>"),
             new Block("<tool_call>", "</tool_call>"),
-            new Block("<tool_result>", "</tool_result>"));
+            new Block("<tool_result>", "</tool_result>"),
+            // MiniMax occasionally emits this internal marker as a standalone line.
+            // Treat the rest of that line as non-user-facing control output.
+            new Block("]<]minimax[>", "\n"));
 
     private final Consumer<String> onSafeText;
     private final StringBuilder pending = new StringBuilder();

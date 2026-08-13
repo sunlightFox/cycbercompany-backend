@@ -44,7 +44,7 @@ public class CurrentActorProvider {
                     Set.of("REMOTE_USER", "NODE_TOOL_APPROVER"),
                     Set.of("agent:run"));
         }
-        throw new AuthenticationCredentialsNotFoundException("No authenticated Agent Studio principal.");
+        throw new AuthenticationCredentialsNotFoundException("No authenticated CycberCompany principal.");
     }
 
     private static String firstForwardedAddress(String header) {

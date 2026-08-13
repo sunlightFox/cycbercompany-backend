@@ -25,10 +25,10 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 @OpenAPIDefinition(
         info = @Info(
-                title = "Spring Agent Studio API",
+                title = "CycberCompany API",
                 version = "0.0.1",
                 description = """
-                        Spring Agent Studio 后端接口文档。
+                        CycberCompany 后端接口文档。
 
                         学习顺序建议：
                         1. 先看 conversations 创建会话；
@@ -38,7 +38,7 @@ import org.springframework.context.annotation.Configuration;
 
                         本地 LOCAL 模式默认不需要 Token；远程 TOKEN 模式使用 Authorization: Bearer <token>。
                         """,
-                contact = @Contact(name = "Spring Agent Studio"),
+                contact = @Contact(name = "CycberCompany"),
                 license = @License(name = "Project local documentation")),
         servers = {
                 @Server(url = "http://127.0.0.1:8080", description = "默认本地开发地址"),

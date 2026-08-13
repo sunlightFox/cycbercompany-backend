@@ -62,8 +62,6 @@ import io.github.yourname.agentstudio.skill.SkillExperienceService;
 import io.github.yourname.agentstudio.skill.SkillPreflightCommand;
 import io.github.yourname.agentstudio.skill.SkillRepositoryService;
 import io.github.yourname.agentstudio.skill.SkillHubSkillService;
-import io.github.yourname.agentstudio.skill.SkillHubSkillView;
-import io.github.yourname.agentstudio.skill.SkillRepositoryView;
 import io.github.yourname.agentstudio.skill.UpdateSkillContentCommand;
 import io.github.yourname.agentstudio.skill.UpdateSkillCommand;
 import io.github.yourname.agentstudio.tool.ToolCatalog;
@@ -480,17 +478,12 @@ class AgentStudioController {
 
     @GetMapping("/skill-repositories")
     Object listCuratedSkillRepositories() {
-        return skillHubSkills.search(null, 100).stream().map(AgentStudioController::asRepositoryView).toList();
+        return skillRepositories.curated();
     }
 
     @PostMapping("/skill-repositories/search")
     Object searchSkillRepositories(@RequestBody SearchSkillRepositoriesCommand command) {
-        return skillHubSkills.search(command.query(), command.limit()).stream().map(AgentStudioController::asRepositoryView).toList();
-    }
-
-    private static SkillRepositoryView asRepositoryView(SkillHubSkillView skill) {
-        return new SkillRepositoryView(skill.id(), skill.name(), skill.description(), skill.url(), "latest",
-                (int) Math.min(Integer.MAX_VALUE, skill.downloads()), "SKILLHUB");
+        return skillRepositories.search(command);
     }
 
     @GetMapping("/skill-registries/clawhub/search")
@@ -954,14 +947,7 @@ class AgentStudioController {
         runQueries.get(id, actor);
         var emitter = new SseEmitter(0L);
         // SSE 支持断线续传：客户端带 Last-Event-ID 时，先补发遗漏事件，再注册实时推送。
-        for (var event : runEvents.replay(id, lastEventId == null ? 0 : lastEventId, actor)) {
-            emitter.send(SseEmitter.event().id(Long.toString(event.sequence())).name(event.type().name()).data(event));
-            if (runEvents.isTerminal(event.type())) {
-                emitter.complete();
-                return emitter;
-            }
-        }
-        runEvents.register(id, emitter);
+        runEvents.replayAndRegister(id, lastEventId == null ? 0 : lastEventId, actor, emitter);
         return emitter;
     }
 }

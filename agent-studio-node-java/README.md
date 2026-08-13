@@ -1,6 +1,6 @@
-# Agent Studio Java Node
+# CycberCompany Java Node
 
-Java 21 节点客户端，用于把本机电脑或服务器注册到 Agent Studio 后端。
+Java 21 节点客户端，用于把本机电脑或服务器注册到 CycberCompany 后端。
 
 当前版本已实现：
 

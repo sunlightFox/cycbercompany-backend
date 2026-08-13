@@ -20,7 +20,7 @@ if (-not (Test-AgentStudioAdministrator)) {
 Assert-AgentStudioWindowsUser -ExpectedUser $ExpectedWindowsUser
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$composeRoot = Join-Path (Split-Path -Parent $projectRoot) "spring-agent-studio-web"
+$composeRoot = Join-Path (Split-Path -Parent $projectRoot) "cycbercompany-web"
 $statePath = Join-Path $env:USERPROFILE ".agent-studio-node\personal-local.state.json"
 $launcherPort = 8094
 

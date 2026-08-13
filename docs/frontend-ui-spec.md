@@ -1,8 +1,8 @@
-# Spring Agent Studio 前端界面规范
+# CycberCompany 前端界面规范
 
 版本：1.0  
 状态：强制执行  
-适用范围：Spring Agent Studio 的 Web 前端、交互原型、组件和视觉资源
+适用范围：CycberCompany 的 Web 前端、交互原型、组件和视觉资源
 
 ## 1. 规范等级
 
@@ -16,7 +16,7 @@
 
 ## 2. 产品定位
 
-Spring Agent Studio 是面向个人和团队的数字员工工作台，不是传统客服聊天窗口，也不是以配置表格为中心的管理后台。
+CycberCompany 是面向个人和团队的数字员工工作台，不是传统客服聊天窗口，也不是以配置表格为中心的管理后台。
 
 前端 MUST 遵循以下优先级：
 

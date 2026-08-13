@@ -1,6 +1,6 @@
 spring:
   application:
-    name: spring-agent-studio
+    name: cycbercompany
   datasource:
     # A local data directory has one owning backend process. Allowing H2's
     # AUTO_SERVER mode here makes accidental second launches look supported,
@@ -8,6 +8,10 @@ spring:
     url: jdbc:h2:file:${APP_DATA_DIR:./data}/db/agent-studio;DB_CLOSE_ON_EXIT=FALSE
     username: sa
     password:
+    hikari:
+      # A transient database outage must fail the affected operation, not hang
+      # request threads indefinitely.
+      connection-timeout: ${SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT:10000}
   flyway:
     enabled: false
   h2:
@@ -99,18 +103,17 @@ app:
   run:
     timeout-seconds: 120
   persistence:
-    # H2 treats a storage panic as unrecoverable for the running JVM. Keep the
-    # process from serving partial failures forever: the service supervisor can
-    # restart it against the same durable database after consecutive failures.
-    watchdog-enabled: ${APP_PERSISTENCE_WATCHDOG_ENABLED:true}
+    # Disabled by default: a transient database fault must not stop the entire service.
+    # A supervised production deployment may explicitly enable it after configuring restart policy.
+    watchdog-enabled: ${APP_PERSISTENCE_WATCHDOG_ENABLED:false}
     watchdog-interval-ms: ${APP_PERSISTENCE_WATCHDOG_INTERVAL_MS:30000}
     watchdog-failure-threshold: ${APP_PERSISTENCE_WATCHDOG_FAILURE_THRESHOLD:2}
+    # H2 is single-writer. Fail a duplicate local backend immediately instead of waiting for Hikari.
+    local-lock-enabled: ${APP_PERSISTENCE_LOCAL_LOCK_ENABLED:true}
   local-executor:
-    # The backend owns one same-host executor by default. Set false only for a separate-node deployment.
+    # The backend owns one same-host in-process executor by default.
     enabled: ${APP_LOCAL_EXECUTOR_ENABLED:true}
     workspace: ${APP_LOCAL_EXECUTOR_WORKSPACE:${APP_DATA_DIR:./data}/workspace}
-    # Use the loopback proxy URL when the backend itself terminates TLS.
-    server-url: ${APP_LOCAL_EXECUTOR_SERVER_URL:}
   demos:
     video:
       # Video Demo private runtime. The platform core never executes remote
@@ -178,3 +181,33 @@ app:
         - TEXT
         - JSON_OUTPUT
         - TOOLS
+
+---
+# Container and cloud deployments use this profile. Keep it separate from the
+# local H2 defaults so local development remains zero-configuration.
+spring:
+  config:
+    activate:
+      on-profile: postgres
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://postgres:5432/agent_studio}
+    username: ${SPRING_DATASOURCE_USERNAME:agent_studio}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      connection-timeout: ${SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT:10000}
+      validation-timeout: 5000
+  h2:
+    console:
+      enabled: false
+  flyway:
+    # The project has no versioned schema yet. Hibernate creates the initial
+    # schema; introduce Flyway migrations before any schema-changing release.
+    enabled: false
+  jpa:
+    hibernate:
+      ddl-auto: update
+
+app:
+  persistence:
+    local-lock-enabled: false

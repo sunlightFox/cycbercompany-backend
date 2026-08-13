@@ -83,7 +83,7 @@ function Test-StudioBackend {
         $models = @(Invoke-StudioJson -Method Get -Path "/api/v1/models")
         if ($null -eq $models) { throw "Model API returned no response." }
     } catch {
-        Stop-SandboxSetup "Cannot reach an Agent Studio backend at $script:BaseUrl. $($_.Exception.Message)"
+        Stop-SandboxSetup "Cannot reach a CycberCompany backend at $script:BaseUrl. $($_.Exception.Message)"
     }
 }
 
@@ -92,7 +92,7 @@ $workspace = (Resolve-Path -LiteralPath $WorkingDirectory).Path.TrimEnd('\', '/'
 $root = [System.IO.Path]::GetPathRoot($workspace).TrimEnd('\', '/')
 if ([string]::IsNullOrWhiteSpace($workspace) -or $workspace -eq $root) { Stop-SandboxSetup "WorkingDirectory must be a dedicated child directory, never a drive root." }
 $markerPath = Join-Path $workspace ".agent-studio-evaluation-fixture"
-if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { Stop-SandboxSetup "WorkingDirectory is not an Agent Studio evaluation fixture: $workspace" }
+if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { Stop-SandboxSetup "WorkingDirectory is not a CycberCompany evaluation fixture: $workspace" }
 $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8
 if ($marker -notmatch ('(?m)^scenario={0}\r?$' -f [regex]::Escape($Scenario))) { Stop-SandboxSetup "Fixture marker scenario does not match the requested scenario." }
 $fixtureNodeLabel = Get-FixtureNodeLabel $workspace

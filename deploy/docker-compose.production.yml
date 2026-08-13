@@ -1,4 +1,21 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agent_studio}
+      POSTGRES_USER: ${POSTGRES_USER:-agent_studio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - studio
+
   backend:
     build:
       context: ./backend
@@ -6,14 +23,18 @@ services:
     image: agent-studio/backend:latest
     restart: unless-stopped
     environment:
-      SERVER_ADDRESS: 127.0.0.1
+      SERVER_ADDRESS: 0.0.0.0
       PORT: 8080
       APP_DATA_DIR: /data
+      SPRING_PROFILES_ACTIVE: postgres
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-agent_studio}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-agent_studio}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       APP_SECURITY_MODE: LOCAL
       APP_SECURITY_ALLOW_LOCAL_PROXY: "true"
       AGENT_STUDIO_API_TOKEN: ${AGENT_STUDIO_API_TOKEN:-}
       H2_CONSOLE_ENABLED: "false"
-      EDGEFN_API_KEY: ${A6API_API_KEY}
+      EDGEFN_API_KEY: ${EDGEFN_API_KEY:?Set EDGEFN_API_KEY in .env}
       EDGEFN_BASE_URL: ${A6API_BASE_URL:-https://a6api.com/v1}
       EDGEFN_MODEL: ${A6API_MODEL:-gpt-5.6-luna}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
@@ -21,6 +42,7 @@ services:
       - backend-data:/data
     ports:
       - "5173:5173"
+      - "127.0.0.1:8080:8080"
     networks:
       - studio
 
@@ -32,7 +54,8 @@ services:
     restart: unless-stopped
     network_mode: service:backend
     depends_on:
-      - backend
+      backend:
+        condition: service_started
 
   workspace-node:
     profiles: ["local-executor"]
@@ -48,18 +71,20 @@ services:
       AGENT_STUDIO_SKILL_RUNTIME: docker
       AGENT_STUDIO_API_TOKEN: ${AGENT_STUDIO_API_TOKEN:-}
     volumes:
-      - /opt/spring-agent-studio/workspace:/workspace
+      - /opt/cycbercompany/workspace:/workspace
       - node-config:/root/.agent-studio-node
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - backend
 
 volumes:
+  postgres-data:
+    name: cycbercompany_postgres-data
   backend-data:
-    name: spring-agent-studio_backend-data
+    name: cycbercompany_backend-data
   node-config:
-    name: spring-agent-studio_node-config
+    name: cycbercompany_node-config
 
 networks:
   studio:
-    name: spring-agent-studio_studio
+    name: cycbercompany_studio

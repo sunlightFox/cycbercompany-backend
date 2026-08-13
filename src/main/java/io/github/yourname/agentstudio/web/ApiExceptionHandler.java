@@ -10,6 +10,7 @@ import io.github.yourname.agentstudio.conversation.ConversationArchivedException
 import io.github.yourname.agentstudio.node.NodeToolApprovalConflictException;
 import io.github.yourname.agentstudio.node.LocalComputerControlNotReadyException;
 import io.github.yourname.agentstudio.execution.ExecutionModeChangeNotAllowedException;
+import io.github.yourname.agentstudio.orchestration.ExecutionIntentClarificationException;
 import io.github.yourname.agentstudio.skill.SkillCompatibilityException;
 import io.github.yourname.agentstudio.mod.ModInstallationRequiredException;
 import java.time.Instant;
@@ -117,6 +118,15 @@ class ApiExceptionHandler {
     ProblemDetail executionModeConflict(ExecutionModeChangeNotAllowedException ex) {
         var detail = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
         detail.setProperty("code", "EXECUTION_MODE_NOT_ALLOWED");
+        detail.setProperty("timestamp", Instant.now().toString());
+        return detail;
+    }
+
+    @ExceptionHandler(ExecutionIntentClarificationException.class)
+    ProblemDetail executionIntentClarification(ExecutionIntentClarificationException ex) {
+        var detail = ProblemDetail.forStatusAndDetail(HttpStatus.UNPROCESSABLE_ENTITY, ex.getMessage());
+        detail.setProperty("code", "EXECUTION_TARGET_CLARIFICATION_REQUIRED");
+        detail.setProperty("decision", ex.decision());
         detail.setProperty("timestamp", Instant.now().toString());
         return detail;
     }

@@ -37,6 +37,8 @@ import io.github.yourname.agentstudio.tool.WebSearchResponse;
 import io.github.yourname.agentstudio.tool.WebSearchResult;
 import io.github.yourname.agentstudio.tool.WebSearchTrace;
 import io.github.yourname.agentstudio.execution.InProcessLocalToolProvider;
+import io.github.yourname.agentstudio.execution.ExecutionMode;
+import io.github.yourname.agentstudio.execution.ExecutionSettingsService;
 import io.github.yourname.agentstudio.tool.CodingWorkspaceScope;
 import io.github.yourname.agentstudio.tool.ApprovalMode;
 import io.github.yourname.agentstudio.tool.AgentApprovalPolicy;
@@ -80,6 +82,8 @@ public class RunCommandService {
             Pattern.compile("(?is)<tool_call>.*?</tool_call>");
     private static final Pattern TOOL_RESULT_BLOCK =
             Pattern.compile("(?is)<tool_result>.*?</tool_result>");
+    private static final Pattern THINK_BLOCK =
+            Pattern.compile("(?is)<think>.*?</think>");
     private static final Pattern MM_THINK_BLOCK =
             Pattern.compile("(?is)<mm:think>.*?</mm:think>");
     private static final Pattern CITATION_REFERENCE =
@@ -117,6 +121,8 @@ public class RunCommandService {
     private AgentRuntimeDefinitionService agentRuntimeDefinitions;
     private MemoryRetrievalService memoryRetrieval;
     private MemoryCandidateService memoryCandidates;
+    private ExecutionIntentRouter executionIntentRouter;
+    private ExecutionSettingsService executionSettings;
     // 门禁是纯服务端规则，不接收客户端传来的“是否通过”标记。
     private final CodingDeliveryGate deliveryGate = new CodingDeliveryGate();
 
@@ -189,17 +195,21 @@ public class RunCommandService {
         this.memoryCandidates = memoryCandidates;
     }
 
+    @Autowired
+    void configureExecutionIntentRouter(ExecutionIntentRouter executionIntentRouter) {
+        this.executionIntentRouter = executionIntentRouter;
+    }
+
+    @Autowired
+    void configureExecutionSettings(ExecutionSettingsService executionSettings) {
+        this.executionSettings = executionSettings;
+    }
+
     @Transactional
     public CreateRunResponse create(CreateRunCommand command, ActorContext actor) {
-        command = resolveComputerControlTarget(command, actor);
         conversations.ensureWritable(command.conversationId(), actor);
+        command = inheritContinuationTarget(command, actor);
         ApprovalMode approvalMode = ApprovalMode.from(command.approvalMode());
-        RunExecutionMode executionMode = RunExecutionMode.from(command);
-        if (executionMode.usesNativeToolLoop()
-                && !InProcessLocalToolProvider.TARGET_ID.equals(command.nodeId())) {
-            nodes.validateExecutionTarget(command.nodeId(), actor);
-        }
-        CodingWorkspaceScope.from(command.workingDirectory());
         String agentId = blankToDefault(command.agentId(), "default-assistant");
         AgentRuntimeDefinition agent = resolveAgentRuntime(agentId, actor);
         UserPersonaContext persona = conversations.personaContext(command.conversationId(), actor);
@@ -230,6 +240,14 @@ public class RunCommandService {
         if (!model.enabled()) {
             throw new IllegalArgumentException("Model profile is disabled: " + modelId);
         }
+        ExecutionIntentDecision intentDecision = resolveExecutionIntent(command, modelId, actor);
+        command = resolveExecutionTarget(command, actor, intentDecision);
+        RunExecutionMode executionMode = RunExecutionMode.from(command);
+        if (executionMode.usesNativeToolLoop()
+                && !InProcessLocalToolProvider.TARGET_ID.equals(command.nodeId())) {
+            nodes.validateExecutionTarget(command.nodeId(), actor);
+        }
+        CodingWorkspaceScope.from(command.workingDirectory());
         if (agent.collaborators().stream().anyMatch(AgentCollaboratorRuntimeDefinition::asTool)
                 && !model.capabilities().contains(ModelCapability.TOOLS)) {
             throw new IllegalArgumentException(
@@ -301,7 +319,8 @@ public class RunCommandService {
                 "requestedSandboxLabels", command.nodeLabels() == null ? List.of() : command.nodeLabels(),
                 "approvalMode", approvalMode.wireValue(),
                 "agentApprovalPolicy", agent.approvalPolicy(),
-                "executionMode", executionMode.name())));
+                "executionMode", executionMode.name(),
+                "executionIntent", intentDecision)));
         RunSpec runSpec = new RunSpec(
                 RunSpec.CURRENT_VERSION,
                 command.conversationId(),
@@ -326,6 +345,7 @@ public class RunCommandService {
                 selectedMcpConnectionIds,
                 command.toolNames(),
                 toolBindings,
+                intentDecision,
                 command.nodeId(),
                 executionMode,
                 CodingWorkspaceScope.from(command.workingDirectory()).relativePath(),
@@ -499,20 +519,34 @@ public class RunCommandService {
     }
 
     private void executeQueued(String runId) {
-        AgentRunEntity persisted = runs.findById(runId)
-                .orElseThrow(() -> new IllegalArgumentException("Run not found: " + runId));
-        RunSpec spec = deserializeRunSpec(persisted);
-        ActorContext actor = spec.actor();
-        var queueKey = new ConversationRunQueue.QueueKey(actor.tenantId(), spec.conversationId());
-        if (!claimPersistentTask(runId)) {
-            releaseQueueSlotWhenTerminal(runId, actor, queueKey);
-            return;
-        }
+        AgentRunEntity persisted = null;
+        ActorContext actor = null;
+        ConversationRunQueue.QueueKey queueKey = null;
         try {
+            persisted = runs.findById(runId)
+                    .orElseThrow(() -> new IllegalArgumentException("Run not found: " + runId));
+            RunSpec spec = deserializeRunSpec(persisted);
+            actor = spec.actor();
+            queueKey = new ConversationRunQueue.QueueKey(actor.tenantId(), spec.conversationId());
+            if (!claimPersistentTask(runId)) {
+                releaseQueueSlotWhenTerminal(runId, actor, queueKey);
+                return;
+            }
             execute(runId, spec, actor);
+        } catch (Exception failure) {
+            if (persisted != null && actor != null) {
+                failUnlessCancelled(runId, failure, actor);
+            } else if (persisted != null) {
+                persisted.fail("Unable to start Run: " + safeFailureMessage(failure));
+                runs.save(persisted);
+            }
         } finally {
-            synchronizePersistentTask(runId, actor);
-            releaseQueueSlotWhenTerminal(runId, actor, queueKey);
+            if (actor != null) {
+                synchronizePersistentTask(runId, actor);
+            }
+            if (actor != null && queueKey != null) {
+                releaseQueueSlotWhenTerminal(runId, actor, queueKey);
+            }
         }
     }
 
@@ -654,6 +688,7 @@ public class RunCommandService {
                                 workspaceScope,
                                 approvalMode,
                                 spec.agentApprovalPolicySnapshot()));
+                streamedDeltas = codingAgentLoop.consumeFinalAnswerStreamed(runId);
                 events.publish(runId, RunEventType.STEP_COMPLETED, agentStep, actor);
             } else if (!spec.collaboratorBindings().isEmpty()) {
                 answerContent = executeCollaborativeConversation(
@@ -878,6 +913,7 @@ public class RunCommandService {
                             workspaceScope,
                             approvalMode,
                             spec.agentApprovalPolicySnapshot()));
+            boolean streamedDeltas = codingAgentLoop.consumeFinalAnswerStreamed(runId);
             events.publish(runId, RunEventType.STEP_COMPLETED, agentStep, actor);
             publishProgress(runId, "正在整理最终回答。", actor);
             answer = finalizeCodingDelivery(run, command, spec.executionMode(), answer, actor);
@@ -887,8 +923,10 @@ public class RunCommandService {
                     webResults,
                     answer,
                     actor);
-            for (String part : tokenBatches(answer)) {
-                events.publish(runId, RunEventType.TOKEN_DELTA, part, actor);
+            if (!streamedDeltas) {
+                for (String part : tokenBatches(answer)) {
+                    events.publish(runId, RunEventType.TOKEN_DELTA, part, actor);
+                }
             }
             conversations.append(run.conversationId(), MessageRole.ASSISTANT, answer, runId, actor);
             runs.save(run);
@@ -1243,6 +1281,11 @@ public class RunCommandService {
                         && run.status() != RunStatus.RUNNING
                         && run.status() != RunStatus.WAITING_APPROVAL)
                 .ifPresent(ignored -> queue.complete(queueKey, runId));
+    }
+
+    private static String safeFailureMessage(Exception failure) {
+        String message = failure == null || failure.getMessage() == null ? "Unknown failure" : failure.getMessage();
+        return message.substring(0, Math.min(1_000, message.length()));
     }
 
     /**
@@ -2308,7 +2351,77 @@ public class RunCommandService {
                 """);
     }
 
-    private CreateRunCommand resolveComputerControlTarget(CreateRunCommand command, ActorContext actor) {
+    private ExecutionIntentDecision resolveExecutionIntent(
+            CreateRunCommand command, String modelId, ActorContext actor) {
+        if (!isBlank(command.nodeId()) || (command.nodeLabels() != null && !command.nodeLabels().isEmpty())) {
+            return new ExecutionIntentDecision(ExecutionIntent.LOCAL_EXECUTION, 1.0d, "explicit-target",
+                    "The API request selected an execution target.");
+        }
+        if (executionIntentRouter != null) {
+            ExecutionIntentDecision decision = executionIntentRouter.decide(command.text(), modelId);
+            if (decision.intent() == ExecutionIntent.CLARIFY
+                    && "model-unavailable".equals(decision.source())
+                    && executionSettings != null
+                    && executionSettings.mode(actor) == ExecutionMode.PERSONAL_LOCAL) {
+                return new ExecutionIntentDecision(
+                        ExecutionIntent.LOCAL_EXECUTION,
+                        0.50d,
+                        "local-model-outage-fallback",
+                        "The local execution mode remains available while intent routing is temporarily unavailable.");
+            }
+            return decision;
+        }
+        // Compatibility for focused tests that construct RunCommandService without Spring.
+        if (requestsDesktopInspection(command.text()) || requestsInstalledSoftware(command.text())
+                || requestsDesktopProject(command.text()) || requestsLocalProject(command.text())
+                || requestsWindowsSystemOperation(command.text())) {
+            return new ExecutionIntentDecision(ExecutionIntent.LOCAL_EXECUTION, 0.75d, "legacy-fallback",
+                    "A legacy local execution pattern matched.");
+        }
+        return new ExecutionIntentDecision(ExecutionIntent.CHAT, 1.0d, "legacy-fallback", "No local execution signal.");
+    }
+
+    /**
+     * Preserves an established execution target for short continuation messages such as "continue".
+     * The carry-over is intentionally narrow: any explicit target, tool, workspace, or label on the
+     * new request wins, and only a previous Run in the same tenant/conversation can supply context.
+     */
+    private CreateRunCommand inheritContinuationTarget(CreateRunCommand command, ActorContext actor) {
+        if (!isContinuationMessage(command == null ? null : command.text())
+                || !isBlank(command.nodeId())
+                || !isBlank(command.workingDirectory())
+                || (command.toolNames() != null && !command.toolNames().isEmpty())
+                || (command.nodeLabels() != null && !command.nodeLabels().isEmpty())) {
+            return command;
+        }
+        List<AgentRunEntity> previous = runs.findByConversationIdAndTenantIdOrderByCreatedAtAsc(
+                command.conversationId(), actor.tenantId());
+        for (int index = previous.size() - 1; index >= 0; index--) {
+            AgentRunEntity candidate = previous.get(index);
+            try {
+                RunSpec spec = deserializeRunSpec(candidate);
+                if (isBlank(spec.nodeId())) {
+                    continue;
+                }
+                return new CreateRunCommand(
+                        command.conversationId(), command.text(), command.modelProfileId(), command.agentId(),
+                        command.knowledgeBaseIds(), command.skillIds(), command.mcpServerIds(),
+                        spec.requestedToolNames(), spec.nodeId(), spec.workingDirectory(), command.attachmentIds(),
+                        List.of(), command.approvalMode());
+            } catch (Exception ignored) {
+                // A malformed historical snapshot must not prevent a new user request from starting.
+            }
+        }
+        return command;
+    }
+
+    private static boolean isContinuationMessage(String text) {
+        String normalized = text == null ? "" : text.strip().toLowerCase(Locale.ROOT);
+        return normalized.matches("^(继续|继续执行|继续吧|继续做|再试|重试|恢复|接着做|修复它|继续修复|continue|resume|retry|try again|fix it)[。.!！ ]*$");
+    }
+
+    private CreateRunCommand resolveExecutionTarget(
+            CreateRunCommand command, ActorContext actor, ExecutionIntentDecision intentDecision) {
         List<String> requestedTools = normalizeComputerControlTools(command.toolNames());
         if ((requestedTools == null || requestedTools.isEmpty()) && requestsDesktopInspection(command.text())) {
             requestedTools = desktopInspectionToolSet();
@@ -2330,10 +2443,14 @@ public class RunCommandService {
         systemOperationRequested = systemOperationRequested || requestsWindowsSystemOperation(command.text());
         boolean labelsRequested = command.nodeLabels() != null && !command.nodeLabels().isEmpty();
         String resolvedNodeId;
+        if (intentDecision.intent() == ExecutionIntent.CLARIFY && isBlank(requestedNodeId) && !labelsRequested) {
+            throw new ExecutionIntentClarificationException(intentDecision);
+        }
         if (automaticNode && !systemOperationRequested) {
             // auto 仅能选择管理员明确标记的 SANDBOX。个人注册设备从不在这里出现。
             resolvedNodeId = nodes.resolveSandboxNodeId(command.nodeLabels(), requestedTools, actor);
-        } else if (automaticNode || (isBlank(requestedNodeId) && systemOperationRequested)) {
+        } else if (automaticNode || (isBlank(requestedNodeId)
+                && (systemOperationRequested || intentDecision.intent() == ExecutionIntent.LOCAL_EXECUTION))) {
             // 桌面/系统操作保留原有安全语义：多个个人设备时必须由用户显式选择。
             resolvedNodeId = InProcessLocalToolProvider.TARGET_ID;
         } else if (isBlank(requestedNodeId) && labelsRequested) {
@@ -2741,12 +2858,14 @@ public class RunCommandService {
         if (content == null || content.isBlank()) {
             return "";
         }
-        return MM_THINK_BLOCK.matcher(TOOL_RESULT_BLOCK.matcher(TOOL_CALL_BLOCK.matcher(content).replaceAll(""))
-                .replaceAll("")
-                .replace("<mm:think>", "")
-                .replace("</mm:think>", ""))
-                .replaceAll("")
-                .replaceAll("(?m)^\\s*\\]<\\]minimax\\[>.*$", "")
+        String cleaned = TOOL_CALL_BLOCK.matcher(content).replaceAll("");
+        cleaned = TOOL_RESULT_BLOCK.matcher(cleaned).replaceAll("");
+        cleaned = THINK_BLOCK.matcher(cleaned).replaceAll("");
+        cleaned = MM_THINK_BLOCK.matcher(cleaned).replaceAll("");
+        cleaned = cleaned.replace("<mm:think>", "").replace("</mm:think>", "");
+        cleaned = cleaned.replaceAll("(?is)<(?:think|mm:think)>.*$", "");
+        return cleaned
+                .replaceAll("(?m)\\]<\\]minimax\\[>[^\\r\\n]*(?:\\r?\\n|$)", "")
                 .replaceAll("\\n{3,}", "\n\n")
                 .trim();
     }
