@@ -47,6 +47,11 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
     // This applies to both response headers and the SSE body. A provider that accepts a request
     // but never emits another event must not leave an interactive coding run blocked indefinitely.
     private static final Duration READ_TIMEOUT = Duration.ofSeconds(45);
+    // Creating a JDK HttpClient creates a selector manager. Reuse one process-wide client so a
+    // burst of model calls, especially around provider rate limits, cannot accumulate threads.
+    private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder()
+            .connectTimeout(CONNECT_TIMEOUT)
+            .build();
 
     private final ModelProfileRepository profiles;
     private final RestClient.Builder restClientBuilder;
@@ -213,10 +218,7 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
                     .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
                     .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload)))
                     .build();
-            var response = HttpClient.newBuilder()
-                    .connectTimeout(CONNECT_TIMEOUT)
-                    .build()
-                    .send(httpRequest, HttpResponse.BodyHandlers.ofInputStream());
+            var response = HTTP_CLIENT.send(httpRequest, HttpResponse.BodyHandlers.ofInputStream());
             if (response.statusCode() == 429) {
                 throw new ModelRateLimitException(
                         "Model provider rate limited the request.",
@@ -433,10 +435,7 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
 
     private static JdkClientHttpRequestFactory timeoutRequestFactory() {
         // 连接超时和读取超时分开设置：前者限制建连，后者限制模型生成过程中长期无响应。
-        var client = HttpClient.newBuilder()
-                .connectTimeout(CONNECT_TIMEOUT)
-                .build();
-        var factory = new JdkClientHttpRequestFactory(client);
+        var factory = new JdkClientHttpRequestFactory(HTTP_CLIENT);
         factory.setReadTimeout(READ_TIMEOUT);
         return factory;
     }
