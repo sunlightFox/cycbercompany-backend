@@ -16,7 +16,8 @@ enum RunExecutionMode {
     CODING;
 
     static RunExecutionMode from(CreateRunCommand command) {
-        if (command == null || command.nodeId() == null || command.nodeId().isBlank()) {
+        if (command == null || command.nodeId() == null || command.nodeId().isBlank()
+                || "auto".equalsIgnoreCase(command.nodeId().trim())) {
             return CONVERSATIONAL;
         }
         return NODE_INTERACTION;

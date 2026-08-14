@@ -2549,28 +2549,13 @@ public class RunCommandService {
             return new ExecutionIntentDecision(ExecutionIntent.LOCAL_EXECUTION, 1.0d, "explicit-target",
                     "The API request selected an execution target.");
         }
-        if (executionIntentRouter != null) {
-            ExecutionIntentDecision decision = executionIntentRouter.decide(command.text(), modelId);
-            if (decision.intent() == ExecutionIntent.CLARIFY
-                    && "model-unavailable".equals(decision.source())
-                    && executionSettings != null
-                    && executionSettings.mode(actor) == ExecutionMode.PERSONAL_LOCAL) {
-                return new ExecutionIntentDecision(
-                        ExecutionIntent.LOCAL_EXECUTION,
-                        0.50d,
-                        "local-model-outage-fallback",
-                        "The local execution mode remains available while intent routing is temporarily unavailable.");
-            }
-            return decision;
-        }
-        // Compatibility for focused tests that construct RunCommandService without Spring.
-        if (requestsDesktopInspection(command.text()) || requestsInstalledSoftware(command.text())
-                || requestsDesktopProject(command.text()) || requestsLocalProject(command.text())
-                || requestsWindowsSystemOperation(command.text())) {
-            return new ExecutionIntentDecision(ExecutionIntent.LOCAL_EXECUTION, 0.75d, "legacy-fallback",
-                    "A legacy local execution pattern matched.");
-        }
-        return new ExecutionIntentDecision(ExecutionIntent.CHAT, 1.0d, "legacy-fallback", "No local execution signal.");
+        // Node execution is opt-in. Text classification and personal-local fallbacks must not
+        // silently select a machine or expose its tools for an ordinary chat request.
+        return new ExecutionIntentDecision(
+                ExecutionIntent.CHAT,
+                1.0d,
+                "no-explicit-target",
+                "No local or registered node was selected; run as conversation only.");
     }
 
     /**
@@ -2615,6 +2600,19 @@ public class RunCommandService {
     private CreateRunCommand resolveExecutionTarget(
             CreateRunCommand command, ActorContext actor, ExecutionIntentDecision intentDecision) {
         List<String> requestedTools = normalizeComputerControlTools(command.toolNames());
+        boolean labelsRequested = command.nodeLabels() != null && !command.nodeLabels().isEmpty();
+        boolean explicitNode = !isBlank(command.nodeId()) && !"auto".equalsIgnoreCase(command.nodeId().trim());
+        if (!explicitNode && !labelsRequested) {
+            // Keywords such as "create a game" never select a node implicitly.
+            if (isBlank(command.nodeId())) {
+                return command;
+            }
+            return new CreateRunCommand(
+                    command.conversationId(), command.text(), command.modelProfileId(), command.agentId(),
+                    command.knowledgeBaseIds(), command.skillIds(), command.mcpServerIds(), requestedTools,
+                    null, command.workingDirectory(), command.attachmentIds(), command.nodeLabels(),
+                    command.approvalMode());
+        }
         if ((requestedTools == null || requestedTools.isEmpty()) && requestsDesktopInspection(command.text())) {
             requestedTools = desktopInspectionToolSet();
         } else if ((requestedTools == null || requestedTools.isEmpty()) && requestsInstalledSoftware(command.text())) {
@@ -2639,7 +2637,6 @@ public class RunCommandService {
         systemOperationRequested = systemOperationRequested || requestsInstalledSoftware(command.text());
         systemOperationRequested = systemOperationRequested || requestsDesktopOperation(command.text());
         systemOperationRequested = systemOperationRequested || requestsWindowsSystemOperation(command.text());
-        boolean labelsRequested = command.nodeLabels() != null && !command.nodeLabels().isEmpty();
         String resolvedNodeId;
         if (intentDecision.intent() == ExecutionIntent.CLARIFY && isBlank(requestedNodeId) && !labelsRequested) {
             throw new ExecutionIntentClarificationException(intentDecision);

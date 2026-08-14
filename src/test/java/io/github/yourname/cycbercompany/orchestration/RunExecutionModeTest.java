@@ -44,6 +44,18 @@ class RunExecutionModeTest {
         assertThat(RunExecutionMode.CODING.requiresDeliveryGate()).isTrue();
     }
 
+    @Test
+    void ordinaryRequestsWithoutAnExplicitNodeStayConversational() {
+        assertThat(RunExecutionMode.from(command("Create a snake game", List.of(), null, null)))
+                .isEqualTo(RunExecutionMode.CONVERSATIONAL);
+    }
+
+    @Test
+    void automaticNodeMarkerDoesNotSelectAnExecutor() {
+        assertThat(RunExecutionMode.from(command("Create a snake game", List.of(), "auto", null)))
+                .isEqualTo(RunExecutionMode.CONVERSATIONAL);
+    }
+
     private static CreateRunCommand command(String text, List<String> tools, String nodeId, String workingDirectory) {
         return new CreateRunCommand(
                 "conversation-1", text, "model-1", "agent-1", List.of(), List.of(), List.of(), tools,

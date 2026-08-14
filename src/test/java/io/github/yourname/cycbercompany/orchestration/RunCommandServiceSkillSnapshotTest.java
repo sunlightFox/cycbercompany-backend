@@ -46,6 +46,7 @@ import io.github.yourname.cycbercompany.skill.SkillAnalyzer;
 import io.github.yourname.cycbercompany.skill.SkillCompatibilityService;
 import io.github.yourname.cycbercompany.skill.CompatibilityReport;
 import io.github.yourname.cycbercompany.tool.ToolRouter;
+import io.github.yourname.cycbercompany.tool.ToolDiscoveryRequest;
 import io.github.yourname.cycbercompany.tool.ResolvedToolBinding;
 import io.github.yourname.cycbercompany.tool.RiskLevel;
 import io.github.yourname.cycbercompany.tool.ToolProviderResult;
@@ -303,6 +304,24 @@ class RunCommandServiceSkillSnapshotTest {
                 .doesNotContain("node:node-1:shell.run");
         verify(agents, times(1)).get("agent-1");
         verify(toolRouter, times(1)).resolve(any(), any(), anyString());
+    }
+
+    @Test
+    void localLookingTextDoesNotSelectOrDiscoverANodeWithoutAnExplicitTarget() {
+        when(skills.resolveForRun(List.of())).thenReturn(List.of());
+        when(skills.compileInstructions(List.of())).thenReturn("");
+        service.create(commandWithText("Create a snake game on my desktop."), ACTOR);
+
+        ArgumentCaptor<ToolDiscoveryRequest> discovery = ArgumentCaptor.forClass(ToolDiscoveryRequest.class);
+        verify(toolRouter).resolve(discovery.capture(), any(), anyString());
+        assertThat(discovery.getValue().nodeId()).isNull();
+
+        ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(runs).save(runCaptor.capture());
+        assertThat(runCaptor.getValue().runSpecJson())
+                .contains("\"executionMode\":\"CONVERSATIONAL\"")
+                .doesNotContain("\"nodeId\":\"in-process-local\"");
+        verify(nodes, never()).validateExecutionTarget(anyString(), any());
     }
 
     @Test
@@ -795,7 +814,7 @@ class RunCommandServiceSkillSnapshotTest {
     }
 
     @Test
-    void createRoutesComputerControlToTheReadyNodeWithoutTextBasedToolFiltering() {
+    void computerControlTextDoesNotRouteToANodeWithoutAnExplicitSelection() {
         ResolvedToolBinding binding = new ResolvedToolBinding(
                 "node:node-system:system.desktop.organize.list",
                 "tool_system_desktop_organize_list",
@@ -818,7 +837,6 @@ class RunCommandServiceSkillSnapshotTest {
                 true,
                 Map.of("type", "object"),
                 Map.of("nodeId", "node-system"));
-        when(nodes.resolveComputerControlNodeId(ACTOR)).thenReturn("node-system");
         when(skills.resolveForRun(List.of())).thenReturn(List.of());
         when(skills.compileInstructions(List.of())).thenReturn("");
         when(nodes.get("node-system", ACTOR)).thenReturn(new NodeDetailView(
@@ -826,7 +844,7 @@ class RunCommandServiceSkillSnapshotTest {
                         "node-system", "My PC", "host", "Windows", "amd64", "test", NodeKind.REGISTERED, null,
                         Map.of(), Set.of(), true, NodeStatus.ONLINE, null, null, null),
                 List.of()));
-        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of(binding, wallpaper));
+        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of());
 
         service.create(new CreateRunCommand(
                 "conversation-1", "Organize my desktop", "model-1", "agent-1", List.of(), List.of(), List.of(),
@@ -835,16 +853,12 @@ class RunCommandServiceSkillSnapshotTest {
         ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
         verify(runs).save(runCaptor.capture());
         assertThat(runCaptor.getValue().runSpecJson())
-                .contains("node-system")
-                .contains("system.*")
-                .doesNotContain("computer:*")
-                .contains("system.desktop.organize.list")
-                .contains("system.desktop.set_wallpaper")
-                .contains("\"executionMode\":\"NODE_INTERACTION\"");
+                .doesNotContain("node-system", "in-process-local")
+                .contains("\"executionMode\":\"CONVERSATIONAL\"");
     }
 
     @Test
-    void createRoutesDesktopInspectionToTheInProcessLocalProviderWithReadOnlyTools() {
+    void desktopInspectionTextDoesNotSelectTheInProcessExecutor() {
         ResolvedToolBinding desktopList = new ResolvedToolBinding(
                 "node:node-system:system.desktop.organize.list",
                 "tool_system_desktop_organize_list",
@@ -869,7 +883,7 @@ class RunCommandServiceSkillSnapshotTest {
                 Map.of("nodeId", "node-system"));
         when(skills.resolveForRun(List.of())).thenReturn(List.of());
         when(skills.compileInstructions(List.of())).thenReturn("");
-        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of(desktopList, fsList));
+        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of());
 
         service.create(new CreateRunCommand(
                 "conversation-1", "\u684c\u9762\u6709\u4ec0\u4e48\u8f6f\u4ef6\uff1f", "model-1", "agent-1", List.of(), List.of(), List.of(),
@@ -878,14 +892,12 @@ class RunCommandServiceSkillSnapshotTest {
         ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
         verify(runs).save(runCaptor.capture());
         assertThat(runCaptor.getValue().runSpecJson())
-                .contains("in-process-local")
-                .contains("system.desktop.organize.list")
-                .contains("system.fs.list")
-                .contains("\"executionMode\":\"NODE_INTERACTION\"");
+                .doesNotContain("in-process-local")
+                .contains("\"executionMode\":\"CONVERSATIONAL\"");
     }
 
     @Test
-    void createRoutesAnExplicitLocalProjectPathToTheInProcessLocalProvider() {
+    void localProjectPathDoesNotSelectTheInProcessExecutor() {
         ResolvedToolBinding binding = new ResolvedToolBinding(
                 "node:node-system:system.fs.list",
                 "tool_system_fs_list",
@@ -899,7 +911,7 @@ class RunCommandServiceSkillSnapshotTest {
                 Map.of("nodeId", "node-system"));
         when(skills.resolveForRun(List.of())).thenReturn(List.of());
         when(skills.compileInstructions(List.of())).thenReturn("");
-        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of(binding));
+        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of());
 
         service.create(new CreateRunCommand(
                 "conversation-1", "Fix the backend project at D:\\ai\\spring-cycbercompany-backend and run its tests.",
@@ -908,14 +920,12 @@ class RunCommandServiceSkillSnapshotTest {
         ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
         verify(runs).save(runCaptor.capture());
         assertThat(runCaptor.getValue().runSpecJson())
-                .contains("in-process-local")
-                .contains("system.fs.list")
-                .contains("system.process.start")
-                .contains("\"executionMode\":\"NODE_INTERACTION\"");
+                .doesNotContain("in-process-local")
+                .contains("\"executionMode\":\"CONVERSATIONAL\"");
     }
 
     @Test
-    void localModeStillQueuesAnActionWhenIntentRoutingModelIsTemporarilyUnavailable() {
+    void unavailableIntentRouterDoesNotEnableTheLocalExecutor() {
         ResolvedToolBinding localBinding = new ResolvedToolBinding(
                 "in_process_local:system.fs.list", "tool_system_fs_list", "system.fs.list",
                 "in_process_local", "system.fs.list", "List a local directory", RiskLevel.LOW, false,
@@ -928,7 +938,7 @@ class RunCommandServiceSkillSnapshotTest {
         }, new ObjectMapper()));
         when(skills.resolveForRun(List.of())).thenReturn(List.of());
         when(skills.compileInstructions(List.of())).thenReturn("");
-        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of(localBinding));
+        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of());
 
         CreateRunResponse response = service.create(new CreateRunCommand(
                 "conversation-1", "部署刚刚创建的游戏", "model-1", "agent-1",
@@ -938,8 +948,8 @@ class RunCommandServiceSkillSnapshotTest {
         verify(runs).save(runCaptor.capture());
         assertThat(response.status()).isEqualTo(RunStatus.QUEUED);
         assertThat(runCaptor.getValue().runSpecJson())
-                .contains("in-process-local")
-                .contains("local-model-outage-fallback");
+                .doesNotContain("in-process-local", "local-model-outage-fallback")
+                .contains("\"executionMode\":\"CONVERSATIONAL\"");
     }
 
     @Test
