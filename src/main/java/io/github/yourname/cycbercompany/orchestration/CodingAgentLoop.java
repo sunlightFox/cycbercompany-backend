@@ -721,6 +721,10 @@ class CodingAgentLoop {
             if (!cleaned.startsWith("Tool execution completed. Result: {")) {
                 return cleaned;
             }
+            String summary = readableToolResult(cleaned.substring("Tool execution completed. Result: ".length()));
+            if (!summary.isBlank()) {
+                return summary;
+            }
         }
         for (int i = messages.size() - 1; i >= 0; i--) {
             ModelGateway.ModelMessage message = messages.get(i);
@@ -769,15 +773,26 @@ class CodingAgentLoop {
 
     private static String flattenResult(JsonNode result) {
         if (!result.isObject()) {
-            return "result=" + result.asText(result.toString());
+            return "result=" + truncateForSummary(result.asText(result.toString()));
         }
         List<String> fields = new ArrayList<>();
         result.fields().forEachRemaining(entry -> {
+            if ("content".equals(entry.getKey()) || "stdout".equals(entry.getKey()) || "stderr".equals(entry.getKey())) {
+                return;
+            }
             JsonNode value = entry.getValue();
             String rendered = value.isValueNode() ? value.asText() : value.toString();
-            fields.add(entry.getKey() + "=" + rendered);
+            fields.add(entry.getKey() + "=" + truncateForSummary(rendered));
         });
-        return String.join(", ", fields);
+        return fields.isEmpty() ? "result verified" : String.join(", ", fields);
+    }
+
+    private static String truncateForSummary(String value) {
+        if (value == null || value.isBlank()) {
+            return "";
+        }
+        int maximumCharacters = 500;
+        return value.length() <= maximumCharacters ? value : value.substring(0, maximumCharacters) + "...";
     }
 
     /**

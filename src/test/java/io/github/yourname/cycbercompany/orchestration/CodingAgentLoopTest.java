@@ -160,6 +160,44 @@ class CodingAgentLoopTest {
     }
 
     @Test
+    void turnsAnEchoedToolResultIntoASafeFinalSummary() {
+        ModelGateway gateway = mock(ModelGateway.class);
+        ToolRouter tools = mock(ToolRouter.class);
+        ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
+        ResolvedToolBinding read = binding("node_read", "fs.read");
+        when(gateway.complete(any()))
+                .thenReturn(new ModelGateway.ModelAnswer(
+                        "Reading the file.",
+                        null,
+                        null,
+                        "test",
+                        List.of(new ModelGateway.ModelToolCall(
+                                "call-read", "fs.read", Map.of("path", "snake/index.html"))),
+                        "tool_calls"))
+                .thenReturn(new ModelGateway.ModelAnswer(
+                        "Tool execution completed. Result: {\"status\":\"SUCCEEDED\",\"tool\":\"fs.read\","
+                                + "\"result\":{\"path\":\"snake/index.html\",\"content\":\"private file body\"}}",
+                        null,
+                        null,
+                        "test"));
+        when(tools.invoke(any())).thenReturn(new ToolProviderResult(
+                "SUCCEEDED", true, Map.of("path", "snake/index.html", "content", "private file body"), "", null));
+        when(tools.cleanup("run-echo", actor)).thenReturn(List.of());
+
+        String answer = new CodingAgentLoop(gateway, tools, mock(RunEventPublisher.class)).executeInteraction(
+                "run-echo",
+                "model-a",
+                List.of(read),
+                new ArrayList<>(List.of(new ModelGateway.ModelMessage("user", "Read snake/index.html"))),
+                actor,
+                io.github.yourname.cycbercompany.tool.CodingWorkspaceScope.from(null),
+                ApprovalMode.FULL_ACCESS);
+
+        assertThat(answer).isEqualTo("Verified tool result (fs.read): status=SUCCEEDED, path=snake/index.html");
+        assertThat(answer).doesNotContain("private file body");
+    }
+
+    @Test
     void explicitLocalActionRequiresAToolCallFromTheInProcessExecutor() {
         ModelGateway gateway = mock(ModelGateway.class);
         ToolRouter tools = mock(ToolRouter.class);
