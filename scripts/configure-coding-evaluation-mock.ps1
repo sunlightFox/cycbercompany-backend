@@ -16,7 +16,7 @@ if ([string]::IsNullOrWhiteSpace($normalizedProviderUrl)) { throw "ProviderBaseU
 
 function Invoke-StudioJson {
     param([string]$Method, [string]$Path, [object]$Body = $null)
-    Invoke-StudioJsonUtf8 -BaseUrl $normalizedBaseUrl -Method $Method -Path $Path -Body $Body -ApiToken $env:AGENT_STUDIO_API_TOKEN
+    Invoke-StudioJsonUtf8 -BaseUrl $normalizedBaseUrl -Method $Method -Path $Path -Body $Body -ApiToken $env:CYCBERCOMPANY_API_TOKEN
 }
 
 $profile = Invoke-StudioJson -Method Post -Path "/api/v1/models" -Body @{

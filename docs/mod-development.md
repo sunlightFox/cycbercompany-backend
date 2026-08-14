@@ -31,7 +31,7 @@ my-mod/
   ],
   "memorySchemas": ["media_progress", "watch_history"],
   "permissions": ["network.media-source", "media.playback"],
-  "runtime": {"protocol": "agentstudio.media.v1", "isolation": "process"}
+  "runtime": {"protocol": "cycbercompany.media.v1", "isolation": "process"}
 }
 ```
 

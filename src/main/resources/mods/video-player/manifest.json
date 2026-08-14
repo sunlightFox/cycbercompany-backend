@@ -9,7 +9,7 @@
   "permissions": ["network.media-source", "media.playback", "subtitle.read"],
   "sourceAdapters": ["tvbox", "rss", "custom-api"],
   "runtime": {
-    "protocol": "agentstudio.media.v1",
+    "protocol": "cycbercompany.media.v1",
     "isolation": "process",
     "entry": "scripts/tvbox-runtime-worker.py",
     "requiresApprovedAdapter": true

@@ -1,0 +1,8 @@
+[Unit]
+Description=Spring Agent Studio readiness probe
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=-/etc/spring-agent-studio.env
+ExecStart=/usr/local/lib/spring-agent-studio/healthcheck.sh spring-agent-studio

@@ -109,7 +109,7 @@ def normalize(request: dict[str, Any], response: dict[str, Any]) -> dict[str, An
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AgentStudioMediaRuntime/1.0"
+    server_version = "CycberCompanyMediaRuntime/1.0"
 
     def do_GET(self) -> None:
         if self.path == "/health":
@@ -165,7 +165,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Agent Studio isolated TVBox media runtime bridge")
+    parser = argparse.ArgumentParser(description="CycberCompany isolated TVBox media runtime bridge")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18120)
     args = parser.parse_args()

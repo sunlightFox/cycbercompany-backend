@@ -17,7 +17,7 @@ $base = $BaseUrl.Trim().TrimEnd("/")
 $workspace = [System.IO.Path]::GetFullPath($WorkingDirectory).TrimEnd("\", "/")
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $fixtureRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot ".tmp-coding-evaluation-fixtures"))
-$marker = Join-Path $workspace ".agent-studio-evaluation-fixture"
+$marker = Join-Path $workspace ".cycbercompany-evaluation-fixture"
 
 if (-not (Test-Path -LiteralPath $workspace -PathType Container)) {
     throw "WorkingDirectory does not exist: $workspace"
@@ -36,7 +36,7 @@ function Invoke-Studio {
         [object]$Body = $null,
         [int]$TimeoutSeconds = 120
     )
-    Invoke-StudioJsonUtf8 -BaseUrl $base -Method $Method -Path $Path -Body $Body -ApiToken $env:AGENT_STUDIO_API_TOKEN -TimeoutSeconds $TimeoutSeconds
+    Invoke-StudioJsonUtf8 -BaseUrl $base -Method $Method -Path $Path -Body $Body -ApiToken $env:CYCBERCOMPANY_API_TOKEN -TimeoutSeconds $TimeoutSeconds
 }
 
 function Invoke-NodeTool {

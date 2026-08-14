@@ -20,7 +20,7 @@ $ErrorActionPreference = "Stop"
 $Server = $Server.TrimEnd("/")
 $Workspace = [System.IO.Path]::GetFullPath($Workspace)
 $ProjectRoot = [System.IO.Path]::GetFullPath($ProjectRoot)
-$configDir = Join-Path $env:USERPROFILE ".agent-studio-node"
+$configDir = Join-Path $env:USERPROFILE ".cycbercompany-node"
 $configPath = Join-Path $configDir "local-executor.json"
 $listener = [System.Net.HttpListener]::new()
 $listener.Prefixes.Add("http://127.0.0.1:$Port/")
@@ -79,9 +79,9 @@ function Read-RequestBody {
     }
 }
 
-function Resolve-AgentStudioApiToken {
+function Resolve-CycberCompanyApiToken {
     foreach ($scope in @("Process", "User", "Machine")) {
-        $value = [Environment]::GetEnvironmentVariable("AGENT_STUDIO_API_TOKEN", $scope)
+        $value = [Environment]::GetEnvironmentVariable("CYCBERCOMPANY_API_TOKEN", $scope)
         if (-not [string]::IsNullOrWhiteSpace($value)) {
             return $value.Trim()
         }
@@ -89,22 +89,22 @@ function Resolve-AgentStudioApiToken {
     return ""
 }
 
-$script:agentStudioApiToken = Resolve-AgentStudioApiToken
-if (-not [string]::IsNullOrWhiteSpace($script:agentStudioApiToken)) {
-    [Environment]::SetEnvironmentVariable("AGENT_STUDIO_API_TOKEN", $script:agentStudioApiToken, "Process")
+$script:cycberCompanyApiToken = Resolve-CycberCompanyApiToken
+if (-not [string]::IsNullOrWhiteSpace($script:cycberCompanyApiToken)) {
+    [Environment]::SetEnvironmentVariable("CYCBERCOMPANY_API_TOKEN", $script:cycberCompanyApiToken, "Process")
 }
 
-function Get-AgentStudioApiHeaders {
-    if ([string]::IsNullOrWhiteSpace($script:agentStudioApiToken)) {
+function Get-CycberCompanyApiHeaders {
+    if ([string]::IsNullOrWhiteSpace($script:cycberCompanyApiToken)) {
         return @{}
     }
-    return @{ Authorization = "Bearer $script:agentStudioApiToken" }
+    return @{ Authorization = "Bearer $script:cycberCompanyApiToken" }
 }
 
 function Test-NodeOnline {
     try {
         $nodes = Invoke-RestMethod -UseBasicParsing -TimeoutSec 3 `
-            -Headers (Get-AgentStudioApiHeaders) `
+            -Headers (Get-CycberCompanyApiHeaders) `
             -Uri "$($Server.TrimEnd('/'))/api/v1/nodes"
         $items = $nodes
         if ($null -ne $nodes.PSObject.Properties["value"]) {
@@ -155,28 +155,28 @@ function Start-LocalNode {
     New-Item -ItemType Directory -Force -Path $configDir | Out-Null
     $apiTokenHandoffFile = $null
     $startedProcess = $false
-    $expectedWindowsUser = if (Test-AgentStudioAdministrator) { $null } else { Get-AgentStudioWindowsUserName }
+    $expectedWindowsUser = if (Test-CycberCompanyAdministrator) { $null } else { Get-CycberCompanyWindowsUserName }
     try {
-        if (-not (Test-AgentStudioAdministrator) -and -not [string]::IsNullOrWhiteSpace($script:agentStudioApiToken)) {
-            $apiTokenHandoffFile = New-AgentStudioSecretHandoffFile `
-                -Value $script:agentStudioApiToken `
-                -NamePrefix "agent-studio-api-token"
+        if (-not (Test-CycberCompanyAdministrator) -and -not [string]::IsNullOrWhiteSpace($script:cycberCompanyApiToken)) {
+            $apiTokenHandoffFile = New-CycberCompanySecretHandoffFile `
+                -Value $script:cycberCompanyApiToken `
+                -NamePrefix "cycbercompany-api-token"
         }
         $bootstrapCommand = @()
         if (-not [string]::IsNullOrWhiteSpace($expectedWindowsUser) -or -not [string]::IsNullOrWhiteSpace($apiTokenHandoffFile)) {
-            $bootstrapCommand += ". $(ConvertTo-AgentStudioPowerShellLiteral (Join-Path $PSScriptRoot "windows-elevation.ps1"))"
+            $bootstrapCommand += ". $(ConvertTo-CycberCompanyPowerShellLiteral (Join-Path $PSScriptRoot "windows-elevation.ps1"))"
         }
         if (-not [string]::IsNullOrWhiteSpace($expectedWindowsUser)) {
-            $bootstrapCommand += "Assert-AgentStudioWindowsUser -ExpectedUser $(ConvertTo-AgentStudioPowerShellLiteral $expectedWindowsUser)"
+            $bootstrapCommand += "Assert-CycberCompanyWindowsUser -ExpectedUser $(ConvertTo-CycberCompanyPowerShellLiteral $expectedWindowsUser)"
         }
         if (-not [string]::IsNullOrWhiteSpace($apiTokenHandoffFile)) {
-            $bootstrapCommand += "`$apiTokenFile = $(ConvertTo-AgentStudioPowerShellLiteral $apiTokenHandoffFile)"
-            $bootstrapCommand += "`$apiToken = Read-AgentStudioSecretHandoffFile -Path `$apiTokenFile"
-            $bootstrapCommand += "if (-not [string]::IsNullOrWhiteSpace(`$apiToken)) { [Environment]::SetEnvironmentVariable('AGENT_STUDIO_API_TOKEN', `$apiToken, 'Process') }"
+            $bootstrapCommand += "`$apiTokenFile = $(ConvertTo-CycberCompanyPowerShellLiteral $apiTokenHandoffFile)"
+            $bootstrapCommand += "`$apiToken = Read-CycberCompanySecretHandoffFile -Path `$apiTokenFile"
+            $bootstrapCommand += "if (-not [string]::IsNullOrWhiteSpace(`$apiToken)) { [Environment]::SetEnvironmentVariable('CYCBERCOMPANY_API_TOKEN', `$apiToken, 'Process') }"
         }
         $arguments = "start-local --server $Server --workspace `"$NodeWorkspace`" --config `"$configPath`""
         $gradleArgs = "--args=$arguments"
-        $bootstrapCommand += "& $(ConvertTo-AgentStudioPowerShellLiteral $gradle) --no-daemon ':agent-studio-node-java:run' $(ConvertTo-AgentStudioPowerShellLiteral $gradleArgs)"
+        $bootstrapCommand += "& $(ConvertTo-CycberCompanyPowerShellLiteral $gradle) --no-daemon ':cycbercompany-node-java:run' $(ConvertTo-CycberCompanyPowerShellLiteral $gradleArgs)"
         $command = $bootstrapCommand -join "; "
         $startParameters = @{
             FilePath = "powershell.exe"
@@ -185,7 +185,7 @@ function Start-LocalNode {
             WindowStyle = "Hidden"
             PassThru = $true
         }
-        if (-not (Test-AgentStudioAdministrator)) {
+        if (-not (Test-CycberCompanyAdministrator)) {
             $startParameters.Verb = "RunAs"
         }
         $process = Start-Process @startParameters
@@ -221,7 +221,7 @@ try {
                     $online = Test-NodeOnline
                     $startupProcess = if ($online) { $null } else { Get-StartupProcess }
                     Write-JsonResponse $context 200 @{
-                        service = "agent-studio-local-executor-launcher"
+                        service = "cycbercompany-local-executor-launcher"
                         pid = $PID
                         port = $Port
                         server = $Server
@@ -231,7 +231,7 @@ try {
                         online = $online
                         starting = $null -ne $startupProcess
                         startupPid = if ($null -ne $startupProcess) { $startupProcess.Id } else { $null }
-                        elevated = (Test-AgentStudioAdministrator)
+                        elevated = (Test-CycberCompanyAdministrator)
                     }
                     continue
                 }
@@ -246,7 +246,7 @@ try {
                         Write-JsonResponse $context 200 @{
                             started = $false
                             online = $true
-                            elevated = (Test-AgentStudioAdministrator)
+                            elevated = (Test-CycberCompanyAdministrator)
                             message = "Local executor is already online."
                         }
                         continue
@@ -257,7 +257,7 @@ try {
                             started = $false
                             starting = $true
                             online = $false
-                            elevated = (Test-AgentStudioAdministrator)
+                            elevated = (Test-CycberCompanyAdministrator)
                             pid = $startupProcess.Id
                             message = "Local executor is already starting."
                         }
@@ -270,7 +270,7 @@ try {
                         started = $true
                         starting = $true
                         online = $false
-                        elevated = (Test-AgentStudioAdministrator)
+                        elevated = (Test-CycberCompanyAdministrator)
                         pid = $process.Id
                         message = "Local executor is starting with an administrator token."
                     }

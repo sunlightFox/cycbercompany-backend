@@ -1,4 +1,4 @@
-# Spring Agent Studio 最终实现蓝图
+# CycberCompany 最终实现蓝图
 
 > 状态：Final  
 > 目标：按企业架构标准实现，同时保留本地一条命令启动能力。
@@ -52,8 +52,8 @@ flowchart LR
 ## 3. 最终一级模块
 
 ```text
-io.github.yourname.agentstudio
-├── AgentStudioApplication.java
+io.github.yourname.cycbercompany
+├── CycberCompanyApplication.java
 ├── security
 ├── conversation
 ├── agent
@@ -135,14 +135,14 @@ agent      -X-> orchestration
 @org.springframework.modulith.ApplicationModule(
         allowedDependencies = {"security", "model"}
 )
-package io.github.yourname.agentstudio.knowledge;
+package io.github.yourname.cycbercompany.knowledge;
 ```
 
 知识库扩展接口使用 Named Interface：
 
 ```java
 @org.springframework.modulith.NamedInterface("spi")
-package io.github.yourname.agentstudio.knowledge.spi;
+package io.github.yourname.cycbercompany.knowledge.spi;
 ```
 
 MCP 模块允许依赖：
@@ -156,7 +156,7 @@ MCP 模块允许依赖：
                 "knowledge :: spi"
         }
 )
-package io.github.yourname.agentstudio.mcp;
+package io.github.yourname.cycbercompany.mcp;
 ```
 
 模块测试：
@@ -166,7 +166,7 @@ class ModularityTests {
 
     @Test
     void verifiesModuleBoundaries() {
-        ApplicationModules.of(AgentStudioApplication.class).verify();
+        ApplicationModules.of(CycberCompanyApplication.class).verify();
     }
 }
 ```

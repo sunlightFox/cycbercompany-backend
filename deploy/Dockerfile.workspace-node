@@ -1,5 +1,5 @@
-FROM agent-studio/workspace-node:latest
+FROM cycbercompany/workspace-node:latest
 WORKDIR /app
-COPY release-artifacts/node/ /opt/agent-studio-node/
-RUN mkdir -p /workspace /root/.agent-studio-node/data
-VOLUME ["/workspace", "/root/.agent-studio-node"]
+COPY release-artifacts/node/ /opt/cycbercompany-node/
+RUN mkdir -p /workspace /root/.cycbercompany-node/data
+VOLUME ["/workspace", "/root/.cycbercompany-node"]

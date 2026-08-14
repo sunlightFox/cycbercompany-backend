@@ -103,7 +103,7 @@ def build_engine_request(request: dict[str, Any], config: dict[str, Any], digest
     if not selected:
         raise ValueError("No csp_* source was selected.")
     return {
-        "protocol": "agentstudio.tvbox.engine.v1",
+        "protocol": "cycbercompany.tvbox.engine.v1",
         "operation": request.get("operation"),
         "query": request.get("query"),
         "mediaId": request.get("mediaId"),
@@ -124,7 +124,7 @@ def call_engine(payload: dict[str, Any], timeout: int = DEFAULT_ENGINE_TIMEOUT) 
     request = urllib.request.Request(endpoint, data=body, method="POST", headers={
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "User-Agent": "AgentStudio-VideoDemo-TVBoxAdapter/1.0",
+        "User-Agent": "CycberCompany-VideoDemo-TVBoxAdapter/1.0",
     })
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -149,7 +149,7 @@ def adapt(request: dict[str, Any], config_path: pathlib.Path) -> dict[str, Any]:
                 return {"status": "DOWN", "ready": False,
                         "message": "Video Demo TVBox engine endpoint is not configured."}
             engine = call_engine({
-                "protocol": "agentstudio.tvbox.engine.v1",
+                "protocol": "cycbercompany.tvbox.engine.v1",
                 "operation": HEALTH_OPERATION,
                 "configDigest": digest,
                 "sources": compatible,

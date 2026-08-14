@@ -1,4 +1,4 @@
-﻿param(
+param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("minimal-full-stack", "failed-test-minimal-fix", "split-frontend-backend", "existing-repository-feature", "long-task-recovery")]
     [string]$Scenario,
@@ -26,7 +26,7 @@ function Invoke-StudioJson {
         [object]$Body = $null
     )
 
-    return Invoke-StudioJsonUtf8 -BaseUrl $script:normalizedBaseUrl -Method $Method -Path $Path -Body $Body -ApiToken $env:AGENT_STUDIO_API_TOKEN
+    return Invoke-StudioJsonUtf8 -BaseUrl $script:normalizedBaseUrl -Method $Method -Path $Path -Body $Body -ApiToken $env:CYCBERCOMPANY_API_TOKEN
 }
 
 function Stop-Preflight {
@@ -221,7 +221,7 @@ if ([string]::IsNullOrWhiteSpace($script:normalizedBaseUrl)) {
 }
 
 $safeWorkingDirectory = Resolve-SafeWorkingDirectory $WorkingDirectory
-$markerPath = Join-Path $safeWorkingDirectory ".agent-studio-evaluation-fixture"
+$markerPath = Join-Path $safeWorkingDirectory ".cycbercompany-evaluation-fixture"
 if ($RequireFixtureMarker -and -not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
     Stop-Preflight "WorkingDirectory is not a fixture created by new-coding-evaluation-fixture.ps1: $safeWorkingDirectory"
 }

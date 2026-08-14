@@ -1,0 +1,21 @@
+[Unit]
+Description=CycberCompany Managed Local Executor
+After=network-online.target nginx.service spring-agent-studio.service
+Wants=network-online.target
+Requires=spring-agent-studio.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/spring-agent-studio-backend
+EnvironmentFile=-/etc/spring-agent-studio-node.env
+ExecStart=/opt/agent-studio-node/bin/cycbercompany-node-java start-local --server https://127.0.0.1:8080 --workspace /opt/spring-agent-studio-backend --config /var/lib/agent-studio-node/local-executor.json
+Restart=always
+RestartSec=5
+SuccessExitStatus=143
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

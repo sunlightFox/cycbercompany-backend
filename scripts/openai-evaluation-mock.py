@@ -195,7 +195,7 @@ def plan(request: dict[str, Any]) -> tuple[str | None, dict[str, Any], str]:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AgentStudioEvaluationMock/1.0"
+    server_version = "CycberCompanyEvaluationMock/1.0"
 
     def log_message(self, format: str, *args: object) -> None:
         sys.stderr.write((format % args) + "\n")

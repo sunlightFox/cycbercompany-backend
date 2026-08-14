@@ -45,10 +45,10 @@ GET /api/v1/runs/{runId}/workflow
 ```powershell
 $fixture = .\scripts\new-coding-evaluation-fixture.ps1 `
   -Scenario failed-test-minimal-fix `
-  -WorkspaceRoot D:\agent-studio-evaluation | Select-Object -Last 1
+  -WorkspaceRoot D:\cycbercompany-evaluation | Select-Object -Last 1
 ```
 
-创建脚本会写入一个无敏感数据的 `.agent-studio-evaluation-fixture` 标记。独立预检脚本会检查该标记、后端健康状态、模型能力和节点工具；它默认不调用模型，因此不会额外消耗额度。需要在开始五场景评测前确认真实模型连通性时，再显式增加 `-ProbeModel`：
+创建脚本会写入一个无敏感数据的 `.cycbercompany-evaluation-fixture` 标记。独立预检脚本会检查该标记、后端健康状态、模型能力和节点工具；它默认不调用模型，因此不会额外消耗额度。需要在开始五场景评测前确认真实模型连通性时，再显式增加 `-ProbeModel`：
 
 ```powershell
 .\scripts\test-coding-evaluation-preflight.ps1 `
@@ -69,7 +69,7 @@ Run 并调用模型。仅排查夹具或节点环境时，才使用 `-SkipModelP
 若本地尚未有隔离节点，可先从构建产物启动一个只访问该 Fixture 的 `SANDBOX` 节点：
 
 ```powershell
-.\gradlew.bat :agent-studio-node-java:installDist
+.\gradlew.bat :cycbercompany-node-java:installDist
 
 .\scripts\start-coding-evaluation-sandbox.ps1 `
   -Scenario failed-test-minimal-fix `

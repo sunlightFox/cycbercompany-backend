@@ -2,7 +2,7 @@
   "id": "video-demo-tvbox-compat",
   "version": "0.1.0",
   "entrypoint": "scripts/tvbox-compatible-adapter.py",
-  "protocol": "agentstudio.tvbox.engine.v1",
+  "protocol": "cycbercompany.tvbox.engine.v1",
   "operations": ["media.search", "media.resolvePlayback"],
   "sourceSelectors": {
     "csp_App99Guard": ["视界"]

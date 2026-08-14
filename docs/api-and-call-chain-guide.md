@@ -34,7 +34,7 @@ http://127.0.0.1:8083/v3/api-docs
 `Authorize` 中填写：
 
 ```text
-Bearer <AGENT_STUDIO_API_TOKEN>
+Bearer <CYCBERCOMPANY_API_TOKEN>
 ```
 
 ## 2. Swagger 分组怎么看
@@ -62,7 +62,7 @@ Swagger 适合回答三个问题：
 ```mermaid
 sequenceDiagram
     actor User as 用户或前端
-    participant API as AgentStudioController
+    participant API as CycberCompanyController
     participant Actor as CurrentActorProvider
     participant Conversation as ConversationService
     participant Run as RunCommandService
@@ -96,13 +96,13 @@ sequenceDiagram
 
 | 步骤 | 文件 |
 |---|---|
-| HTTP 入口 | `src/main/java/io/github/yourname/agentstudio/web/AgentStudioController.java` |
-| 当前用户/租户 | `src/main/java/io/github/yourname/agentstudio/security/CurrentActorProvider.java` |
-| 会话保存 | `src/main/java/io/github/yourname/agentstudio/conversation/ConversationService.java` |
-| Run 创建 | `src/main/java/io/github/yourname/agentstudio/orchestration/RunCommandService.java` |
-| 会话队列 | `src/main/java/io/github/yourname/agentstudio/orchestration/ConversationRunQueue.java` |
-| Agent 循环 | `src/main/java/io/github/yourname/agentstudio/orchestration/CodingAgentLoop.java` |
-| SSE 事件 | `src/main/java/io/github/yourname/agentstudio/orchestration/RunEventPublisher.java` |
+| HTTP 入口 | `src/main/java/io/github/yourname/cycbercompany/web/CycberCompanyController.java` |
+| 当前用户/租户 | `src/main/java/io/github/yourname/cycbercompany/security/CurrentActorProvider.java` |
+| 会话保存 | `src/main/java/io/github/yourname/cycbercompany/conversation/ConversationService.java` |
+| Run 创建 | `src/main/java/io/github/yourname/cycbercompany/orchestration/RunCommandService.java` |
+| 会话队列 | `src/main/java/io/github/yourname/cycbercompany/orchestration/ConversationRunQueue.java` |
+| Agent 循环 | `src/main/java/io/github/yourname/cycbercompany/orchestration/CodingAgentLoop.java` |
+| SSE 事件 | `src/main/java/io/github/yourname/cycbercompany/orchestration/RunEventPublisher.java` |
 
 ## 4. Controller、Command、View 的关系
 
@@ -181,7 +181,7 @@ flowchart TD
 |---|---|---|
 | 后端内置工具 | `tool` | 本地时间、知识库检索、Web Search 等 |
 | MCP 工具 | `mcp` | 外部 MCP Server 上报的工具 |
-| 节点工具 | `node` + `agent-studio-node-java` | 文件、Shell、浏览器、桌面等真实机器能力 |
+| 节点工具 | `node` + `cycbercompany-node-java` | 文件、Shell、浏览器、桌面等真实机器能力 |
 
 核心原则：模型只能填写业务参数，不能通过参数切换 Provider、节点或 MCP connection。
 

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agent-studio.local/schemas/agent-manifest-v2.schema.json",
+  "$id": "https://cycbercompany.local/schemas/agent-manifest-v2.schema.json",
   "title": "CycberCompany Agent Manifest V2",
   "description": "Immutable, versioned runtime contract for one published agent version.",
   "type": "object",

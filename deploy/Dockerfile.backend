@@ -1,4 +1,4 @@
-FROM agent-studio/backend:latest
+FROM cycbercompany/backend:latest
 WORKDIR /app
 COPY release-artifacts/backend.jar /app/app.jar
 EXPOSE 8080

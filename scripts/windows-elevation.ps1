@@ -1,26 +1,26 @@
-function Test-AgentStudioAdministrator {
+function Test-CycberCompanyAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Get-AgentStudioWindowsUserName {
+function Get-CycberCompanyWindowsUserName {
     return [Security.Principal.WindowsIdentity]::GetCurrent().Name
 }
 
-function Assert-AgentStudioWindowsUser {
+function Assert-CycberCompanyWindowsUser {
     param([AllowNull()][string]$ExpectedUser)
 
     if ([string]::IsNullOrWhiteSpace($ExpectedUser)) {
         return
     }
-    $actualUser = Get-AgentStudioWindowsUserName
+    $actualUser = Get-CycberCompanyWindowsUserName
     if (-not [string]::Equals($actualUser, $ExpectedUser, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Personal local mode must be elevated as the same Windows user. Expected '$ExpectedUser' but got '$actualUser'. Choose the same account in UAC, or set AGENT_STUDIO_API_TOKEN in the target user's User/Machine environment intentionally."
+        throw "Personal local mode must be elevated as the same Windows user. Expected '$ExpectedUser' but got '$actualUser'. Choose the same account in UAC."
     }
 }
 
-function ConvertTo-AgentStudioPowerShellLiteral {
+function ConvertTo-CycberCompanyPowerShellLiteral {
     param([AllowNull()][string]$Value)
 
     if ($null -eq $Value) {
@@ -29,24 +29,24 @@ function ConvertTo-AgentStudioPowerShellLiteral {
     return "'" + $Value.Replace("'", "''") + "'"
 }
 
-function Get-AgentStudioSecretHandoffRoot {
+function Get-CycberCompanySecretHandoffRoot {
     $baseDir = [Environment]::GetFolderPath("LocalApplicationData")
     if ([string]::IsNullOrWhiteSpace($baseDir)) {
         $baseDir = [System.IO.Path]::GetTempPath()
     }
-    return Join-Path $baseDir "AgentStudio\handoff"
+    return Join-Path $baseDir "CycberCompany\handoff"
 }
 
-function Remove-AgentStudioOldSecretHandoffFiles {
+function Remove-CycberCompanyOldSecretHandoffFiles {
     param([int]$OlderThanMinutes = 30)
 
-    $root = Get-AgentStudioSecretHandoffRoot
+    $root = Get-CycberCompanySecretHandoffRoot
     if (-not (Test-Path -LiteralPath $root -PathType Container)) {
         return
     }
     $cutoff = [DateTime]::UtcNow.AddMinutes(-[Math]::Max(1, $OlderThanMinutes))
     try {
-        Get-ChildItem -LiteralPath $root -Filter "agent-studio-*.tmp" -File -ErrorAction SilentlyContinue |
+        Get-ChildItem -LiteralPath $root -Filter "cycbercompany-*.tmp" -File -ErrorAction SilentlyContinue |
             Where-Object { $_.LastWriteTimeUtc -lt $cutoff } |
             ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
     } catch {
@@ -54,18 +54,18 @@ function Remove-AgentStudioOldSecretHandoffFiles {
     }
 }
 
-function New-AgentStudioSecretHandoffFile {
+function New-CycberCompanySecretHandoffFile {
     param(
         [Parameter(Mandatory = $true)][string]$Value,
-        [string]$NamePrefix = "agent-studio-secret"
+        [string]$NamePrefix = "cycbercompany-secret"
     )
 
     if ([string]::IsNullOrWhiteSpace($Value)) {
         return $null
     }
 
-    Remove-AgentStudioOldSecretHandoffFiles
-    $root = Get-AgentStudioSecretHandoffRoot
+    Remove-CycberCompanyOldSecretHandoffFiles
+    $root = Get-CycberCompanySecretHandoffRoot
     New-Item -ItemType Directory -Force -Path $root | Out-Null
 
     $safePrefix = $NamePrefix -replace '[^A-Za-z0-9_.-]', '-'
@@ -91,7 +91,7 @@ function New-AgentStudioSecretHandoffFile {
     return $path
 }
 
-function Read-AgentStudioSecretHandoffFile {
+function Read-CycberCompanySecretHandoffFile {
     param([AllowNull()][string]$Path)
 
     if ([string]::IsNullOrWhiteSpace($Path)) {
@@ -107,13 +107,13 @@ function Read-AgentStudioSecretHandoffFile {
     }
 }
 
-function Invoke-AgentStudioElevatedScript {
+function Invoke-CycberCompanyElevatedScript {
     param(
         [Parameter(Mandatory = $true)][string]$ScriptPath,
         [Parameter(Mandatory = $true)][hashtable]$Parameters
     )
 
-    $commandParts = @("& $(ConvertTo-AgentStudioPowerShellLiteral $ScriptPath)")
+    $commandParts = @("& $(ConvertTo-CycberCompanyPowerShellLiteral $ScriptPath)")
     foreach ($entry in $Parameters.GetEnumerator()) {
         if ($null -eq $entry.Value) {
             continue
@@ -124,7 +124,7 @@ function Invoke-AgentStudioElevatedScript {
             }
             continue
         }
-        $commandParts += "-$($entry.Key) $(ConvertTo-AgentStudioPowerShellLiteral ([string]$entry.Value))"
+        $commandParts += "-$($entry.Key) $(ConvertTo-CycberCompanyPowerShellLiteral ([string]$entry.Value))"
     }
 
     $command = $commandParts -join " "

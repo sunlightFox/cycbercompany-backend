@@ -1,4 +1,4 @@
-# Agent Studio 控制面、执行节点与 Skill Runtime 架构设计
+# CycberCompany 控制面、执行节点与 Skill Runtime 架构设计
 
 - 状态：Proposed
 - 日期：2026-07-31
@@ -8,9 +8,9 @@
 
 目标产品不是“网页聊天后，把除模型以外的所有逻辑都放到客户端”，而是三个平面：
 
-1. **控制面（Agent Studio Backend）**：保存上下文、编排 Agent、编译 Skill、决策权限、路由工具、持久化状态与审计。
+1. **控制面（CycberCompany Backend）**：保存上下文、编排 Agent、编译 Skill、决策权限、路由工具、持久化状态与审计。
 2. **推理面（Model Provider）**：执行模型推理。它可以是云端 OpenAI-compatible API，也可以是本地模型服务。
-3. **执行面（Agent Studio Node）**：在被授权的电脑、服务器或沙箱中操作文件、命令、Git、浏览器、本地 MCP 和桌面。
+3. **执行面（CycberCompany Node）**：在被授权的电脑、服务器或沙箱中操作文件、命令、Git、浏览器、本地 MCP 和桌面。
 
 一句话边界：
 
@@ -97,7 +97,7 @@
 ```mermaid
 flowchart LR
     U["用户"] --> WEB["Web UI\n对话 / 任务 / 审批 / 节点管理"]
-    WEB --> CP["Agent Studio 控制面\nSpring Boot Modulith"]
+    WEB --> CP["CycberCompany 控制面\nSpring Boot Modulith"]
 
     CP --> MP["模型供应商\n云端 API / 本地模型服务"]
     CP --> DATA[("Run / Conversation / Policy / Audit")]

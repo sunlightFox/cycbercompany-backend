@@ -1,2 +1,2 @@
 rootProject.name = "cycbercompany"
-include("agent-studio-node-java")
+include("cycbercompany-node-java")

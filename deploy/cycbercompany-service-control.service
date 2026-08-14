@@ -1,0 +1,16 @@
+[Unit]
+Description=CycberCompany restricted service control
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/sbin/cycbercompany-service-control
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

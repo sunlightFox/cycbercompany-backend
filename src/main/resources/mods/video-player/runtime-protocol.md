@@ -57,11 +57,11 @@ argv used to launch the Worker, and expose the adapter configuration to that
 process:
 
 ```powershell
-$env:TVBOX_RUNTIME_ADAPTER = '["py","-3.12","D:\ai\spring-agent-studio-backend\scripts\tvbox-compatible-adapter.py"]'
-$env:VIDEO_DEMO_TVBOX_CONFIG = 'D:\ai\spring-agent-studio-backend\output\tvbox-config.json'
+$env:TVBOX_RUNTIME_ADAPTER = '["py","-3.12","D:\ai\spring-cycbercompany-backend\scripts\tvbox-compatible-adapter.py"]'
+$env:VIDEO_DEMO_TVBOX_CONFIG = 'D:\ai\spring-cycbercompany-backend\output\tvbox-config.json'
 $env:VIDEO_DEMO_TVBOX_ENGINE_ENDPOINT = 'http://127.0.0.1:18220/v1/execute'
 $env:VIDEO_DEMO_RUNTIME_ENDPOINT = 'http://127.0.0.1:18120/v1/media/search'
-$env:VIDEO_DEMO_RUNTIME_COMMAND = '["py","-3.12","D:\\ai\\spring-agent-studio-backend\\scripts\\tvbox-runtime-worker.py","--port","18120"]'
+$env:VIDEO_DEMO_RUNTIME_COMMAND = '["py","-3.12","D:\\ai\\spring-cycbercompany-backend\\scripts\\tvbox-runtime-worker.py","--port","18120"]'
 ```
 
 The Demo starts the Worker on the first Video Mod search/resolve request and
@@ -77,7 +77,7 @@ that can be parsed by the HTML player. Use the shipped bridge
 
 ```powershell
 $env:TVBOX_RUNTIME_ADAPTER = '["py","-3.12","scripts/tvbox-compatible-adapter.py"]'
-$env:VIDEO_DEMO_TVBOX_CONFIG = 'D:\ai\spring-agent-studio-backend\output\tvbox-config.json'
+$env:VIDEO_DEMO_TVBOX_CONFIG = 'D:\ai\spring-cycbercompany-backend\output\tvbox-config.json'
 $env:VIDEO_DEMO_TVBOX_ENGINE_ENDPOINT = 'http://127.0.0.1:18220/v1/execute'
 ```
 
@@ -86,7 +86,7 @@ downloads or runs the Spider itself:
 
 ```json
 {
-  "protocol": "agentstudio.tvbox.engine.v1",
+  "protocol": "cycbercompany.tvbox.engine.v1",
   "operation": "media.resolvePlayback",
   "sourceId": "视界",
   "mediaId": "...",

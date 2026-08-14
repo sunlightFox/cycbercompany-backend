@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically verify Spring Agent Studio readiness
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

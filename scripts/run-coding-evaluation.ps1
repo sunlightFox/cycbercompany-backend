@@ -1,4 +1,4 @@
-﻿param(
+param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("minimal-full-stack", "failed-test-minimal-fix", "split-frontend-backend", "existing-repository-feature", "long-task-recovery")]
     [string]$Scenario,
@@ -91,7 +91,7 @@ function Invoke-StudioJson {
         [Parameter(Mandatory = $true)][string]$Path,
         [object]$Body = $null
     )
-    return Invoke-StudioJsonUtf8 -BaseUrl $BaseUrl -Method $Method -Path $Path -Body $Body -ApiToken $env:AGENT_STUDIO_API_TOKEN
+    return Invoke-StudioJsonUtf8 -BaseUrl $BaseUrl -Method $Method -Path $Path -Body $Body -ApiToken $env:CYCBERCOMPANY_API_TOKEN
 }
 
 function Test-TransientApiFailure {

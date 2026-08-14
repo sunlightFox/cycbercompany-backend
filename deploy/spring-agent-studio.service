@@ -1,0 +1,24 @@
+[Unit]
+Description=Spring Agent Studio Backend
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=5min
+StartLimitBurst=8
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/spring-agent-studio-backend
+EnvironmentFile=/etc/spring-agent-studio.env
+ExecStart=/usr/bin/java -XX:MaxRAMPercentage=70 -XX:+ExitOnOutOfMemoryError -jar /opt/spring-agent-studio-backend/spring-agent-studio.jar
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=90
+TimeoutStopSec=30
+SuccessExitStatus=143
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

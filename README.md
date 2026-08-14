@@ -135,15 +135,13 @@ GET  /api/v1/nodes                          注册节点
 | --- | --- | --- |
 | `PORT` | `8080` | HTTP 端口 |
 | `APP_DATA_DIR` | `./data` | H2、Skill、MCP 和 Artifact 数据目录 |
-| `APP_SECURITY_MODE` | `LOCAL` | `LOCAL` 或 `TOKEN` |
-| `AGENT_STUDIO_API_TOKEN` | 空 | `TOKEN` 模式的 API Token |
 | `EDGEFN_API_KEY` | 空 | 默认模型服务密钥 |
 | `EDGEFN_BASE_URL` | `https://api.edgefn.net/v1` | OpenAI-compatible 服务地址 |
 | `EDGEFN_MODEL` | `MiniMax-M3` | 默认模型名 |
 | `TAVILY_API_KEY` | 空 | 存在时自动启用 Tavily Web Search |
 | `APP_EXECUTION_ALLOW_NODES_ONLY` | `false` | 是否允许仅节点执行模式 |
 
-远程或共享部署请显式设置 `APP_SECURITY_MODE=TOKEN`、`AGENT_STUDIO_API_TOKEN`，并将 `SERVER_ADDRESS`、反向代理和 WebSocket 配置为安全的 HTTPS/WSS 入口。
+远程或共享部署会开放 API 和节点注册，请仅通过受信任的 HTTPS/WSS 入口、网络边界或反向代理暴露服务。
 
 ## 开发与测试
 
@@ -163,7 +161,7 @@ GET  /api/v1/nodes                          注册节点
 代码布局：
 
 ```text
-src/main/java/io/github/yourname/agentstudio/
+src/main/java/io/github/yourname/cycbercompany/
 ├── agent/          Agent 定义与运行时
 ├── conversation/   会话和消息
 ├── model/          模型目录与网关

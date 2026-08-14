@@ -1,6 +1,0 @@
-package io.github.yourname.agentstudio.node;
-
-import java.util.List;
-
-public record NodeDetailView(NodeConnectionView node, List<NodeToolView> tools) {
-}

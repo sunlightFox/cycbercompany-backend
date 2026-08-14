@@ -3,8 +3,8 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-agent_studio}
-      POSTGRES_USER: ${POSTGRES_USER:-agent_studio}
+      POSTGRES_DB: ${POSTGRES_DB:-cycbercompany}
+      POSTGRES_USER: ${POSTGRES_USER:-cycbercompany}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
       - postgres-data:/var/lib/postgresql/data
@@ -20,19 +20,16 @@ services:
     build:
       context: ./backend
       dockerfile: ../Dockerfile.backend
-    image: agent-studio/backend:latest
+    image: cycbercompany/backend:latest
     restart: unless-stopped
     environment:
       SERVER_ADDRESS: 0.0.0.0
       PORT: 8080
       APP_DATA_DIR: /data
       SPRING_PROFILES_ACTIVE: postgres
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-agent_studio}
-      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-agent_studio}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-cycbercompany}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-cycbercompany}
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      APP_SECURITY_MODE: LOCAL
-      APP_SECURITY_ALLOW_LOCAL_PROXY: "true"
-      AGENT_STUDIO_API_TOKEN: ${AGENT_STUDIO_API_TOKEN:-}
       H2_CONSOLE_ENABLED: "false"
       EDGEFN_API_KEY: ${EDGEFN_API_KEY:?Set EDGEFN_API_KEY in .env}
       EDGEFN_BASE_URL: ${A6API_BASE_URL:-https://a6api.com/v1}
@@ -50,7 +47,7 @@ services:
     build:
       context: ./frontend
       dockerfile: ../Dockerfile.vite-web
-    image: agent-studio/frontend:latest
+    image: cycbercompany/frontend:latest
     restart: unless-stopped
     network_mode: service:backend
     depends_on:
@@ -62,17 +59,16 @@ services:
     build:
       context: ./backend
       dockerfile: ../Dockerfile.workspace-node
-    image: agent-studio/workspace-node:latest
+    image: cycbercompany/workspace-node:latest
     restart: unless-stopped
     command: ["start-local", "--server", "http://127.0.0.1:8080", "--workspace", "/workspace", "--name", "server-workspace"]
     network_mode: service:backend
     user: "0:0"
     environment:
-      AGENT_STUDIO_SKILL_RUNTIME: docker
-      AGENT_STUDIO_API_TOKEN: ${AGENT_STUDIO_API_TOKEN:-}
+      CYCBERCOMPANY_SKILL_RUNTIME: docker
     volumes:
       - /opt/cycbercompany/workspace:/workspace
-      - node-config:/root/.agent-studio-node
+      - node-config:/root/.cycbercompany-node
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - backend

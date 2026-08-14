@@ -1,13 +1,13 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('app-image', 'msi')]
+    [ValidateSet('app-image', 'exe', 'msi')]
     [string]$Type = 'app-image',
     [string]$OutputDirectory = (Join-Path (Get-Location) 'build\windows-node'),
-    [string]$Name = 'AgentStudioNode',
+    [string]$Name = 'CycberCompanyNode',
     [ValidatePattern('^\d+\.\d+\.\d+$')]
     [string]$Version = '0.0.1',
     [string]$Server = 'http://127.0.0.1:8080',
-    [string]$Workspace = $env:USERPROFILE,
+    [string]$Workspace,
     [switch]$ManualStart,
     [string]$SigningCertificateThumbprint,
     [ValidatePattern('^https://')]
@@ -49,14 +49,18 @@ function Sign-PackageFile([System.IO.FileInfo]$File, [string]$Thumbprint, [strin
 $root = (Get-Item (Join-Path $PSScriptRoot '..')).FullName
 $serverUri = $null
 if (-not [Uri]::TryCreate($Server, [UriKind]::Absolute, [ref]$serverUri) `
-        -or $serverUri.Scheme -notin @('http', 'https') `
-        -or -not $serverUri.IsLoopback) {
-    throw 'Server must be a loopback HTTP(S) URL, for example http://127.0.0.1:8080.'
+        -or $serverUri.Scheme -notin @('http', 'https')) {
+    throw 'Server must be an absolute HTTP(S) URL.'
 }
-if (-not (Test-Path -LiteralPath $Workspace -PathType Container)) {
-    throw "Workspace must be an existing directory: $Workspace"
+if (-not $serverUri.IsLoopback -and $serverUri.Scheme -ne 'https') {
+    throw 'Remote server packages require an HTTPS URL.'
 }
-$Workspace = (Resolve-Path -LiteralPath $Workspace).Path
+if (-not [string]::IsNullOrWhiteSpace($Workspace)) {
+    if (-not (Test-Path -LiteralPath $Workspace -PathType Container)) {
+        throw "Workspace must be an existing directory: $Workspace"
+    }
+    $Workspace = (Resolve-Path -LiteralPath $Workspace).Path
+}
 $gradle = Join-Path $root 'gradlew.bat'
 if (-not (Test-Path -LiteralPath $gradle -PathType Leaf)) {
     throw "Could not find gradlew.bat under $root"
@@ -80,30 +84,36 @@ if ($Type -eq 'msi') {
 
 Push-Location $root
 try {
-    & $gradle --no-daemon ':agent-studio-node-java:installDist'
+    & $gradle --no-daemon ':cycbercompany-node-java:installDist'
     if ($LASTEXITCODE -ne 0) { throw "Gradle installDist failed with exit code $LASTEXITCODE" }
 
-    $installLib = Join-Path $root 'agent-studio-node-java\build\install\agent-studio-node-java\lib'
-    $mainJar = Get-ChildItem -LiteralPath $installLib -Filter 'agent-studio-node-java-*.jar' |
+    $installLib = Join-Path $root 'cycbercompany-node-java\build\install\cycbercompany-node-java\lib'
+    $mainJar = Get-ChildItem -LiteralPath $installLib -Filter 'cycbercompany-node-java-*.jar' |
         Where-Object { $_.Name -notmatch '-plain\.jar$' } | Select-Object -First 1
     if ($null -eq $mainJar) { throw "Could not locate the node client jar under $installLib" }
 
     New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
     $destination = (Resolve-Path -LiteralPath $OutputDirectory).Path
+    $appDirectory = Join-Path $destination $Name
+    if (Test-Path -LiteralPath $appDirectory) {
+        Remove-Item -LiteralPath $appDirectory -Recurse -Force
+    }
+    $jpackageType = if ($Type -eq 'exe') { 'app-image' } else { $Type }
     $arguments = @(
-        '--type', $Type,
+        '--type', $jpackageType,
         '--name', $Name,
         '--input', $installLib,
         '--main-jar', $mainJar.Name,
-        '--main-class', 'io.github.yourname.agentstudio.nodeclient.AgentStudioNodeApplication',
+        '--main-class', 'io.github.yourname.cycbercompany.nodeclient.CycberCompanyNodeApplication',
         '--dest', $destination,
         '--app-version', $Version,
         '--arguments', 'gui',
         '--arguments', '--server',
-        '--arguments', $Server,
-        '--arguments', '--workspace',
-        '--arguments', $Workspace
+        '--arguments', $Server
     )
+    if (-not [string]::IsNullOrWhiteSpace($Workspace)) {
+        $arguments += @('--arguments', '--workspace', '--arguments', $Workspace)
+    }
     if (-not $ManualStart) {
         $arguments += @('--arguments', '--auto-start')
     }
@@ -115,19 +125,19 @@ try {
 
     $signing = $null
     if ($Type -eq 'msi') {
-        $artifact = Get-ChildItem -LiteralPath $destination -Filter '*.msi' -File |
+        $extension = if ($Type -eq 'msi') { '*.msi' } else { '*.exe' }
+        $artifact = Get-ChildItem -LiteralPath $destination -Filter $extension -File |
             Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
-        if ($null -eq $artifact) { throw "jpackage did not produce an MSI under $destination" }
+        if ($null -eq $artifact) { throw "jpackage did not produce a $Type package under $destination" }
         $signing = Sign-PackageFile -File $artifact -Thumbprint $SigningCertificateThumbprint -Timestamp $TimestampUrl
     } else {
-        $appDirectory = Join-Path $destination $Name
         $launcher = Get-Item -LiteralPath (Join-Path $appDirectory "$Name.exe") -ErrorAction Stop
         $signing = Sign-PackageFile -File $launcher -Thumbprint $SigningCertificateThumbprint -Timestamp $TimestampUrl
         $archivePath = Join-Path $destination "$Name-$Version-windows.zip"
         if (Test-Path -LiteralPath $archivePath) {
             throw "Refusing to overwrite existing release archive: $archivePath"
         }
-        Compress-Archive -LiteralPath $appDirectory -DestinationPath $archivePath
+        Compress-Archive -LiteralPath $appDirectory -DestinationPath $archivePath -CompressionLevel Optimal
         $artifact = Get-Item -LiteralPath $archivePath
     }
 
@@ -143,7 +153,7 @@ try {
         sizeBytes = [int64]$artifact.Length
         builtAtUtc = [DateTime]::UtcNow.ToString('O')
         sourceCommit = Get-GitCommit $root
-        serverBinding = 'loopback'
+        serverBinding = $serverUri.GetLeftPart([System.UriPartial]::Authority)
         signing = $signing
     }
     $manifestPath = Join-Path $destination "$Name-$Version-windows.manifest.json"

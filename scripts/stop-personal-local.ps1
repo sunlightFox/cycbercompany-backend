@@ -10,18 +10,18 @@ param(
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "windows-elevation.ps1")
 
-if (-not (Test-AgentStudioAdministrator)) {
-    $exitCode = Invoke-AgentStudioElevatedScript -ScriptPath $PSCommandPath -Parameters @{
-        ExpectedWindowsUser = Get-AgentStudioWindowsUserName
+if (-not (Test-CycberCompanyAdministrator)) {
+    $exitCode = Invoke-CycberCompanyElevatedScript -ScriptPath $PSCommandPath -Parameters @{
+        ExpectedWindowsUser = Get-CycberCompanyWindowsUserName
     }
     exit $exitCode
 }
 
-Assert-AgentStudioWindowsUser -ExpectedUser $ExpectedWindowsUser
+Assert-CycberCompanyWindowsUser -ExpectedUser $ExpectedWindowsUser
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $composeRoot = Join-Path (Split-Path -Parent $projectRoot) "cycbercompany-web"
-$statePath = Join-Path $env:USERPROFILE ".agent-studio-node\personal-local.state.json"
+$statePath = Join-Path $env:USERPROFILE ".cycbercompany-node\personal-local.state.json"
 $launcherPort = 8094
 
 if ([System.IO.Directory]::Exists($composeRoot)) {
@@ -75,7 +75,7 @@ if (Test-Path $statePath) {
     Stop-ManagedProcess `
         -ProcessId $state.nodePid `
         -Label "node" `
-        -ExpectedCommandPatterns @("*start-local*", "*agent-studio-node-java*")
+        -ExpectedCommandPatterns @("*start-local*", "*cycbercompany-node-java*")
     Stop-ManagedProcess `
         -ProcessId $state.launcherPid `
         -Label "local launcher" `

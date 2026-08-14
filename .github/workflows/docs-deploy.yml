@@ -1,0 +1,45 @@
+name: Deploy documentation
+
+on:
+  push:
+    branches: [main]
+    paths: ['website/**', 'deploy/docs/**', '.github/workflows/docs-deploy.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Build Docusaurus
+        working-directory: website
+        env:
+          DOCS_URL: ${{ secrets.DOCS_URL }}
+        run: |
+          npm ci
+          npm run build
+      - name: Upload release to server
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: website/build/*
+          target: /tmp/cycbercompany-docs
+          strip_components: 2
+      - name: Activate release
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: sudo /usr/local/bin/publish-cycbercompany-docs /tmp/cycbercompany-docs

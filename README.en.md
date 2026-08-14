@@ -137,15 +137,13 @@ GET  /api/v1/nodes                          registered nodes
 | --- | --- | --- |
 | `PORT` | `8080` | HTTP port |
 | `APP_DATA_DIR` | `./data` | H2, Skill, MCP, and artifact storage |
-| `APP_SECURITY_MODE` | `LOCAL` | `LOCAL` or `TOKEN` |
-| `AGENT_STUDIO_API_TOKEN` | empty | API token for `TOKEN` mode |
 | `EDGEFN_API_KEY` | empty | Default model provider secret |
 | `EDGEFN_BASE_URL` | `https://api.edgefn.net/v1` | OpenAI-compatible endpoint |
 | `EDGEFN_MODEL` | `MiniMax-M3` | Default model name |
 | `TAVILY_API_KEY` | empty | Enables Tavily web search when present |
 | `APP_EXECUTION_ALLOW_NODES_ONLY` | `false` | Allow node-only execution mode |
 
-For shared or remote deployments, explicitly set `APP_SECURITY_MODE=TOKEN` and `AGENT_STUDIO_API_TOKEN`, then expose the server and WebSocket endpoint through a secured HTTPS/WSS reverse proxy.
+Shared and remote deployments expose the API and open node registration. Restrict access with a trusted HTTPS/WSS entry point, network boundary, or reverse proxy.
 
 ## Development and tests
 
@@ -162,7 +160,7 @@ Further reading:
 - [Node execution architecture](docs/node-execution-architecture.md)
 - [Coding evaluation](docs/coding-evaluation.md)
 
-Repository modules live under `src/main/java/io/github/yourname/agentstudio/`: `agent`, `conversation`, `model`, `orchestration`, `tool`, `knowledge`, `skill`, `mcp`, `node`, and `web`. The optional Java node is in `agent-studio-node-java/`.
+Repository modules live under `src/main/java/io/github/yourname/cycbercompany/`: `agent`, `conversation`, `model`, `orchestration`, `tool`, `knowledge`, `skill`, `mcp`, `node`, and `web`. The optional Java node is in `cycbercompany-node-java/`.
 
 ## License
 

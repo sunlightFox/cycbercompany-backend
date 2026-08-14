@@ -34,14 +34,14 @@ function Initialize-FixtureGitRepository {
     if ($LASTEXITCODE -ne 0) { throw "Could not initialize the fixture Git repository." }
     & git -C $Path add --all
     if ($LASTEXITCODE -ne 0) { throw "Could not stage the fixture baseline." }
-    & git -C $Path -c user.name="Agent Studio Evaluation" -c user.email="evaluation@localhost" commit --quiet -m "Initialize evaluation fixture"
+    & git -C $Path -c user.name="CycberCompany Evaluation" -c user.email="evaluation@localhost" commit --quiet -m "Initialize evaluation fixture"
     if ($LASTEXITCODE -ne 0) { throw "Could not commit the fixture baseline." }
 }
 
 # Only creates a new timestamped child directory. It never deletes or overwrites an existing project.
 $safeRoot = Assert-SafeFixtureRoot $WorkspaceRoot
 New-Item -ItemType Directory -Force -Path $safeRoot | Out-Null
-$fixture = Join-Path $safeRoot "agent-studio-$Scenario-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+$fixture = Join-Path $safeRoot "cycbercompany-$Scenario-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 New-Item -ItemType Directory -Path $fixture -ErrorAction Stop | Out-Null
 
 # 这个标记只用于评测脚本的本地安全检查。它不包含密钥、绝对路径或用户数据，
@@ -54,7 +54,7 @@ $fixtureMarkerLines = @(
     "formatVersion=1"
 )
 $fixtureMarkerContent = $fixtureMarkerLines -join [Environment]::NewLine
-Write-FixtureFile $fixture ".agent-studio-evaluation-fixture" $fixtureMarkerContent
+Write-FixtureFile $fixture ".cycbercompany-evaluation-fixture" $fixtureMarkerContent
 
 # These files are deliberately unfinished. The evaluated Agent must implement and verify the solution itself.
 switch ($Scenario) {

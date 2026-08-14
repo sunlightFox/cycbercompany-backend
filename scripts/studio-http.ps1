@@ -13,7 +13,7 @@ function Invoke-StudioJsonUtf8 {
     # evaluation backend. Normalize callers such as `Patch` to `PATCH`.
     $request.Method = $Method.Trim().ToUpperInvariant()
     $request.Accept = "application/json"
-    $request.UserAgent = "AgentStudio-Evaluation/1.0"
+    $request.UserAgent = "CycberCompany-Evaluation/1.0"
     $request.Timeout = [Math]::Max(1, $TimeoutSeconds) * 1000
     if (-not [string]::IsNullOrWhiteSpace($ApiToken)) {
         $request.Headers['Authorization'] = "Bearer $ApiToken"

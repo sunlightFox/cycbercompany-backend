@@ -1,4 +1,4 @@
-FROM spring-agent-studio-web-web:latest
+FROM cycbercompany-web-web:latest
 WORKDIR /app
 COPY dist /app/dist
 COPY server.cjs /app/server.cjs

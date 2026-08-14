@@ -3,12 +3,10 @@ services:
     build:
       context: ./backend
       dockerfile: ../Dockerfile.backend
-    container_name: agent-studio-backend
+    container_name: cycbercompany-backend
     restart: unless-stopped
     environment:
       SERVER_ADDRESS: ${SERVER_ADDRESS:-0.0.0.0}
-      APP_SECURITY_MODE: ${APP_SECURITY_MODE:-LOCAL}
-      AGENT_STUDIO_API_TOKEN: ${AGENT_STUDIO_API_TOKEN:-}
       EDGEFN_API_KEY: ${EDGEFN_API_KEY:-}
       EDGEFN_BASE_URL: ${EDGEFN_BASE_URL:-https://api.edgefn.net/v1}
       EDGEFN_MODEL: ${EDGEFN_MODEL:-MiniMax-M3}
@@ -25,10 +23,10 @@ services:
     build:
       context: ./frontend
       dockerfile: ../Dockerfile.frontend
-    container_name: agent-studio-frontend
+    container_name: cycbercompany-frontend
     restart: unless-stopped
     environment:
-      SPRING_AGENT_STUDIO_API_URL: http://backend:8080
+      CYCBERCOMPANY_API_URL: http://backend:8080
     ports:
       - "5173:3000"
     depends_on:
@@ -39,17 +37,16 @@ services:
     build:
       context: ./backend
       dockerfile: ../Dockerfile.node
-    container_name: agent-studio-node
+    container_name: cycbercompany-node
     restart: unless-stopped
     environment:
-      AGENT_STUDIO_SKILL_RUNTIME: docker
-      AGENT_STUDIO_API_TOKEN: ${AGENT_STUDIO_API_TOKEN:-}
-    command: ["./bin/agent-studio-node-java", "start-local", "--server", "http://127.0.0.1:8080", "--name", "server-workspace", "--workspace", "/workspace", "--config", "/root/.agent-studio-node/local-executor.json"]
+      CYCBERCOMPANY_SKILL_RUNTIME: docker
+    command: ["./bin/cycbercompany-node-java", "start-local", "--server", "http://127.0.0.1:8080", "--name", "server-workspace", "--workspace", "/workspace", "--config", "/root/.cycbercompany-node/local-executor.json"]
     network_mode: service:backend
     user: "0:0"
     volumes:
       - node-workspace:/workspace
-      - node-data:/root/.agent-studio-node
+      - node-data:/root/.cycbercompany-node
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - backend

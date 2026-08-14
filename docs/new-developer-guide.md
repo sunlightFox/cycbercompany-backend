@@ -1,4 +1,4 @@
-# Spring Agent Studio 新手学习手册
+# CycberCompany 新手学习手册
 
 这份文档写给第一次接触 Spring Boot、JPA、SSE 和 AI Agent 的 Java 开发者。
 目标不是让你立刻读完所有类，而是建立一张地图：知道项目解决什么问题、一次请求经过哪些层、
@@ -6,7 +6,7 @@
 
 ## 1. 项目到底是什么
 
-Spring Agent Studio 是一个“模块化单体”后端：
+CycberCompany 是一个“模块化单体”后端：
 
 - 一个 Spring Boot 进程；
 - 一个 Gradle 工程；
@@ -24,15 +24,15 @@ Spring Agent Studio 是一个“模块化单体”后端：
 推荐按下面的顺序阅读：
 
 1. `build.gradle.kts`：看 Java 版本和 Spring 依赖。
-2. `AgentstudioApplication`：看应用从哪里启动。
-3. `web/AgentStudioController`：看 HTTP API 如何进入业务层。
+2. `CycberCompanyApplication`：看应用从哪里启动。
+3. `web/CycberCompanyController`：看 HTTP API 如何进入业务层。
 4. `conversation/ConversationService`：理解会话和消息的最小模型。
 5. `orchestration/RunCommandService`：理解一次 Run 如何创建、排队、执行和结束。
-6. `orchestration/RunEventPublisher` 与 `web/AgentStudioController` 的 SSE 方法：理解流式输出。
+6. `orchestration/RunEventPublisher` 与 `web/CycberCompanyController` 的 SSE 方法：理解流式输出。
 7. `model/ModelCatalog` 与 `model/ModelGateway`：理解模型配置和调用。
 8. `tool/ToolRouter`：理解工具为什么不能直接交给模型。
 9. `knowledge/KnowledgeCommandService` 与 `KnowledgeQueryService`：理解文档导入和检索。
-10. `node/NodeService` 与 `agent-studio-node-java`：理解本机文件、Shell、浏览器动作如何被远程控制。
+10. `node/NodeService` 与 `cycbercompany-node-java`：理解本机文件、Shell、浏览器动作如何被远程控制。
 
 不要一开始从最大的 `RunCommandService` 第一行读到最后一行。先看本文的流程图，
 再带着一个具体问题回到代码里，例如“用户发送一条消息后，助手回答是怎么回到浏览器的”。
@@ -55,9 +55,9 @@ Spring Agent Studio 是一个“模块化单体”后端：
 核心目录：
 
 ```text
-spring-agent-studio-backend/
+cycbercompany-backend/
 ├── build.gradle.kts                 # 依赖和构建任务
-├── src/main/java/.../agentstudio/
+├── src/main/java/.../cycbercompany/
 │   ├── web/                          # REST、SSE、异常映射
 │   ├── orchestration/                # Run 生命周期和 Agent 编排
 │   ├── conversation/                 # 会话、消息、附件
@@ -74,7 +74,7 @@ spring-agent-studio-backend/
 ├── src/main/resources/
 │   └── application.yml               # 默认配置
 ├── src/test/java/                    # 单元、集成和模块测试
-├── agent-studio-node-java/            # 运行在本机/服务器上的 Java 节点
+├── cycbercompany-node-java/            # 运行在本机/服务器上的 Java 节点
 └── docs/                             # 架构、实现计划和学习文档
 ```
 
@@ -85,7 +85,7 @@ spring-agent-studio-backend/
 - JDK 21；
 - Windows 可以直接使用 `gradlew.bat`；
 - 一个 OpenAI-compatible 模型服务和 API Key，或者使用项目已有的本地配置；
-- 节点功能需要额外启动 `agent-studio-node-java`。
+- 节点功能需要额外启动 `cycbercompany-node-java`。
 
 不要把 API Key 写进 Java 代码或 YAML。PowerShell 示例：
 
@@ -265,7 +265,7 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     participant Browser as 浏览器
-    participant API as AgentStudioController
+    participant API as CycberCompanyController
     participant Events as RunEventPublisher
     participant DB as run_event 表
 
@@ -466,7 +466,7 @@ MCP 连接本身不应该绕过项目的租户、审批和审计规则。
 
 ## 13. 节点执行器
 
-节点执行器是独立的 Java 21 子项目，位于 `agent-studio-node-java`。
+节点执行器是独立的 Java 21 子项目，位于 `cycbercompany-node-java`。
 后端保存节点信息和权限，节点进程拥有真实本机权限，所以这是最需要认真阅读安全注释的部分。
 
 注册流程：
@@ -571,7 +571,7 @@ Controller -> Application Service -> Repository -> Entity
 | `ToolRouterTest` | 工具发现、白名单和名称冲突 |
 | `KnowledgeCommandServiceTest` | 文档切块、重复导入和重建 |
 | `SkillCatalogTest` | Skill frontmatter、摘要和 Release |
-| `AgentStudioModularityTest` | Spring Modulith 模块依赖 |
+| `CycberCompanyModularityTest` | Spring Modulith 模块依赖 |
 
 推荐的学习方式：
 
@@ -660,7 +660,7 @@ flowchart TB
     Orchestration --> Skill["skill<br/>指令包快照"]
     Tool --> MCP["mcp<br/>外部工具"]
     Tool --> Node["node<br/>节点工具"]
-    Node --> JavaNode["agent-studio-node-java<br/>本机执行"]
+    Node --> JavaNode["cycbercompany-node-java<br/>本机执行"]
     Orchestration --> Events["RunEvent<br/>持久化事件"]
     Events --> Web
     Conversation --> H2[("H2")]

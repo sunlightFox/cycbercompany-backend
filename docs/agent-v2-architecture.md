@@ -4,7 +4,7 @@
 
 日期：2026-08-07
 
-适用范围：Spring Agent Studio 后端、Web 前端、运行时、节点与后续多 Agent 编排
+适用范围：CycberCompany 后端、Web 前端、运行时、节点与后续多 Agent 编排
 
 ## 1. 结论
 

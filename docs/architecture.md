@@ -1,4 +1,4 @@
-# Spring Agent Studio 总体架构设计
+# CycberCompany 总体架构设计
 
 > 状态：Final  
 > 本文是实现阶段的架构基线。若其他讨论或旧草案与本文冲突，以本文和
@@ -6,7 +6,7 @@
 
 ## 1. 项目定位
 
-Spring Agent Studio 是一个可运行、可演示、可解释的 Java Agent 平台，用于展示大模型应用开发中的完整工程能力。
+CycberCompany 是一个可运行、可演示、可解释的 Java Agent 平台，用于展示大模型应用开发中的完整工程能力。
 
 它不是一个“聊天接口套壳”。作品集需要让面试官能看到以下能力：
 
@@ -16,7 +16,7 @@ Spring Agent Studio 是一个可运行、可演示、可解释的 Java Agent 平
 - 能在本机低成本启动，也预留生产化替换点；
 - 能用自动化测试证明模块边界和关键链路正确。
 
-首版项目名暂定为 `spring-agent-studio`，Java 根包暂定为 `io.github.yourname.agentstudio`。开始编码前应将 `yourname` 替换为你的 GitHub 用户名。
+首版项目名暂定为 `cycbercompany`，Java 根包暂定为 `io.github.yourname.cycbercompany`。开始编码前应将 `yourname` 替换为你的 GitHub 用户名。
 
 ## 2. 技术选型
 
@@ -116,8 +116,8 @@ Java 包采用 Spring Modulith 的模块可见性规则：模块 base package �
 `@NamedInterface` 显式暴露。
 
 ```text
-io.github.yourname.agentstudio
-├── AgentStudioApplication.java
+io.github.yourname.cycbercompany
+├── CycberCompanyApplication.java
 ├── web
 │   └── internal
 │       ├── rest
@@ -244,7 +244,7 @@ MCP 工具发现：mcp → tool::spi
 
 每个模块通过 `package-info.java` 的 `@ApplicationModule(allowedDependencies = …)`
 声明允许依赖；仅绘制 Mermaid 图并不会让白名单自动生效。测试调用
-`ApplicationModules.of(AgentStudioApplication.class).verify()`，使循环依赖、
+`ApplicationModules.of(CycberCompanyApplication.class).verify()`，使循环依赖、
 越界访问和未声明依赖在构建期失败。
 
 ## 5. 核心领域模型
@@ -697,7 +697,7 @@ Agent、Workflow 等可编辑定义使用乐观锁 `version` 字段。Run 创建
 ```text
 data/
 ├── db/
-│   └── agent-studio.mv.db
+│   └── cycbercompany.mv.db
 ├── attachments/
 │   └── {conversationId}/{attachmentId}
 ├── knowledge/
@@ -843,7 +843,7 @@ public ResolvedModel resolveForRun(ModelSelection selection) { ... }
 首版使用单 Gradle project，而不是为每个业务模块建立子 project。Spring Modulith 通过 Java 包边界治理模块，减少构建复杂度。
 
 ```text
-spring-agent-studio/
+cycbercompany/
 ├── build.gradle.kts
 ├── settings.gradle.kts
 ├── gradle/

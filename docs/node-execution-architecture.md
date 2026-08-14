@@ -2,7 +2,7 @@
 
 ## 目标
 
-把当前 Agent Studio 从“后端自己拥有工具”升级为“控制中心 + 多执行节点”的平台架构。
+把当前 CycberCompany 从“后端自己拥有工具”升级为“控制中心 + 多执行节点”的平台架构。
 
 后端负责：用户、模型、Agent 编排、权限、任务状态、日志、审计、节点管理。  
 节点负责：在自己的电脑或服务器上执行命令、操作文件、运行浏览器、访问本地项目、连接本地 MCP。
@@ -60,9 +60,9 @@ node
 第一版节点客户端建议目录：
 
 ```text
-agent-studio-node-java/
+cycbercompany-node-java/
   src/
-    AgentStudioNodeApplication.java
+    CycberCompanyNodeApplication.java
     NodeConfig.java
     transport/
       NodeWebSocketClient.java
@@ -156,7 +156,7 @@ agent-studio-node-java/
 
 ```mermaid
 flowchart TB
-    User["用户 / 前端"] --> Backend["Agent Studio 后端控制中心"]
+    User["用户 / 前端"] --> Backend["CycberCompany 后端控制中心"]
 
     Backend --> Model["模型网关<br/>OpenAI-compatible / Ollama / 自定义模型"]
     Backend --> RAG["知识库 RAG<br/>关键词 + 向量混合检索"]
@@ -411,7 +411,7 @@ flowchart TD
   "toolName": "shell.run",
   "arguments": {
     "command": "./gradlew.bat test",
-    "cwd": "D:/ai/spring-agent-studio-backend",
+    "cwd": "D:/ai/cycbercompany-backend",
     "timeoutSeconds": 120
   }
 }
@@ -479,7 +479,7 @@ flowchart LR
 
     NodeTools --> Policy["node policy<br/>权限/审批"]
     NodeTools --> Transport["node transport<br/>WebSocket"]
-    Transport --> NodeClient["agent-studio-node"]
+    Transport --> NodeClient["cycbercompany-node"]
 ```
 
 后端不应该让 `orchestration` 直接操作 WebSocket。  

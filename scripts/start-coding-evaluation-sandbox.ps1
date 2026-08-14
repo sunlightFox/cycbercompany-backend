@@ -31,7 +31,7 @@ $ErrorActionPreference = "Stop"
 function Invoke-StudioJson {
     param([string]$Method, [string]$Path, [object]$Body = $null)
     try {
-        Invoke-StudioJsonUtf8 -BaseUrl $script:BaseUrl -Method $Method -Path $Path -Body $Body -ApiToken $env:AGENT_STUDIO_API_TOKEN
+        Invoke-StudioJsonUtf8 -BaseUrl $script:BaseUrl -Method $Method -Path $Path -Body $Body -ApiToken $env:CYCBERCOMPANY_API_TOKEN
     } catch {
         # 不打印令牌或请求体；URL 和服务端返回的安全摘要足以定位注册/配置错误。
         throw "Studio request failed: $Method $Path. $($_.Exception.Message)"
@@ -91,7 +91,7 @@ if (-not (Test-Path -LiteralPath $WorkingDirectory -PathType Container)) { Stop-
 $workspace = (Resolve-Path -LiteralPath $WorkingDirectory).Path.TrimEnd('\', '/')
 $root = [System.IO.Path]::GetPathRoot($workspace).TrimEnd('\', '/')
 if ([string]::IsNullOrWhiteSpace($workspace) -or $workspace -eq $root) { Stop-SandboxSetup "WorkingDirectory must be a dedicated child directory, never a drive root." }
-$markerPath = Join-Path $workspace ".agent-studio-evaluation-fixture"
+$markerPath = Join-Path $workspace ".cycbercompany-evaluation-fixture"
 if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { Stop-SandboxSetup "WorkingDirectory is not a CycberCompany evaluation fixture: $workspace" }
 $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8
 if ($marker -notmatch ('(?m)^scenario={0}\r?$' -f [regex]::Escape($Scenario))) { Stop-SandboxSetup "Fixture marker scenario does not match the requested scenario." }
@@ -113,21 +113,19 @@ if ($settings.mode -ne "NODES_ONLY") {
 if ([string]::IsNullOrWhiteSpace($ConfigDirectory)) {
     $workspaceParent = [System.IO.Path]::GetDirectoryName($workspace)
     if ([string]::IsNullOrWhiteSpace($workspaceParent)) { Stop-SandboxSetup "Could not determine the fixture parent directory." }
-    $ConfigDirectory = Join-Path $workspaceParent ".agent-studio-node-config"
+    $ConfigDirectory = Join-Path $workspaceParent ".cycbercompany-node-config"
 }
 $configRoot = [System.IO.Path]::GetFullPath($ConfigDirectory)
 if ($configRoot.StartsWith($workspace + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase) -or $configRoot -eq $workspace) { Stop-SandboxSetup "ConfigDirectory must be outside the evaluation workspace because it contains the node credential." }
 New-Item -ItemType Directory -Force -Path $configRoot | Out-Null
 
-if ([string]::IsNullOrWhiteSpace($LauncherPath)) { $LauncherPath = Join-Path $PSScriptRoot "..\agent-studio-node-java\build\install\agent-studio-node-java\bin\agent-studio-node-java.bat" }
+if ([string]::IsNullOrWhiteSpace($LauncherPath)) { $LauncherPath = Join-Path $PSScriptRoot "..\cycbercompany-node-java\build\install\cycbercompany-node-java\bin\cycbercompany-node-java.bat" }
 $launcher = [System.IO.Path]::GetFullPath($LauncherPath)
-if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { Stop-SandboxSetup "Node launcher was not found: $launcher. Run .\gradlew.bat :agent-studio-node-java:installDist first." }
+if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { Stop-SandboxSetup "Node launcher was not found: $launcher. Run .\gradlew.bat :cycbercompany-node-java:installDist first." }
 
-$registration = Invoke-StudioJson -Method Post -Path "/api/v1/node-registration-tokens" -Body @{ ttlSeconds = 600 }
-if ([string]::IsNullOrWhiteSpace($registration.registrationToken)) { Stop-SandboxSetup "Backend did not return a registrationToken." }
 $safeName = $NodeName -replace '[^A-Za-z0-9._-]', '_'
 $configPath = Join-Path $configRoot "$safeName-$Scenario.json"
-$registerOutput = & $launcher register --server $script:BaseUrl --token $registration.registrationToken --name $NodeName --workspace $workspace --access $NodeAccess --config $configPath
+$registerOutput = & $launcher register --server $script:BaseUrl --name $NodeName --workspace $workspace --access $NodeAccess --config $configPath
 if ($LASTEXITCODE -ne 0) { Stop-SandboxSetup "Node client registration failed." }
 $nodeIdLine = @($registerOutput | Where-Object { $_ -like "nodeId=*" } | Select-Object -First 1)
 if ($nodeIdLine.Count -ne 1) { Stop-SandboxSetup "Node client registration did not report a node ID." }
