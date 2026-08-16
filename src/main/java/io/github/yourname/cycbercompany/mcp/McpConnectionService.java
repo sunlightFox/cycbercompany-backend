@@ -590,21 +590,27 @@ public class McpConnectionService {
                 stored.command(),
                 stored.args(),
                 stored.endpoint(),
-                resolveRuntimeEnv(stored.env()));
+                resolveRuntimeEnv(stored.id(), stored.env()));
     }
 
-    private Map<String, String> resolveRuntimeEnv(Map<String, String> storedEnv) {
+    private Map<String, String> resolveRuntimeEnv(String connectionId, Map<String, String> storedEnv) {
         if (storedEnv == null || storedEnv.isEmpty()) {
             return Map.of();
         }
         Map<String, String> resolved = new LinkedHashMap<>();
         storedEnv.forEach((key, value) -> {
             if (value != null && value.startsWith("env:")) {
-                String envName = value.substring("env:".length());
-                String envValue = System.getenv(envName);
-                if (envValue != null) {
-                    resolved.put(key, envValue);
+                String envName = value.substring("env:".length()).trim();
+                if (!envName.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+                    throw new IllegalArgumentException("Invalid environment variable reference for MCP connection "
+                            + connectionId + ": " + envName);
                 }
+                String envValue = System.getenv(envName);
+                if (envValue == null) {
+                    throw new IllegalStateException("MCP connection " + connectionId
+                            + " requires environment variable " + envName + " but it is not set.");
+                }
+                resolved.put(key, envValue);
             } else if (value != null) {
                 resolved.put(key, value);
             }

@@ -17,7 +17,6 @@ public class ToolCatalog {
         return List.of(
                 new RegisteredTool("local_time", "Return the server's current time.", RiskLevel.LOW, false),
                 new RegisteredTool("knowledge_search", "Search tenant-scoped knowledge bases.", RiskLevel.LOW, false),
-                new RegisteredTool("web_search", "Search the public web for current external evidence.", RiskLevel.LOW, false),
-                new RegisteredTool("skill.create_draft", "Create a disabled local Skill draft after approval.", RiskLevel.MEDIUM, true));
+                new RegisteredTool("web_search", "Search the public web for current external evidence.", RiskLevel.LOW, false));
     }
 }

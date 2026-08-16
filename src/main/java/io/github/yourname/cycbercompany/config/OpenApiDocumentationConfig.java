@@ -4,8 +4,6 @@ import io.swagger.v3.oas.annotations.OpenAPIDefinition;
 import io.swagger.v3.oas.annotations.info.Contact;
 import io.swagger.v3.oas.annotations.info.Info;
 import io.swagger.v3.oas.annotations.info.License;
-import io.swagger.v3.oas.annotations.security.SecurityRequirement;
-import io.swagger.v3.oas.annotations.security.SecurityScheme;
 import io.swagger.v3.oas.annotations.servers.Server;
 import io.swagger.v3.oas.models.Operation;
 import java.util.List;
@@ -43,13 +41,7 @@ import org.springframework.context.annotation.Configuration;
         servers = {
                 @Server(url = "http://127.0.0.1:8080", description = "默认本地开发地址"),
                 @Server(url = "http://127.0.0.1:8083", description = "personal-local 脚本常用地址")
-        },
-        security = @SecurityRequirement(name = "bearerAuth"))
-@SecurityScheme(
-        name = "bearerAuth",
-        type = io.swagger.v3.oas.annotations.enums.SecuritySchemeType.HTTP,
-        scheme = "bearer",
-        bearerFormat = "Personal API Token")
+        })
 class OpenApiDocumentationConfig {
 
     @Bean

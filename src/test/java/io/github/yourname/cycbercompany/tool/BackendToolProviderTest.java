@@ -22,6 +22,9 @@ class BackendToolProviderTest {
         ToolDescriptor knowledge = tool(tools, "knowledge_search");
         ToolDescriptor web = tool(tools, "web_search");
 
+        assertThat(tools).extracting(ToolDescriptor::logicalName)
+                .containsExactly("local_time", "knowledge_search", "web_search");
+
         assertThat(localTime.description()).contains("server time", "does not infer");
         assertThat(localTime.inputSchema()).containsEntry("additionalProperties", false);
         assertThat(knowledge.inputSchema().get("required")).isEqualTo(List.of("query"));

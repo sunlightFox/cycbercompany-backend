@@ -2,7 +2,7 @@ package io.github.yourname.cycbercompany.orchestration;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
-import io.github.yourname.cycbercompany.execution.InProcessLocalToolProvider;
+import io.github.yourname.cycbercompany.artifact.ArtifactView;
 import io.github.yourname.cycbercompany.model.ModelGateway;
 import io.github.yourname.cycbercompany.node.SensitiveValueMasker;
 import io.github.yourname.cycbercompany.model.ModelRateLimitException;
@@ -16,6 +16,8 @@ import io.github.yourname.cycbercompany.tool.ToolCleanupResult;
 import io.github.yourname.cycbercompany.tool.ToolInvocationRequest;
 import io.github.yourname.cycbercompany.tool.ToolProviderResult;
 import io.github.yourname.cycbercompany.tool.ToolRouter;
+import io.github.yourname.cycbercompany.tool.WebEvidence;
+import io.github.yourname.cycbercompany.tool.WebSearchResult;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -41,35 +43,38 @@ import org.springframework.stereotype.Service;
 class CodingAgentLoop {
 
     private static final int MAX_MODEL_TURNS = 24;
-    private static final int MAX_NODE_INTERACTION_TURNS = 12;
+    // Node interactions often involve remote calls. Keep recovery bounded so a bad tool mapping
+    // or unavailable capability cannot leave the user waiting for several minutes.
+    private static final int MAX_NODE_INTERACTION_TURNS = 8;
     private static final int MAX_TOOL_CALLS = 48;
     private static final int MAX_CONSECUTIVE_TOOL_FAILURES = 4;
     private static final int TOOL_BUDGET_WARNING = 36;
     private static final int TOOL_PROGRESS_INTERVAL_SECONDS = 10;
     // 以字符数近似上下文长度，避免长日志与截图文本在工具循环中无限累积。
-    private static final int MAX_CONTEXT_CHARS = 96_000;
-    private static final int RECENT_CONTEXT_CHARS = 42_000;
+    private static final int MAX_CONTEXT_CHARS = 48_000;
+    private static final int RECENT_CONTEXT_CHARS = 24_000;
     private static final int MAX_TOOL_RESULT_CHARS = 12_000;
+    private static final int MAX_WEB_TOOL_RESULT_CHARS = 4_000;
     private static final int INITIAL_TOOL_RESULT_PREVIEW_CHARS = 8_000;
-    private static final int MAX_RATE_LIMIT_RETRIES = 3;
+    private static final int MAX_RATE_LIMIT_RETRIES = 2;
     private static final int MAX_TRANSIENT_MODEL_RETRIES = 1;
-    private static final Duration INITIAL_RATE_LIMIT_DELAY = Duration.ofSeconds(15);
-    private static final Duration MAX_RATE_LIMIT_DELAY = Duration.ofSeconds(45);
+    private static final Duration INITIAL_RATE_LIMIT_DELAY = Duration.ofSeconds(5);
+    private static final Duration MAX_RATE_LIMIT_DELAY = Duration.ofSeconds(15);
     private static final Duration INITIAL_TRANSIENT_MODEL_DELAY = Duration.ofSeconds(1);
     private static final Duration MAX_TRANSIENT_MODEL_DELAY = Duration.ofSeconds(8);
     private static final Pattern POWER_SHELL_REQUEST = Pattern.compile(
             "(?is)((?:cmd\\s+/c\\s+)?(?:powershell(?:\\.exe)?|pwsh(?:\\.exe)?)\\b[^\\r\\n]*?-Command\\s+\\\"[^\\\"]*\\\")");
-    private static final Pattern EXPLICIT_STATE_CHANGE_REQUEST = Pattern.compile(
-            "(?iu)(?:\\b(?:create|write|edit|modify|delete|move|rename|run|execute|start|stop|open|close|"
-                    + "install|download|upload|send)\\b|\\u521b\\u5efa|\\u65b0\\u5efa|\\u5199\\u5165|\\u4fee\\u6539|"
-                    + "\\u7f16\\u8f91|\\u5220\\u9664|\\u79fb\\u52a8|\\u91cd\\u547d\\u540d|\\u8fd0\\u884c|\\u6267\\u884c|"
-                    + "\\u542f\\u52a8|\\u505c\\u6b62|\\u6253\\u5f00|\\u5173\\u95ed|\\u5b89\\u88c5|\\u4e0b\\u8f7d|"
-                    + "\\u4e0a\\u4f20|\\u53d1\\u9001)");
-    private static final Pattern EXPLICIT_NATIVE_INSPECTION_REQUEST = Pattern.compile(
-            "(?iu)(?:\\b(?:read|list|inspect|check|show|find|verify)\\b|"
-                    + "\\u8bfb\\u53d6|\\u67e5\\u770b|\\u68c0\\u67e5|\\u68c0\\u7d22|\\u9a8c\\u8bc1|"
-                    + "\\u663e\\u793a|\\u5217\\u51fa|\\u67e5\\u627e)");
+    private static final Pattern PERSISTENT_SERVICE_REQUEST = Pattern.compile(
+            "(?iu)(?:"
+                    + "(?:\\b(?:start|serve|deploy|host|listen|keep)\\b|\\u542f\\u52a8|\\u8fd0\\u884c|\\u90e8\\u7f72|\\u4fdd\\u6301|\\u5e38\\u9a7b).{0,100}"
+                    + "(?:\\b(?:server|service|port|localhost|http)\\b|\\u670d\\u52a1|\\u7aef\\u53e3|\\u540e\\u53f0|\\u5e38\\u9a7b)"
+                    + "|(?:\\b(?:server|service|port|localhost|http)\\b|\\u670d\\u52a1|\\u7aef\\u53e3|\\u540e\\u53f0|\\u5e38\\u9a7b).{0,100}"
+                    + "(?:\\b(?:start|serve|deploy|host|listen|keep)\\b|\\u542f\\u52a8|\\u8fd0\\u884c|\\u90e8\\u7f72|\\u4fdd\\u6301|\\u5e38\\u9a7b)"
+                    + ")");
     private static final Pattern MODEL_TOOL_NAME_WITH_DIGEST = Pattern.compile("^((?:tool_)?[a-z0-9_-]*?)_([0-9a-f]{12})$");
+    private static final Pattern INTERNAL_PROVIDER_PROTOCOL = Pattern.compile(
+            "(?is)(?:</?(?:mm:)?(?:think|thinking|analysis|reasoning)\\b|</?tool_call\\b|</?invoke\\b|"
+                    + "\\]<\\]minimax\\[>)");
     private static final String CODING_EXECUTION_PROTOCOL = """
             You are executing the current task inside a bounded native-tool loop. Work on the actual
             workspace; do not merely describe what you would do.
@@ -173,6 +178,18 @@ class CodingAgentLoop {
             5. Finish when the requested interaction is complete or a concrete blocker is known. Do not claim an
                action or browser state without a successful tool result.
             """;
+    private static final String PLATFORM_INTERACTION_PROTOCOL = """
+            Complete the user's request directly. Use an available tool when it helps.
+            For current external information, call web_search once with a focused query; do not repeat an equivalent
+            search unless the first result is genuinely insufficient. For a question about a project, package, model,
+            or open-source release, request its official GitHub repository or official website. If the returned results
+            contain those primary sources, include their exact URLs in the answer and do not replace them with a
+            secondary news repost. Summarize the available verified results instead of claiming that only one exists
+            when the tool returned several. After a tool result, answer the user directly.
+            Tool names shown in third-party Skill examples are illustrative only; they never create a capability.
+            Call only the exact functions advertised for this run. In particular, use web_search for public-web
+            evidence when it is advertised; do not invent or request a separate WebFetch/web_fetch function.
+            """;
     private static final String DEFERRED_TOOL_RESULT = "{\"status\":\"DEFERRED\","
             + "\"code\":\"APPROVAL_PENDING\","
             + "\"error\":\"Another tool call is awaiting approval, so this call did not run.\","
@@ -265,7 +282,6 @@ class CodingAgentLoop {
                 workspaceScope,
                 ApprovalMode.ON_REQUEST,
                 AgentApprovalPolicy.sessionOnly(),
-                true,
                 CODING_EXECUTION_PROTOCOL);
     }
 
@@ -292,8 +308,7 @@ class CodingAgentLoop {
             AgentApprovalPolicy agentApprovalPolicy) {
         return execute(
                 runId, modelProfileId, bindings, messages, actor, workspaceScope, approvalMode,
-                agentApprovalPolicy, true,
-                CODING_EXECUTION_PROTOCOL);
+                agentApprovalPolicy, CODING_EXECUTION_PROTOCOL);
     }
 
     String executeInteraction(
@@ -308,6 +323,24 @@ class CodingAgentLoop {
                 AgentApprovalPolicy.sessionOnly());
     }
 
+    /**
+     * Runs backend, MCP, and Skill-resource tools without selecting a computer/node.
+     * This intentionally uses automatic tool choice: a platform-aware answer may be
+     * purely explanatory, while factual or action requests can call an advertised tool.
+     */
+    String executePlatform(
+            String runId,
+            String modelProfileId,
+            List<ResolvedToolBinding> bindings,
+            List<ModelGateway.ModelMessage> messages,
+            ActorContext actor,
+            ApprovalMode approvalMode,
+            AgentApprovalPolicy agentApprovalPolicy) {
+        return execute(
+                runId, modelProfileId, bindings, messages, actor, CodingWorkspaceScope.from(null), approvalMode,
+                agentApprovalPolicy, PLATFORM_INTERACTION_PROTOCOL);
+    }
+
     String executeInteraction(
             String runId,
             String modelProfileId,
@@ -319,50 +352,117 @@ class CodingAgentLoop {
             AgentApprovalPolicy agentApprovalPolicy) {
         return execute(
                 runId, modelProfileId, bindings, messages, actor, workspaceScope, approvalMode,
-                agentApprovalPolicy,
-                requiresFirstNativeToolCall(bindings, messages),
-                NODE_INTERACTION_PROTOCOL);
+                agentApprovalPolicy, NODE_INTERACTION_PROTOCOL);
     }
 
-    private static boolean requiresFirstNativeToolCall(
+    /**
+     * An explicit downloadable office-file request has a concrete side effect. Do not let a
+     * text-only completion masquerade as that file when the artifact tool is available.
+     */
+    static boolean requiresArtifactDelivery(
             List<ResolvedToolBinding> bindings,
             List<ModelGateway.ModelMessage> messages) {
-        String request = "";
+        if (bindings == null || bindings.stream().noneMatch(binding -> "create_artifact".equals(binding.logicalName()))) {
+            return false;
+        }
+        List<String> userRequests = new ArrayList<>();
         if (messages != null) {
-            for (int index = messages.size() - 1; index >= 0; index--) {
-                ModelGateway.ModelMessage message = messages.get(index);
+            for (ModelGateway.ModelMessage message : messages) {
                 if ("user".equals(message.role())) {
-                    request = message.content() == null ? "" : message.content();
-                    break;
+                    userRequests.add(message.content() == null ? "" : message.content().toLowerCase(Locale.ROOT));
                 }
             }
         }
-        if (request.isBlank() || bindings == null) {
+        if (userRequests.isEmpty()) {
             return false;
         }
-        String normalizedRequest = request.toLowerCase(Locale.ROOT);
-        boolean hasAdvertisedNativeTool = bindings.stream()
-                .filter(CodingAgentLoop::isNativeExecutorTool)
-                .map(ResolvedToolBinding::logicalName)
-                .filter(name -> name != null && !name.isBlank())
-                .map(name -> name.toLowerCase(Locale.ROOT))
-                .anyMatch(normalizedRequest::contains);
-        if (hasAdvertisedNativeTool) {
+        String latestRequest = userRequests.getLast();
+        if (isDeferredArtifactRequest(latestRequest)) {
+            return false;
+        }
+        if (isExplicitArtifactRequest(latestRequest)) {
             return true;
         }
-        // A selected node may still be used for ordinary conversation. However, an explicit
-        // request to change local or external state cannot be truthfully completed without at
-        // least one successful native-tool attempt from the advertised node capability set.
-        if (!bindings.stream().anyMatch(CodingAgentLoop::isNativeExecutorTool)) {
-            return false;
-        }
-        return EXPLICIT_STATE_CHANGE_REQUEST.matcher(request).find()
-                || EXPLICIT_NATIVE_INSPECTION_REQUEST.matcher(request).find();
+        // A common office workflow is "define the document" then "directly start". The
+        // second turn inherits the concrete output requirement from the preceding request.
+        return isArtifactContinuation(latestRequest)
+                && userRequests.subList(0, userRequests.size() - 1).stream()
+                        .anyMatch(CodingAgentLoop::isExplicitArtifactRequest);
     }
 
-    private static boolean isNativeExecutorTool(ResolvedToolBinding binding) {
-        return "node".equals(binding.providerId())
-                || InProcessLocalToolProvider.PROVIDER_ID.equals(binding.providerId());
+    private static boolean isExplicitArtifactRequest(String request) {
+        return request.contains("create_artifact")
+                || request.contains(".docx")
+                || request.contains(".xlsx")
+                || (request.contains("word") && (request.contains("\u4e0b\u8f7d") || request.contains("\u6587\u4ef6")))
+                || (request.contains("excel") && (request.contains("\u4e0b\u8f7d") || request.contains("\u6587\u4ef6")))
+                || (request.contains("\u529e\u516c") && (request.contains("\u4e0b\u8f7d") || request.contains("\u4ea7\u7269")));
+    }
+
+    private static boolean isArtifactContinuation(String request) {
+        return request.contains("start")
+                || request.contains("continue")
+                || request.contains("\u5f00\u59cb")
+                || request.contains("\u7ee7\u7eed")
+                || request.contains("\u6309\u4e0a\u9762")
+                || request.contains("\u76f4\u63a5\u505a");
+    }
+
+    private static boolean isDeferredArtifactRequest(String request) {
+        return (request.contains("wait") && request.contains("start"))
+                || request.contains("do not generate")
+                || request.contains("\u7b49\u6211\u8bf4\u5f00\u59cb")
+                || request.contains("\u5148\u8bb0\u4f4f")
+                || request.contains("\u6682\u4e0d\u751f\u6210")
+                || request.contains("\u4e0d\u8981\u751f\u6210");
+    }
+
+    /**
+     * Preserve the trusted artifact reference from the tool result itself. This makes the final
+     * delivery independent of a model deciding to repeat the URL or of a later repository lookup.
+     */
+    static String artifactDelivery(ToolProviderResult outcome) {
+        if (outcome == null || !outcome.succeeded() || outcome.result() == null) {
+            return "";
+        }
+        Object value = outcome.result().get("artifact");
+        String filename = "";
+        String url = "";
+        if (value instanceof ArtifactView artifact) {
+            filename = artifact.filename();
+            url = artifact.downloadUrl();
+        } else if (value instanceof Map<?, ?> artifact) {
+            Object name = artifact.get("filename");
+            Object download = artifact.get("downloadUrl");
+            filename = name == null ? "" : name.toString();
+            url = download == null ? "" : download.toString();
+        }
+        if (url == null || url.isBlank()) {
+            return "";
+        }
+        String safeName = filename == null || filename.isBlank() ? "Download file" : filename.replace("]", "");
+        return "- [" + safeName + "](" + url + ")";
+    }
+
+    private static String appendGeneratedArtifactDelivery(String answer, List<String> deliveries) {
+        String current = answer == null ? "" : answer.strip();
+        if (deliveries == null || deliveries.isEmpty()) {
+            return current;
+        }
+        List<String> missing = deliveries.stream()
+                .filter(delivery -> {
+                    int urlStart = delivery.indexOf("](");
+                    int urlEnd = delivery.lastIndexOf(')');
+                    return urlStart < 0 || urlEnd <= urlStart || !current.contains(delivery.substring(urlStart + 2, urlEnd));
+                })
+                .distinct()
+                .toList();
+        if (missing.isEmpty()) {
+            return current;
+        }
+        String links = String.join("\n", missing);
+        return current.isBlank() ? "The requested file is ready:\n" + links
+                : current + "\n\nDownload:\n" + links;
     }
 
     String resume(
@@ -390,7 +490,6 @@ class CodingAgentLoop {
                 workspaceScope,
                 ApprovalMode.ON_REQUEST,
                 AgentApprovalPolicy.sessionOnly(),
-                false,
                 CODING_EXECUTION_PROTOCOL);
     }
 
@@ -417,8 +516,7 @@ class CodingAgentLoop {
             AgentApprovalPolicy agentApprovalPolicy) {
         return execute(
                 runId, modelProfileId, bindings, messages, actor, workspaceScope, approvalMode,
-                agentApprovalPolicy, false,
-                CODING_EXECUTION_PROTOCOL);
+                agentApprovalPolicy, CODING_EXECUTION_PROTOCOL);
     }
 
     String resumeInteraction(
@@ -433,6 +531,19 @@ class CodingAgentLoop {
                 AgentApprovalPolicy.sessionOnly());
     }
 
+    String resumePlatform(
+            String runId,
+            String modelProfileId,
+            List<ResolvedToolBinding> bindings,
+            List<ModelGateway.ModelMessage> messages,
+            ActorContext actor,
+            ApprovalMode approvalMode,
+            AgentApprovalPolicy agentApprovalPolicy) {
+        return execute(
+                runId, modelProfileId, bindings, messages, actor, CodingWorkspaceScope.from(null), approvalMode,
+                agentApprovalPolicy, PLATFORM_INTERACTION_PROTOCOL);
+    }
+
     String resumeInteraction(
             String runId,
             String modelProfileId,
@@ -444,8 +555,7 @@ class CodingAgentLoop {
             AgentApprovalPolicy agentApprovalPolicy) {
         return execute(
                 runId, modelProfileId, bindings, messages, actor, workspaceScope, approvalMode,
-                agentApprovalPolicy, false,
-                NODE_INTERACTION_PROTOCOL);
+                agentApprovalPolicy, NODE_INTERACTION_PROTOCOL);
     }
 
     private String execute(
@@ -457,7 +567,6 @@ class CodingAgentLoop {
             CodingWorkspaceScope workspaceScope,
             ApprovalMode approvalMode,
             AgentApprovalPolicy agentApprovalPolicy,
-            boolean requireFirstToolCall,
             String executionProtocol) {
         streamedFinalAnswers.remove(runId);
         boolean waitingForApproval = false;
@@ -485,17 +594,25 @@ class CodingAgentLoop {
                             modelToolDescription(tool, effectiveApprovalMode, effectiveAgentApprovalPolicy),
                             tool.inputSchema()))
                     .toList();
-            // A resumed run already has a completed (or explicitly rejected) tool call in its
-            // persisted context, so a final text response is valid on its first resumed turn.
-            // A fresh state-changing interaction needs a successful result: an unknown or failed
-            // first call is evidence for recovery, not proof that the requested action happened.
-            int successfulToolCalls = requireFirstToolCall ? 0 : 1;
+            // The model decides whether this request benefits from a tool. Tool availability is
+            // advisory capability, never an instruction to manufacture a call before answering.
+            // Artifact delivery remains a concrete postcondition when that specific deliverable
+            // was requested and the artifact tool is available.
+            boolean artifactDeliveryRequired = PLATFORM_INTERACTION_PROTOCOL.equals(executionProtocol)
+                    && requiresArtifactDelivery(available, messages);
+            int successfulToolCalls = artifactDeliveryRequired ? 0 : 1;
             int totalToolCalls = 0;
             int consecutiveToolFailures = 0;
+            int unknownToolCalls = 0;
+            boolean platformWebSearchComplete = false;
+            boolean platformWebAnswerRequested = false;
             Set<String> failedCallFingerprints = new HashSet<>();
+            Map<String, ToolProviderResult> reusableReadResults = new HashMap<>();
             boolean codingRun = CODING_EXECUTION_PROTOCOL.equals(executionProtocol);
             boolean projectChanged = false;
             boolean reviewedAfterLastProjectChange = false;
+            boolean artifactCreated = false;
+            List<String> generatedArtifactDelivery = new ArrayList<>();
 
             int maxModelTurns = CODING_EXECUTION_PROTOCOL.equals(executionProtocol)
                     ? MAX_MODEL_TURNS
@@ -507,10 +624,11 @@ class CodingAgentLoop {
                         messages,
                         turn,
                         totalToolCalls,
-                        successfulToolCalls == 0,
+                        false,
                         effectiveApprovalMode,
                         executionProtocol,
                         checkpoints == null ? null : checkpoints.resumeGuidance(runId, actor));
+                StringBuilder streamedTurnText = new StringBuilder();
                 var answer = answerWithRateLimitRetry(
                     runId,
                     actor,
@@ -518,15 +636,47 @@ class CodingAgentLoop {
                             modelProfileId,
                             requestMessages,
                             modelTools,
-                            successfulToolCalls == 0 ? ModelGateway.ToolChoice.REQUIRED : ModelGateway.ToolChoice.AUTO));
+                            ModelGateway.ToolChoice.AUTO),
+                    // A provider may stream prose and private protocol markers before it finishes
+                    // declaring a tool call. Buffer tool-planning turns; only a confirmed
+                    // no-tool reply or the dedicated delivery turn is eligible for display.
+                    streamedTurnText::append);
                 ensureNotCancelled(runId);
                 List<ModelGateway.ModelToolCall> calls = repairPowerShellCalls(
                         normalizeCalls(answer.toolCalls(), byModelCallAlias), messages, byModelName);
+                if (PLATFORM_INTERACTION_PROTOCOL.equals(executionProtocol) && platformWebSearchComplete && !calls.isEmpty()) {
+                    // A focused web result is already in the transcript. Third-party Skill examples
+                    // sometimes ask for a fictitious follow-up fetch tool or repeat the same search;
+                    // do not spend tool budget on aliases, cached duplicates, or unavailable fetchers.
+                    if (platformWebAnswerRequested) {
+                        // A result list is evidence, not a user-facing answer. Force one final
+                        // tool-free delivery turn instead of persisting the raw search snippets
+                        // as the assistant message. This keeps replayed conversation history as
+                        // useful as the live answer.
+                        String delivery = deliverFinalAnswer(runId, modelProfileId, messages, answer, actor, totalToolCalls);
+                        if (delivery.isBlank()) {
+                            ToolProviderResult webResult = reusableReadResults.get("web_search");
+                            delivery = recoverWebSearchSummary(runId, modelProfileId, messages, webResult, actor);
+                            return delivery.isBlank() ? webSearchFallback(webResult) : delivery;
+                        }
+                        return delivery;
+                    }
+                    platformWebAnswerRequested = true;
+                    messages.add(new ModelGateway.ModelMessage("system", """
+                            A successful web_search result is already available in the transcript. Do not request
+                            another tool or an alias such as WebFetch. Use the existing result to provide the final
+                            answer now; state any evidence limitation plainly instead of searching again.
+                            """));
+                    continue;
+                }
                 if (calls.isEmpty()) {
-                    if (successfulToolCalls == 0) {
-                        throw new IllegalStateException(
-                                "The selected model returned a text response without a successful native tool call. "
-                                        + "Use a model/provider with verified OpenAI-compatible function calling.");
+                    if (artifactDeliveryRequired && !artifactCreated) {
+                        messages.add(new ModelGateway.ModelMessage("system", """
+                                This is an explicit office-file delivery request. Call create_artifact now to
+                                generate the requested file before giving a final answer. A textual summary is
+                                not a substitute for a downloadable artifact.
+                                """));
+                        continue;
                     }
                     if (codingRun && projectChanged && !reviewedAfterLastProjectChange
                             && hasLogicalTool(available, "git.review")) {
@@ -534,7 +684,36 @@ class CodingAgentLoop {
                                 + "A project file changed in this run, so a final Git review is mandatory delivery evidence."));
                         continue;
                     }
-                    return deliverFinalAnswer(runId, modelProfileId, messages, answer, actor, totalToolCalls);
+                    // Platform calls already buffer planning turns. The first text-only turn
+                    // after a tool result is the final answer, so do not spend another model
+                    // round asking it to restate the same answer.
+                    if (PLATFORM_INTERACTION_PROTOCOL.equals(executionProtocol)) {
+                        if (totalToolCalls == 0) {
+                            String directAnswer = safeProviderText(
+                                    answer.content() == null ? streamedTurnText.toString() : answer.content());
+                            if (!directAnswer.isBlank()) {
+                                events.publish(runId, RunEventType.TOKEN_DELTA, directAnswer, actor);
+                                streamedFinalAnswers.add(runId);
+                                return appendGeneratedArtifactDelivery(
+                                        nonBlankFinalAnswer(directAnswer, messages), generatedArtifactDelivery);
+                            }
+                            return appendGeneratedArtifactDelivery(
+                                    deliverFinalAnswer(runId, modelProfileId, messages, answer, actor, totalToolCalls),
+                                    generatedArtifactDelivery);
+                        }
+                        String delivery = deliverFinalAnswer(runId, modelProfileId, messages, answer, actor, totalToolCalls);
+                        if (delivery.isBlank()) {
+                            ToolProviderResult webResult = reusableReadResults.get("web_search");
+                            delivery = recoverWebSearchSummary(runId, modelProfileId, messages, webResult, actor);
+                            if (delivery.isBlank()) {
+                                delivery = webSearchFallback(webResult);
+                            }
+                        }
+                        return appendGeneratedArtifactDelivery(delivery, generatedArtifactDelivery);
+                    }
+                    return appendGeneratedArtifactDelivery(
+                            deliverFinalAnswer(runId, modelProfileId, messages, answer, actor, totalToolCalls),
+                            generatedArtifactDelivery);
                 }
 
                 messages.add(ModelGateway.ModelMessage.assistantToolCalls(answer.content(), calls));
@@ -556,11 +735,29 @@ class CodingAgentLoop {
                     if (tool == null) {
                         events.publish(runId, RunEventType.TOOL_CALL_FAILED, "Unknown tool requested: " + call.name(), actor);
                         messages.add(ModelGateway.ModelMessage.toolResult(call.id(), unknownToolResult(available)));
+                        if (++unknownToolCalls >= 2) {
+                            throw new IllegalStateException(
+                                    "Coding run stopped after " + unknownToolCalls
+                                            + " requests for unavailable tools. Use only the advertised tool names.");
+                        }
                         consecutiveToolFailures = failFastAfterConsecutiveToolFailures(
                                 consecutiveToolFailures + 1, call.name(), "The requested tool was not advertised for this run.");
                         continue;
                     }
-                    String callFingerprint = failedCallFingerprint(tool, call.arguments());
+                    if (PLATFORM_INTERACTION_PROTOCOL.equals(executionProtocol)
+                            && platformWebSearchComplete
+                            && "web_search".equals(tool.logicalName())) {
+                        // The provider may emit duplicate web_search calls in one response. The
+                        // original call's complete result is already present, so acknowledge this
+                        // call in the transcript without creating a second audit event or invocation.
+                        ToolProviderResult cached = reusableReadResults.get(tool.logicalName());
+                        if (cached != null) {
+                            messages.add(ModelGateway.ModelMessage.toolResult(call.id(), serializeToolResult(tool, cached)));
+                        }
+                        continue;
+                    }
+                    Map<String, Object> invocationArguments = primarySourceAwareArguments(tool, call.arguments(), messages);
+                    String callFingerprint = failedCallFingerprint(tool, invocationArguments);
                     if (failedCallFingerprints.contains(callFingerprint)) {
                         ToolProviderResult blocked = duplicateFailedCallResult(tool.logicalName());
                         events.publish(runId, RunEventType.TOOL_CALL_FAILED,
@@ -579,15 +776,20 @@ class CodingAgentLoop {
                             runId,
                             call.id(),
                             tool,
-                            call.arguments(),
-                            timeoutSeconds(call.arguments()),
+                            invocationArguments,
+                            timeoutSeconds(invocationArguments),
                             workspaceScope,
                             actor,
                             null,
                             effectiveApprovalMode,
                             effectiveAgentApprovalPolicy);
-                    ToolProviderResult outcome = invokeWithProgress(
-                            invocationRequest, tool.logicalName(), runId, actor);
+                    ToolProviderResult outcome = reusableReadResults.get(tool.logicalName());
+                    if (outcome == null || !"web_search".equals(tool.logicalName())) {
+                        outcome = invokeWithProgress(invocationRequest, tool.logicalName(), runId, actor);
+                        if (outcome.succeeded() && "web_search".equals(tool.logicalName())) {
+                            reusableReadResults.put(tool.logicalName(), outcome);
+                        }
+                    }
                     if (outcome.requiresApproval()) {
                         if (checkpoints != null) {
                             checkpoints.phase(runId, actor, RunWorkflowPhase.WAITING_APPROVAL);
@@ -613,6 +815,22 @@ class CodingAgentLoop {
                     if (outcome.succeeded()) {
                         consecutiveToolFailures = 0;
                         successfulToolCalls++;
+                        if ("web_search".equals(tool.logicalName())) {
+                            // The first focused search is now in the transcript. Removing the
+                            // same tool from later turns prevents the model from repeatedly
+                            // reformulating an already-satisfied current-news lookup.
+                            modelTools = modelTools.stream()
+                                    .filter(candidate -> !candidate.name().equals(tool.modelName()))
+                                    .toList();
+                            platformWebSearchComplete = PLATFORM_INTERACTION_PROTOCOL.equals(executionProtocol);
+                        }
+                        artifactCreated = artifactCreated || "create_artifact".equals(tool.logicalName());
+                        if ("create_artifact".equals(tool.logicalName())) {
+                            String delivery = artifactDelivery(outcome);
+                            if (!delivery.isBlank()) {
+                                generatedArtifactDelivery.add(delivery);
+                            }
+                        }
                         if (codingRun && changesProjectFiles(tool.logicalName())) {
                             projectChanged = true;
                             reviewedAfterLastProjectChange = false;
@@ -639,7 +857,7 @@ class CodingAgentLoop {
                         terminalAnswer = exactShellOutputAnswer(messages, tool, outcome);
                     }
                     if (terminalAnswer != null) {
-                        return terminalAnswer;
+                        return appendGeneratedArtifactDelivery(terminalAnswer, generatedArtifactDelivery);
                     }
                 }
             }
@@ -648,9 +866,194 @@ class CodingAgentLoop {
                             + " model turns without a final answer. The model kept requesting tools.");
         } finally {
             if (!waitingForApproval) {
-                cleanupManagedProcesses(runId, actor);
+                if (shouldPreserveManagedProcesses(messages)) {
+                    events.publish(runId, RunEventType.PROGRESS_UPDATE,
+                            "A requested service was started and will remain running until explicitly stopped.", actor);
+                } else {
+                    cleanupManagedProcesses(runId, actor);
+                }
             }
         }
+    }
+
+    /**
+     * The model sometimes shortens an explicit request such as "X 是什么，给官网或开源地址" to
+     * just "X" in its function-call arguments. Preserve the authoritative request for the
+     * search provider so its deterministic primary-source query fan-out is not bypassed.
+     */
+    private static Map<String, Object> primarySourceAwareArguments(
+            ResolvedToolBinding tool,
+            Map<String, Object> supplied,
+            List<ModelGateway.ModelMessage> messages) {
+        if (tool == null || !"web_search".equals(tool.logicalName())) {
+            return supplied == null ? Map.of() : supplied;
+        }
+        String userRequest = latestUserRequest(messages);
+        if (!WebSearchQuerySignals.primarySourceRequested(userRequest)) {
+            return supplied == null ? Map.of() : supplied;
+        }
+        Map<String, Object> normalized = new LinkedHashMap<>();
+        if (supplied != null) {
+            normalized.putAll(supplied);
+        }
+        normalized.put("query", userRequest);
+        return Map.copyOf(normalized);
+    }
+
+    private static String latestUserRequest(List<ModelGateway.ModelMessage> messages) {
+        if (messages == null) {
+            return "";
+        }
+        for (int index = messages.size() - 1; index >= 0; index--) {
+            ModelGateway.ModelMessage message = messages.get(index);
+            if ("user".equals(message.role()) && message.content() != null && !message.content().isBlank()) {
+                return message.content();
+            }
+        }
+        return "";
+    }
+
+    /** A bounded delivery path when a provider repeats tool calls instead of returning prose. */
+    static String webSearchFallback(ToolProviderResult outcome) {
+        if (outcome == null || outcome.result() == null) {
+            return "网页搜索已完成，但模型没有返回可读摘要。请查看本次运行中的已验证搜索结果。";
+        }
+        Object values = outcome.result().get("results");
+        if (!(values instanceof List<?> results) || results.isEmpty()) {
+            return "网页搜索已完成，但没有返回可展示的结果。";
+        }
+        StringBuilder answer = new StringBuilder("已完成网页检索，但模型未能生成可靠的综合摘要。以下是可直接核验的相关来源：\n");
+        int count = 0;
+        for (Object value : results) {
+            if (count >= 3) {
+                break;
+            }
+            if (value instanceof WebSearchResult result) {
+                String title = result.title() == null || result.title().isBlank() ? "搜索结果" : result.title();
+                String url = result.url() == null ? "" : result.url();
+                if (!url.isBlank()) {
+                    answer.append("- [").append(title.replace("]", "")).append("](").append(url).append(")\n");
+                    count++;
+                }
+            } else if (value instanceof Map<?, ?> result) {
+                Object titleValue = result.get("title");
+                Object urlValue = result.get("url");
+                String title = titleValue == null ? "搜索结果" : titleValue.toString().strip();
+                String url = urlValue == null ? "" : urlValue.toString().strip();
+                if (!title.isBlank() && !url.isBlank()) {
+                    answer.append("- [").append(title.replace("]", "")).append("](").append(url).append(")\n");
+                    count++;
+                }
+            }
+        }
+        return count == 0
+                ? "网页搜索已完成，但没有返回可展示的结果。"
+                : answer.toString().strip();
+    }
+
+    /**
+     * Re-summarizes verified web evidence in a clean context after a tool-capable provider has
+     * emitted invalid protocol instead of a final answer. This deliberately does not reuse the
+     * failed assistant/tool-call transcript: some providers keep following that protocol even
+     * when tools have been removed.
+     */
+    private String recoverWebSearchSummary(
+            String runId,
+            String modelProfileId,
+            List<ModelGateway.ModelMessage> messages,
+            ToolProviderResult outcome,
+            ActorContext actor) {
+        String evidence = webSearchEvidenceForSummary(outcome);
+        String userRequest = latestUserRequest(messages);
+        if (evidence.isBlank() || userRequest.isBlank()) {
+            return "";
+        }
+        List<ModelGateway.ModelMessage> cleanMessages = new ArrayList<>();
+        cleanMessages.add(new ModelGateway.ModelMessage("system", """
+                Produce a concise, user-facing answer from the verified web evidence below.
+                Use only the supplied evidence, distinguish confirmed facts from uncertainty, and
+                include source links when useful. Reply with plain Markdown prose only: do not emit
+                tool calls, XML, provider markers, hidden reasoning, or commentary about this instruction.
+                """));
+        cleanMessages.add(new ModelGateway.ModelMessage("user", userRequest));
+        cleanMessages.add(new ModelGateway.ModelMessage("system", "Verified web evidence:\n" + evidence));
+        for (int attempt = 0; attempt < 2; attempt++) {
+            if (attempt > 0) {
+                cleanMessages.add(new ModelGateway.ModelMessage("system", """
+                        Your previous output was not valid user-facing text. Return the requested evidence-based
+                        summary now as plain Markdown only, without any tool or provider protocol.
+                        """));
+            }
+            ModelGateway.ModelAnswer answer = answerWithRateLimitRetry(
+                    runId,
+                    actor,
+                    new ModelGateway.ModelCompletionRequest(modelProfileId, cleanMessages));
+            String summary = safeProviderText(answer == null ? "" : answer.content());
+            if (!summary.isBlank()) {
+                return summary;
+            }
+        }
+        return "";
+    }
+
+    private static String webSearchEvidenceForSummary(ToolProviderResult outcome) {
+        if (outcome == null || !outcome.succeeded() || outcome.result() == null) {
+            return "";
+        }
+        Object values = outcome.result().get("results");
+        if (!(values instanceof List<?> results) || results.isEmpty()) {
+            return "";
+        }
+        StringBuilder evidence = new StringBuilder();
+        int count = 0;
+        for (Object value : results) {
+            if (count >= 4) {
+                break;
+            }
+            String title = "";
+            String url = "";
+            String excerpt = "";
+            if (value instanceof WebSearchResult result) {
+                title = result.title() == null ? "" : result.title().strip();
+                url = result.url() == null ? "" : result.url().strip();
+                excerpt = result.evidence() != null && result.evidence().excerpt() != null
+                        ? result.evidence().excerpt() : result.snippet();
+            } else if (value instanceof Map<?, ?> result) {
+                title = valueAsText(result.get("title"));
+                url = valueAsText(result.get("url"));
+                excerpt = valueAsText(result.get("excerpt"));
+                if (excerpt.isBlank()) {
+                    excerpt = valueAsText(result.get("snippet"));
+                }
+            }
+            if (title.isBlank() || url.isBlank()) {
+                continue;
+            }
+            evidence.append("Source ").append(++count).append(": ").append(title)
+                    .append("\nURL: ").append(url)
+                    .append("\nEvidence: ").append(truncateText(excerpt, 900)).append("\n\n");
+        }
+        return evidence.toString().strip();
+    }
+
+    private static String valueAsText(Object value) {
+        return value == null ? "" : value.toString().strip();
+    }
+
+    static boolean shouldPreserveManagedProcesses(List<ModelGateway.ModelMessage> messages) {
+        if (messages == null) {
+            return false;
+        }
+        // The model receives conversation history as well as the current request. Only the
+        // latest user message may opt a process out of run-scoped cleanup; otherwise an older
+        // "start a server" request would unexpectedly preserve processes in later runs.
+        return messages.stream()
+                .filter(message -> "user".equals(message.role()))
+                .map(ModelGateway.ModelMessage::content)
+                .filter(Objects::nonNull)
+                .reduce((ignored, latest) -> latest)
+                .map(content -> PERSISTENT_SERVICE_REQUEST.matcher(content).find())
+                .orElse(false);
     }
 
     /**
@@ -668,19 +1071,23 @@ class CodingAgentLoop {
         int completedToolTurns) {
         String draftContent = draft.content() == null ? "" : draft.content();
         if (!modelGateway.supportsStreaming() || completedToolTurns == 0) {
-            if (draftContent.isBlank() && completedToolTurns > 0) {
+            if (draftContent.isBlank()) {
                 List<ModelGateway.ModelMessage> recoveryMessages = new ArrayList<>(messages);
                 recoveryMessages.add(new ModelGateway.ModelMessage(
                         "system",
-                        "The native tool call succeeded but the previous completion was empty. "
-                                + "Return a concise user-facing answer grounded in the tool result now. "
-                                + "Do not call tools."));
+                        "Recovery delivery contract: the preceding tool result is the only new evidence. Return a "
+                                + "concise user-facing answer now, grounded only in the conversation and that result. "
+                                + "State a limitation if the result is insufficient. Do not call tools, invent a "
+                                + "result, expose private reasoning, or identify yourself as a model/provider."));
+                appendLatestUserRequest(recoveryMessages);
                 ModelGateway.ModelAnswer recovered = answerWithRateLimitRetry(
                         runId,
                         actor,
                         new ModelGateway.ModelCompletionRequest(modelProfileId, recoveryMessages));
                 if (recovered.content() != null && !recovered.content().isBlank()) {
-                    return recovered.content().strip();
+                    // Non-streaming providers need the same protocol validation as the
+                    // streaming delivery path below. Never persist a malformed recovery turn.
+                    return safeProviderText(recovered.content());
                 }
             }
             return nonBlankFinalAnswer(draftContent, messages);
@@ -692,25 +1099,37 @@ class CodingAgentLoop {
         }
         finalMessages.add(new ModelGateway.ModelMessage(
                 "system",
-                "The tool work is complete. Return the final user-facing answer now. "
-                        + "Do not call tools, do not describe private reasoning, and only state "
-                        + "results supported by the conversation and tool outputs."));
-        StringBuilder safeAnswer = new StringBuilder();
-        StreamingOutputFilter filter = new StreamingOutputFilter(token -> {
-            safeAnswer.append(token);
-            events.publish(runId, RunEventType.TOKEN_DELTA, token, actor);
-        });
+                "Final delivery contract: tool work has ended. Return the final user-facing answer now. Do not call "
+                        + "tools or describe private reasoning. State only results supported by the conversation and "
+                        + "tool outputs; distinguish completed work, verification, and any material limitation. Do not "
+                        + "identify yourself as a model or provider."));
+        // Some OpenAI-compatible providers weight the final user turn much more strongly than
+        // intervening system/tool protocol. Repeat the existing request verbatim so delivery
+        // remains anchored after a long tool transcript without changing user intent.
+        appendLatestUserRequest(finalMessages);
+        StringBuilder deliveredText = new StringBuilder();
+        // Keep the filtered text private until the provider has completed the turn. A malformed
+        // provider response can begin with plausible prose and then switch to a tool protocol;
+        // publishing the prefix immediately would still leave a dangling pseudo-answer in chat.
+        StreamingOutputFilter outputFilter = new StreamingOutputFilter(deliveredText::append);
         ModelGateway.ModelAnswer finalAnswer = answerWithRateLimitRetry(
                 runId,
                 actor,
-                new ModelGateway.ModelCompletionRequest(modelProfileId, finalMessages));
-        filter.accept(finalAnswer.content());
-        filter.finish();
-        if (filter.emitted()) {
+                new ModelGateway.ModelCompletionRequest(modelProfileId, finalMessages), outputFilter::accept);
+        outputFilter.finish();
+        String rawDelivered = finalAnswer.content() == null ? "" : finalAnswer.content();
+        if (INTERNAL_PROVIDER_PROTOCOL.matcher(rawDelivered).find()) {
+            // Do not turn a provider control frame into a durable assistant message. Returning
+            // blank activates the command service's bounded, tool-free recovery path.
+            return "";
+        }
+        String delivered = deliveredText.toString();
+        String finalDelivery = nonBlankFinalAnswer(delivered.isBlank() ? rawDelivered : delivered, messages);
+        if (!delivered.isBlank()) {
+            events.publish(runId, RunEventType.TOKEN_DELTA, delivered, actor);
             streamedFinalAnswers.add(runId);
         }
-        String delivered = safeAnswer.toString().strip();
-        return nonBlankFinalAnswer(delivered.isBlank() ? draftContent : delivered, messages);
+        return finalDelivery;
     }
 
     private String nonBlankFinalAnswer(String candidate, List<ModelGateway.ModelMessage> messages) {
@@ -738,6 +1157,30 @@ class CodingAgentLoop {
             }
         }
         return "Tool execution completed successfully, but the model returned no additional text.";
+    }
+
+    private static String safeProviderText(String raw) {
+        if (raw == null || raw.isBlank() || INTERNAL_PROVIDER_PROTOCOL.matcher(raw).find()) {
+            return "";
+        }
+        StringBuilder filtered = new StringBuilder();
+        StreamingOutputFilter filter = new StreamingOutputFilter(filtered::append);
+        filter.accept(raw);
+        filter.finish();
+        return filtered.toString().strip();
+    }
+
+    private static void appendLatestUserRequest(List<ModelGateway.ModelMessage> messages) {
+        if (messages == null) {
+            return;
+        }
+        for (int index = messages.size() - 1; index >= 0; index--) {
+            ModelGateway.ModelMessage message = messages.get(index);
+            if ("user".equals(message.role()) && message.content() != null && !message.content().isBlank()) {
+                messages.add(new ModelGateway.ModelMessage("user", message.content()));
+                return;
+            }
+        }
     }
 
     /** Keeps a successful native call useful when a provider echoes its internal result envelope. */
@@ -1067,11 +1510,14 @@ class CodingAgentLoop {
         payload.put("status", outcome.status());
         payload.put("tool", binding.logicalName());
         payload.put("provider", binding.providerId());
-        payload.put("result", outcome.result());
+        payload.put("result", "web_search".equals(binding.logicalName())
+                ? compactWebSearchResult(outcome.result()) : outcome.result());
         payload.put("error", outcome.errorMessage());
         try {
             String json = SensitiveValueMasker.mask(objectMapper.writeValueAsString(payload));
-            if (json.length() <= MAX_TOOL_RESULT_CHARS) {
+            int maximumLength = "web_search".equals(binding.logicalName())
+                    ? MAX_WEB_TOOL_RESULT_CHARS : MAX_TOOL_RESULT_CHARS;
+            if (json.length() <= maximumLength) {
                 return json;
             }
 
@@ -1091,7 +1537,7 @@ class CodingAgentLoop {
             while (true) {
                 bounded.put("resultPreview", truncateText(resultPreview, previewLimit));
                 String candidate = SensitiveValueMasker.mask(objectMapper.writeValueAsString(bounded));
-                if (candidate.length() <= MAX_TOOL_RESULT_CHARS || previewLimit == 0) {
+                if (candidate.length() <= maximumLength || previewLimit == 0) {
                     return candidate;
                 }
                 previewLimit = Math.max(0, previewLimit / 2);
@@ -1099,6 +1545,40 @@ class CodingAgentLoop {
         } catch (Exception ex) {
             return "{\"status\":\"FAILED\",\"error\":\"Unable to serialize tool result\"}";
         }
+    }
+
+    private static Map<String, Object> compactWebSearchResult(Map<String, Object> result) {
+        if (result == null || result.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> compact = new LinkedHashMap<>();
+        compact.put("query", result.get("query"));
+        compact.put("intent", result.get("intent"));
+        Object rawResults = result.get("results");
+        if (rawResults instanceof List<?> values) {
+            List<Map<String, Object>> items = new ArrayList<>();
+            for (Object value : values.stream().limit(5).toList()) {
+                if (value instanceof WebSearchResult item) {
+                    Map<String, Object> entry = new LinkedHashMap<>();
+                    entry.put("title", truncateText(item.title(), 240));
+                    entry.put("url", item.url());
+                    entry.put("publishedAt", item.publishedAt());
+                    entry.put("snippet", truncateText(item.snippet(), 500));
+                    WebEvidence evidence = item.evidence();
+                    if (evidence != null) {
+                        entry.put("excerpt", truncateText(evidence.excerpt(), 700));
+                        entry.put("verification", evidence.verification());
+                    }
+                    items.add(entry);
+                } else {
+                    items.add(Map.of("result", truncateText(String.valueOf(value), 900)));
+                }
+            }
+            compact.put("results", items);
+        } else {
+            compact.put("results", rawResults);
+        }
+        return compact;
     }
 
     private static String truncateText(String value, int maximumCharacters) {
@@ -1444,17 +1924,32 @@ class CodingAgentLoop {
             return;
         }
         List<ModelGateway.ModelMessage> prefix = new ArrayList<>();
-        int index = 0;
-        // 初始的 system 和 user 指令定义任务目标，不能因为日志过长被删除。
-        while (index < messages.size() && prefix.size() < 2) {
-            ModelGateway.ModelMessage message = messages.get(index++);
-            if ("system".equals(message.role()) || "user".equals(message.role())) {
-                prefix.add(message);
+        int initialSystemCount = 0;
+        int latestUser = -1;
+        for (int position = 0; position < messages.size(); position++) {
+            String role = messages.get(position).role();
+            if (position == initialSystemCount && "system".equals(role)) {
+                initialSystemCount++;
             }
+            if ("user".equals(role)) {
+                latestUser = position;
+            }
+        }
+        // 初始的 system 和 user 指令定义任务目标，不能因为日志过长被删除。
+        for (int position = 0; position < initialSystemCount; position++) {
+            prefix.add(messages.get(position));
+        }
+        // The latest request is the task authority. Retaining the oldest request here allowed
+        // stale goals from a long conversation to steer later tool calls.
+        if (latestUser >= initialSystemCount) {
+            prefix.add(messages.get(latestUser));
         }
         List<ModelGateway.ModelMessage> tail = new ArrayList<>();
         int retained = 0;
-        for (int position = messages.size() - 1; position >= index; position--) {
+        for (int position = messages.size() - 1; position >= 0; position--) {
+            if (position < initialSystemCount || position == latestUser) {
+                continue;
+            }
             ModelGateway.ModelMessage message = messages.get(position);
             if (retained + messageChars(message) > RECENT_CONTEXT_CHARS && !tail.isEmpty()) {
                 break;

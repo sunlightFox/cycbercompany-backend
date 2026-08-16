@@ -41,4 +41,16 @@ class WebSearchQueryPlannerTest {
         assertThat(plan).extracting(WebSearchQueryPlanner.PlannedQuery::query)
                 .contains("AI large language model generative AI current news");
     }
+
+    @Test
+    void expandsProjectQuestionsToPrimarySourcesBeforeSecondaryCoverage() {
+        var plan = WebSearchQueryPlanner.plan("DeepSeek Harness是什么", "DeepSeek Harness是什么",
+                WebSearchMode.GENERAL, 3);
+
+        assertThat(plan).extracting(WebSearchQueryPlanner.PlannedQuery::query)
+                .containsExactly("DeepSeek Harness是什么", "DeepSeek Harness official GitHub repository",
+                        "DeepSeek Harness official website");
+        assertThat(plan).extracting(WebSearchQueryPlanner.PlannedQuery::sourceId)
+                .contains("tavily/primary-source/github", "tavily/primary-source/website");
+    }
 }

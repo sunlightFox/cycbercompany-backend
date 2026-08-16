@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -34,6 +35,21 @@ import org.mockito.ArgumentCaptor;
 class CodingAgentLoopTest {
 
     @Test
+    void preservesProcessesOnlyForTheLatestExplicitServiceRequest() {
+        assertThat(CodingAgentLoop.shouldPreserveManagedProcesses(List.of(
+                new ModelGateway.ModelMessage("user", "Start a local server on port 9000."))))
+                .isTrue();
+        assertThat(CodingAgentLoop.shouldPreserveManagedProcesses(List.of(
+                new ModelGateway.ModelMessage("user", "Start a local server on port 9000."),
+                new ModelGateway.ModelMessage("assistant", "The server is running."),
+                new ModelGateway.ModelMessage("user", "Check the README file."))))
+                .isFalse();
+        assertThat(CodingAgentLoop.shouldPreserveManagedProcesses(List.of(
+                new ModelGateway.ModelMessage("user", "Stop the local server on port 9000."))))
+                .isFalse();
+    }
+
+    @Test
     void nodeInteractionLetsTheModelDecideWhetherToCallATool() {
         ModelGateway gateway = mock(ModelGateway.class);
         ToolRouter tools = mock(ToolRouter.class);
@@ -56,7 +72,308 @@ class CodingAgentLoopTest {
     }
 
     @Test
-    void explicitlyNamedNodeToolRequiresAFirstToolCall() {
+    void platformInteractionExposesBackendAndSkillToolsWithoutSelectingANode() {
+        ModelGateway gateway = mock(ModelGateway.class);
+        ToolRouter tools = mock(ToolRouter.class);
+        ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
+        when(gateway.complete(any())).thenReturn(new ModelGateway.ModelAnswer("可用工具已列出。", null, null, "test"));
+        when(tools.cleanup("run-a", actor)).thenReturn(List.of());
+
+        String answer = new CodingAgentLoop(gateway, tools, mock(RunEventPublisher.class)).executePlatform(
+                "run-a", "model-a", List.of(
+                        binding("backend_time", "local_time"),
+                        binding("skill_resource", "skill.resource.read")),
+                new ArrayList<>(List.of(new ModelGateway.ModelMessage("user", "有什么工具？"))), actor,
+                ApprovalMode.ON_REQUEST, io.github.yourname.cycbercompany.tool.AgentApprovalPolicy.sessionOnly());
+
+        assertThat(answer).isEqualTo("可用工具已列出。");
+        ArgumentCaptor<ModelGateway.ModelCompletionRequest> request =
+                ArgumentCaptor.forClass(ModelGateway.ModelCompletionRequest.class);
+        verify(gateway).complete(request.capture());
+        assertThat(request.getValue().toolChoice()).isEqualTo(ModelGateway.ToolChoice.AUTO);
+        assertThat(request.getValue().tools()).extracting(ModelGateway.ModelTool::description)
+                .anyMatch(description -> description.contains("local_time"))
+                .anyMatch(description -> description.contains("skill.resource.read"));
+        assertThat(executionGuidance(request.getValue()))
+                .contains("Complete the user's request directly.")
+                .contains("call web_search once");
+        verify(tools, never()).invoke(any());
+    }
+
+    @Test
+    void platformTextResponseStreamsImmediatelyWithoutAToolRoundTrip() {
+        ModelGateway gateway = mock(ModelGateway.class);
+        ToolRouter tools = mock(ToolRouter.class);
+        RunEventPublisher events = mock(RunEventPublisher.class);
+        ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
+        when(gateway.supportsStreaming()).thenReturn(true);
+        when(gateway.stream(any(), any())).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            java.util.function.Consumer<String> onToken = invocation.getArgument(1);
+            onToken.accept("即时");
+            onToken.accept("回复");
+            return new ModelGateway.ModelAnswer("即时回复", null, null, "stream-model");
+        });
+        when(tools.cleanup("run-platform-stream", actor)).thenReturn(List.of());
+
+        CodingAgentLoop loop = new CodingAgentLoop(gateway, tools, events);
+        String answer = loop.executePlatform(
+                "run-platform-stream", "model-a", List.of(binding("backend_time", "local_time")),
+                new ArrayList<>(List.of(new ModelGateway.ModelMessage("user", "你好"))), actor,
+                ApprovalMode.ON_REQUEST, io.github.yourname.cycbercompany.tool.AgentApprovalPolicy.sessionOnly());
+
+        assertThat(answer).isEqualTo("即时回复");
+        verify(events).publish("run-platform-stream", RunEventType.TOKEN_DELTA, "即时回复", actor);
+        verify(tools, never()).invoke(any());
+        assertThat(loop.consumeFinalAnswerStreamed("run-platform-stream")).isTrue();
+    }
+
+    @Test
+    void platformConversationRecoversAnEmptyTextTurnWithoutInventingAToolResult() {
+        ModelGateway gateway = mock(ModelGateway.class);
+        ToolRouter tools = mock(ToolRouter.class);
+        RunEventPublisher events = mock(RunEventPublisher.class);
+        ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
+        when(gateway.complete(any()))
+                .thenReturn(new ModelGateway.ModelAnswer("", null, null, "model"))
+                .thenReturn(new ModelGateway.ModelAnswer("程序员为什么不喜欢大自然？因为那里有太多 bug。", null, null, "model"));
+        when(tools.cleanup("run-joke", actor)).thenReturn(List.of());
+
+        String answer = new CodingAgentLoop(gateway, tools, events).executePlatform(
+                "run-joke", "model-a", List.of(binding("backend_time", "local_time")),
+                new ArrayList<>(List.of(new ModelGateway.ModelMessage("user", "讲个笑话"))), actor,
+                ApprovalMode.ON_REQUEST, io.github.yourname.cycbercompany.tool.AgentApprovalPolicy.sessionOnly());
+
+        assertThat(answer).contains("bug");
+        verify(tools, never()).invoke(any());
+        ArgumentCaptor<ModelGateway.ModelCompletionRequest> requests =
+                ArgumentCaptor.forClass(ModelGateway.ModelCompletionRequest.class);
+        verify(gateway, times(2)).complete(requests.capture());
+        assertThat(requests.getAllValues().getLast().tools()).isEmpty();
+    }
+
+    @Test
+    void platformRunReusesTheFirstWebSearchResultInsteadOfWaitingForADuplicateSearch() {
+        ModelGateway gateway = mock(ModelGateway.class);
+        ToolRouter tools = mock(ToolRouter.class);
+        RunEventPublisher events = mock(RunEventPublisher.class);
+        ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
+        ResolvedToolBinding webSearch = binding("backend_web_search", "web_search", false, "backend");
+        ModelGateway.ModelToolCall first = new ModelGateway.ModelToolCall(
+                "call-1", "backend_web_search", Map.of("query", "latest Musk news"));
+        ModelGateway.ModelToolCall duplicate = new ModelGateway.ModelToolCall(
+                "call-2", "backend_web_search", Map.of("query", "Musk news today"));
+        when(gateway.complete(any()))
+                .thenReturn(new ModelGateway.ModelAnswer("", null, null, "model", List.of(first), "tool_calls"))
+                .thenReturn(new ModelGateway.ModelAnswer("", null, null, "model", List.of(duplicate), "tool_calls"))
+                .thenReturn(new ModelGateway.ModelAnswer("Here is the news summary.", null, null, "model"));
+        when(tools.invoke(any())).thenReturn(new ToolProviderResult("SUCCEEDED", true, Map.of(
+                "query", "latest Musk news",
+                "results", List.of(new io.github.yourname.cycbercompany.tool.WebSearchResult(
+                        "News", "https://example.test/news", "short result", "tavily", "TAVILY", null,
+                        new io.github.yourname.cycbercompany.tool.WebEvidence(
+                                "News", "verified excerpt", true, true, "readable")))), "", null));
+        when(tools.cleanup("run-web", actor)).thenReturn(List.of());
+
+        String answer = new CodingAgentLoop(gateway, tools, events).executePlatform(
+                "run-web", "model-a", List.of(webSearch),
+                new ArrayList<>(List.of(new ModelGateway.ModelMessage("user", "Find today's Musk news"))),
+                actor, ApprovalMode.FULL_ACCESS, io.github.yourname.cycbercompany.tool.AgentApprovalPolicy.sessionOnly());
+
+        assertThat(answer).isEqualTo("Here is the news summary.");
+        verify(tools, times(1)).invoke(any());
+        ArgumentCaptor<ModelGateway.ModelCompletionRequest> requests =
+                ArgumentCaptor.forClass(ModelGateway.ModelCompletionRequest.class);
+        verify(gateway, times(3)).complete(requests.capture());
+        assertThat(requests.getAllValues().get(1).tools())
+                .noneMatch(tool -> tool.name().equals("backend_web_search"));
+    }
+
+    @Test
+    void platformRunSuppressesDuplicateWebSearchCallsInOneModelResponse() {
+        ModelGateway gateway = mock(ModelGateway.class);
+        ToolRouter tools = mock(ToolRouter.class);
+        RunEventPublisher events = mock(RunEventPublisher.class);
+        ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
+        ResolvedToolBinding webSearch = binding("backend_web_search", "web_search", false, "backend");
+        ModelGateway.ModelToolCall first = new ModelGateway.ModelToolCall(
+                "call-1", "backend_web_search", Map.of("query", "latest AI news"));
+        ModelGateway.ModelToolCall duplicate = new ModelGateway.ModelToolCall(
+                "call-2", "backend_web_search", Map.of("query", "AI news today"));
+        when(gateway.complete(any()))
+                .thenReturn(new ModelGateway.ModelAnswer("", null, null, "model", List.of(first, duplicate), "tool_calls"))
+                .thenReturn(new ModelGateway.ModelAnswer("Here is the news summary.", null, null, "model"));
+        when(tools.invoke(any())).thenReturn(new ToolProviderResult("SUCCEEDED", true, Map.of(
+                "query", "latest AI news", "results", List.of()), "", null));
+        when(tools.cleanup("run-web-batch", actor)).thenReturn(List.of());
+
+        String answer = new CodingAgentLoop(gateway, tools, events).executePlatform(
+                "run-web-batch", "model-a", List.of(webSearch),
+                new ArrayList<>(List.of(new ModelGateway.ModelMessage("user", "Find today's AI news"))),
+                actor, ApprovalMode.FULL_ACCESS, io.github.yourname.cycbercompany.tool.AgentApprovalPolicy.sessionOnly());
+
+        assertThat(answer).isEqualTo("Here is the news summary.");
+        verify(tools, times(1)).invoke(any());
+        verify(gateway, times(2)).complete(any());
+    }
+
+    @Test
+    void platformRunUsesToolFreeDeliveryWhenTheModelRepeatsSearchOnTheNextTurn() {
+        ModelGateway gateway = mock(ModelGateway.class);
+        ToolRouter tools = mock(ToolRouter.class);
+        RunEventPublisher events = mock(RunEventPublisher.class);
+        ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
+        ResolvedToolBinding webSearch = binding("backend_web_search", "web_search", false, "backend");
+        ModelGateway.ModelToolCall search = new ModelGateway.ModelToolCall(
+                "call-1", "backend_web_search", Map.of("query", "DeepSeek hermes"));
+        ModelGateway.ModelToolCall repeated = new ModelGateway.ModelToolCall(
+                "call-2", "backend_web_search", Map.of("query", "DeepSeek hermes"));
+        when(gateway.complete(any()))
+                .thenReturn(new ModelGateway.ModelAnswer("", null, null, "model", List.of(search), "tool_calls"))
+                .thenReturn(new ModelGateway.ModelAnswer("", null, null, "model", List.of(repeated), "tool_calls"))
+                .thenReturn(new ModelGateway.ModelAnswer("Hermes is not a DeepSeek product; the search results appear unrelated.",
+                        null, null, "model"));
+        when(tools.invoke(any())).thenReturn(new ToolProviderResult("SUCCEEDED", true, Map.of(
+                "query", "DeepSeek hermes", "results", List.of()), "", null));
+        when(tools.cleanup("run-web-repeat", actor)).thenReturn(List.of());
+
+        String answer = new CodingAgentLoop(gateway, tools, events).executePlatform(
+                "run-web-repeat", "model-a", List.of(webSearch),
+                new ArrayList<>(List.of(new ModelGateway.ModelMessage("user", "deepseek hermes是什么？"))),
+                actor, ApprovalMode.FULL_ACCESS, io.github.yourname.cycbercompany.tool.AgentApprovalPolicy.sessionOnly());
+
+        assertThat(answer).startsWith("Hermes is not a DeepSeek product");
+        ArgumentCaptor<ModelGateway.ModelCompletionRequest> requests =
+                ArgumentCaptor.forClass(ModelGateway.ModelCompletionRequest.class);
+        verify(gateway, times(3)).complete(requests.capture());
+        assertThat(requests.getValue().tools()).isEmpty();
+        verify(tools, times(1)).invoke(any());
+    }
+
+    @Test
+    void platformRunDoesNotPublishOrPersistMiniMaxToolProtocolAsFinalText() {
+        ModelGateway gateway = mock(ModelGateway.class);
+        ToolRouter tools = mock(ToolRouter.class);
+        RunEventPublisher events = mock(RunEventPublisher.class);
+        ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
+        ResolvedToolBinding webSearch = binding("backend_web_search", "web_search", false, "backend");
+        ModelGateway.ModelToolCall search = new ModelGateway.ModelToolCall(
+                "call-1", "backend_web_search", Map.of("query", "recent phones"));
+        String malformed = "让我用其他方式再尝试搜索。]<]minimax[><tool_call><invoke name=\"web_search\"/>";
+        when(gateway.complete(any()))
+                .thenReturn(new ModelGateway.ModelAnswer("", null, null, "model", List.of(search), "tool_calls"))
+                .thenReturn(new ModelGateway.ModelAnswer("", null, null, "model"))
+                .thenReturn(new ModelGateway.ModelAnswer(malformed, null, null, "model"));
+        when(tools.invoke(any())).thenReturn(new ToolProviderResult("SUCCEEDED", true, Map.of(
+                "query", "recent phones", "results", List.of()), "", null));
+        when(tools.cleanup("run-malformed-final", actor)).thenReturn(List.of());
+
+        String answer = new CodingAgentLoop(gateway, tools, events).executePlatform(
+                "run-malformed-final", "model-a", List.of(webSearch),
+                new ArrayList<>(List.of(new ModelGateway.ModelMessage("user", "搜索最近发布的手机"))),
+                actor, ApprovalMode.FULL_ACCESS, io.github.yourname.cycbercompany.tool.AgentApprovalPolicy.sessionOnly());
+
+        assertThat(answer).contains("网页搜索已完成");
+        verify(events, never()).publish(eq("run-malformed-final"), eq(RunEventType.TOKEN_DELTA),
+                contains("让我用其他方式"), eq(actor));
+    }
+
+    @Test
+    void platformRunReSummarizesVerifiedWebEvidenceInACleanToolFreeContext() {
+        ModelGateway gateway = mock(ModelGateway.class);
+        ToolRouter tools = mock(ToolRouter.class);
+        RunEventPublisher events = mock(RunEventPublisher.class);
+        ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
+        ResolvedToolBinding webSearch = binding("backend_web_search", "web_search", false, "backend");
+        ModelGateway.ModelToolCall search = new ModelGateway.ModelToolCall(
+                "call-1", "backend_web_search", Map.of("query", "recent phones"));
+        when(gateway.complete(any()))
+                .thenReturn(new ModelGateway.ModelAnswer("", null, null, "model", List.of(search), "tool_calls"))
+                .thenReturn(new ModelGateway.ModelAnswer("", null, null, "model"))
+                .thenReturn(new ModelGateway.ModelAnswer("]<]minimax[><tool_call>", null, null, "model"))
+                .thenReturn(new ModelGateway.ModelAnswer("近期可关注 OPPO A7 Pro Max 发布会；请以官方页面为准。", null, null, "model"));
+        when(tools.invoke(any())).thenReturn(new ToolProviderResult("SUCCEEDED", true, Map.of(
+                "query", "recent phones",
+                "results", List.of(new io.github.yourname.cycbercompany.tool.WebSearchResult(
+                        "OPPO A7 Pro Max新品发布会", "https://example.test/oppo", "发布会信息", "tavily", "TAVILY", null,
+                        new io.github.yourname.cycbercompany.tool.WebEvidence(
+                                "OPPO A7 Pro Max新品发布会", "OPPO A7 Pro Max将于近期发布。", true, true, "readable")))), "", null));
+        when(tools.cleanup("run-web-resummary", actor)).thenReturn(List.of());
+
+        String answer = new CodingAgentLoop(gateway, tools, events).executePlatform(
+                "run-web-resummary", "model-a", List.of(webSearch),
+                new ArrayList<>(List.of(new ModelGateway.ModelMessage("user", "搜索最近发布的手机"))),
+                actor, ApprovalMode.FULL_ACCESS, io.github.yourname.cycbercompany.tool.AgentApprovalPolicy.sessionOnly());
+
+        assertThat(answer).contains("OPPO A7 Pro Max");
+        ArgumentCaptor<ModelGateway.ModelCompletionRequest> requests =
+                ArgumentCaptor.forClass(ModelGateway.ModelCompletionRequest.class);
+        verify(gateway, times(4)).complete(requests.capture());
+        assertThat(requests.getValue().tools()).isEmpty();
+        assertThat(requests.getValue().messages()).extracting(ModelGateway.ModelMessage::content)
+                .anyMatch(content -> content != null && content.contains("Verified web evidence"));
+    }
+
+    @Test
+    void webSearchFallbackDeliversVerifiedUrlsWhenTheModelKeepsRequestingTools() {
+        ToolProviderResult outcome = new ToolProviderResult("SUCCEEDED", true, Map.of(
+                "results", List.of(new io.github.yourname.cycbercompany.tool.WebSearchResult(
+                        "Official source", "https://example.test/official", "Verified summary", "tavily", "TAVILY", null,
+                        new io.github.yourname.cycbercompany.tool.WebEvidence(
+                                "Official source", "Verified summary", true, true, "readable")))), "", null);
+
+        assertThat(CodingAgentLoop.webSearchFallback(outcome))
+                .contains("https://example.test/official")
+                .contains("Official source")
+                .doesNotContain("Verified summary");
+    }
+
+    @Test
+    void explicitDownloadableOfficeFileRequestRequiresTheArtifactTool() {
+        assertThat(CodingAgentLoop.requiresArtifactDelivery(
+                List.of(binding("backend_artifact", "create_artifact")),
+                List.of(new ModelGateway.ModelMessage(
+                        "user", "Generate and download a report.docx file."))))
+                .isTrue();
+        assertThat(CodingAgentLoop.requiresArtifactDelivery(
+                List.of(binding("backend_artifact", "create_artifact")),
+                List.of(new ModelGateway.ModelMessage("user", "Explain the Word document format."))))
+                .isFalse();
+        assertThat(CodingAgentLoop.requiresArtifactDelivery(
+                List.of(binding("backend_artifact", "create_artifact")),
+                List.of(
+                        new ModelGateway.ModelMessage("user", "Create father.docx as a downloadable Word file."),
+                        new ModelGateway.ModelMessage("assistant", "I have the document requirements."),
+                        new ModelGateway.ModelMessage("user", "\u7236\u4eb2\u3002\u76f4\u63a5\u5f00\u59cb"))))
+                .isTrue();
+        assertThat(CodingAgentLoop.requiresArtifactDelivery(
+                List.of(binding("backend_artifact", "create_artifact")),
+                List.of(new ModelGateway.ModelMessage(
+                        "user", "Prepare father.docx, but wait for me to say start before generating it."))))
+                .isFalse();
+        assertThat(CodingAgentLoop.requiresArtifactDelivery(
+                List.of(binding("backend_artifact", "create_artifact")),
+                List.of(
+                        new ModelGateway.ModelMessage(
+                                "user", "Prepare father.docx, but wait for me to say start before generating it."),
+                        new ModelGateway.ModelMessage("user", "Start now."))))
+                .isTrue();
+    }
+
+    @Test
+    void artifactToolResultAlwaysProducesATrustedDownloadLink() {
+        ToolProviderResult outcome = new ToolProviderResult("SUCCEEDED", true, Map.of(
+                "artifact", new io.github.yourname.cycbercompany.artifact.ArtifactView(
+                        "art-father", "run-father", "document", "father.docx",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document", 2048,
+                        "sha256:" + "a".repeat(64), "/api/v1/artifacts/art-father", java.time.Instant.EPOCH)), "", null);
+
+        assertThat(CodingAgentLoop.artifactDelivery(outcome))
+                .isEqualTo("- [father.docx](/api/v1/artifacts/art-father)");
+    }
+
+    @Test
+    void explicitlyNamedNodeToolMayReturnAReasonedTextAnswerWithoutCallingIt() {
         ModelGateway gateway = mock(ModelGateway.class);
         ToolRouter tools = mock(ToolRouter.class);
         ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
@@ -64,7 +381,7 @@ class CodingAgentLoopTest {
         when(gateway.complete(any())).thenReturn(new ModelGateway.ModelAnswer(
                 "The shell tool is unavailable.", null, null, "test"));
 
-        assertThatThrownBy(() -> new CodingAgentLoop(gateway, tools, mock(RunEventPublisher.class))
+        assertThat(new CodingAgentLoop(gateway, tools, mock(RunEventPublisher.class))
                 .executeInteraction(
                         "run-a", "model-a", List.of(shell),
                         new ArrayList<>(List.of(new ModelGateway.ModelMessage(
@@ -72,17 +389,17 @@ class CodingAgentLoopTest {
                         actor,
                         io.github.yourname.cycbercompany.tool.CodingWorkspaceScope.from(null),
                         ApprovalMode.ON_REQUEST))
-                .hasMessageContaining("without a successful native tool call");
+                .isEqualTo("The shell tool is unavailable.");
 
         ArgumentCaptor<ModelGateway.ModelCompletionRequest> request =
                 ArgumentCaptor.forClass(ModelGateway.ModelCompletionRequest.class);
         verify(gateway).complete(request.capture());
-        assertThat(request.getValue().toolChoice()).isEqualTo(ModelGateway.ToolChoice.REQUIRED);
+        assertThat(request.getValue().toolChoice()).isEqualTo(ModelGateway.ToolChoice.AUTO);
         verify(tools, never()).invoke(any());
     }
 
     @Test
-    void explicitNativeInspectionRequiresAToolCall() {
+    void explicitNativeInspectionMayReturnAReasonedTextAnswerWithoutCallingATool() {
         ModelGateway gateway = mock(ModelGateway.class);
         ToolRouter tools = mock(ToolRouter.class);
         ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
@@ -90,19 +407,19 @@ class CodingAgentLoopTest {
         when(gateway.complete(any())).thenReturn(new ModelGateway.ModelAnswer(
                 "The file says ready.", null, null, "test"));
 
-        assertThatThrownBy(() -> new CodingAgentLoop(gateway, tools, mock(RunEventPublisher.class))
+        assertThat(new CodingAgentLoop(gateway, tools, mock(RunEventPublisher.class))
                 .executeInteraction(
                         "run-a", "model-a", List.of(read),
                         new ArrayList<>(List.of(new ModelGateway.ModelMessage(
                                 "user", "Read status.txt from this computer."))), actor,
                         io.github.yourname.cycbercompany.tool.CodingWorkspaceScope.from(null),
                         ApprovalMode.FULL_ACCESS))
-                .hasMessageContaining("without a successful native tool call");
+                .isEqualTo("The file says ready.");
         verify(tools, never()).invoke(any());
     }
 
     @Test
-    void explicitStateChangeRequestRequiresAFirstNodeToolCall() {
+    void explicitStateChangeRequestLeavesTheToolDecisionToTheModel() {
         ModelGateway gateway = mock(ModelGateway.class);
         ToolRouter tools = mock(ToolRouter.class);
         ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
@@ -110,7 +427,7 @@ class CodingAgentLoopTest {
         when(gateway.complete(any())).thenReturn(new ModelGateway.ModelAnswer(
                 "The project was created.", null, null, "test"));
 
-        assertThatThrownBy(() -> new CodingAgentLoop(gateway, tools, mock(RunEventPublisher.class))
+        assertThat(new CodingAgentLoop(gateway, tools, mock(RunEventPublisher.class))
                 .executeInteraction(
                         "run-a", "model-a", List.of(shell),
                         new ArrayList<>(List.of(new ModelGateway.ModelMessage(
@@ -118,7 +435,7 @@ class CodingAgentLoopTest {
                         actor,
                         io.github.yourname.cycbercompany.tool.CodingWorkspaceScope.from(null),
                         ApprovalMode.FULL_ACCESS))
-                .hasMessageContaining("without a successful native tool call");
+                .isEqualTo("The project was created.");
 
         verify(tools, never()).invoke(any());
     }
@@ -198,7 +515,7 @@ class CodingAgentLoopTest {
     }
 
     @Test
-    void explicitLocalActionRequiresAToolCallFromTheInProcessExecutor() {
+    void explicitLocalActionLeavesTheToolDecisionToTheModel() {
         ModelGateway gateway = mock(ModelGateway.class);
         ToolRouter tools = mock(ToolRouter.class);
         ActorContext actor = new ActorContext("tenant-a", "user-a", java.util.Set.of(), java.util.Set.of());
@@ -207,7 +524,7 @@ class CodingAgentLoopTest {
         when(gateway.complete(any())).thenReturn(new ModelGateway.ModelAnswer(
                 "I cannot access the local computer.", null, null, "test"));
 
-        assertThatThrownBy(() -> new CodingAgentLoop(gateway, tools, mock(RunEventPublisher.class))
+        assertThat(new CodingAgentLoop(gateway, tools, mock(RunEventPublisher.class))
                 .executeInteraction(
                         "run-a", "model-a", List.of(shell),
                         new ArrayList<>(List.of(new ModelGateway.ModelMessage(
@@ -215,12 +532,12 @@ class CodingAgentLoopTest {
                         actor,
                         io.github.yourname.cycbercompany.tool.CodingWorkspaceScope.from(null),
                         ApprovalMode.ON_REQUEST))
-                .hasMessageContaining("without a successful native tool call");
+                .isEqualTo("I cannot access the local computer.");
 
         ArgumentCaptor<ModelGateway.ModelCompletionRequest> request =
                 ArgumentCaptor.forClass(ModelGateway.ModelCompletionRequest.class);
         verify(gateway).complete(request.capture());
-        assertThat(request.getValue().toolChoice()).isEqualTo(ModelGateway.ToolChoice.REQUIRED);
+        assertThat(request.getValue().toolChoice()).isEqualTo(ModelGateway.ToolChoice.AUTO);
         verify(tools, never()).invoke(any());
     }
 
@@ -261,7 +578,7 @@ class CodingAgentLoopTest {
         ArgumentCaptor<ModelGateway.ModelCompletionRequest> requests =
                 ArgumentCaptor.forClass(ModelGateway.ModelCompletionRequest.class);
         verify(gateway, times(3)).complete(requests.capture());
-        assertThat(requests.getAllValues().get(1).toolChoice()).isEqualTo(ModelGateway.ToolChoice.REQUIRED);
+        assertThat(requests.getAllValues().get(1).toolChoice()).isEqualTo(ModelGateway.ToolChoice.AUTO);
         verify(tools, times(2)).invoke(any());
     }
 
@@ -591,6 +908,23 @@ class CodingAgentLoopTest {
     }
 
     @Test
+    void compactionPreservesTheLatestUserRequestInsteadOfAnOlderTask() {
+        List<ModelGateway.ModelMessage> messages = new ArrayList<>();
+        messages.add(new ModelGateway.ModelMessage("system", "System workflow"));
+        messages.add(new ModelGateway.ModelMessage("user", "Delete the old project"));
+        for (int index = 0; index < 8; index++) {
+            messages.add(ModelGateway.ModelMessage.toolResult("old-" + index, "x".repeat(10_000)));
+        }
+        messages.add(new ModelGateway.ModelMessage("user", "List the files on the Desktop"));
+        messages.add(ModelGateway.ModelMessage.toolResult("recent", "recent verification result"));
+
+        CodingAgentLoop.compactContextIfNeeded(messages);
+
+        assertThat(messages).anyMatch(message -> "List the files on the Desktop".equals(message.content()));
+        assertThat(messages).noneMatch(message -> "Delete the old project".equals(message.content()));
+    }
+
+    @Test
     void cancelledRunDoesNotAskTheModelOrInvokeTools() {
         ModelGateway modelGateway = mock(ModelGateway.class);
         ToolRouter tools = mock(ToolRouter.class);
@@ -607,7 +941,7 @@ class CodingAgentLoopTest {
     }
 
     @Test
-    void rejectsAPlainTextResponseBeforeAnyCodingToolWasCalled() {
+    void acceptsAPlainTextResponseWhenTheModelChoosesNotToUseATool() {
         ModelGateway gateway = mock(ModelGateway.class);
         ToolRouter tools = mock(ToolRouter.class);
         RunEventPublisher events = mock(RunEventPublisher.class);
@@ -615,9 +949,9 @@ class CodingAgentLoopTest {
         var declaredTool = binding("node_tool_7", "fs.read");
         when(gateway.complete(any())).thenReturn(new ModelGateway.ModelAnswer("I will inspect it.", null, null, "test"));
 
-        assertThatThrownBy(() -> new CodingAgentLoop(gateway, tools, events).execute(
+        assertThat(new CodingAgentLoop(gateway, tools, events).execute(
                         "run-a", "model-a", List.of(declaredTool), new java.util.ArrayList<>(), actor))
-                .hasMessageContaining("without a successful native tool call");
+                .isEqualTo("I will inspect it.");
     }
 
     @Test
@@ -656,7 +990,7 @@ class CodingAgentLoopTest {
 
         ArgumentCaptor<ModelGateway.ModelCompletionRequest> requests = ArgumentCaptor.forClass(ModelGateway.ModelCompletionRequest.class);
         verify(gateway, times(2)).complete(requests.capture());
-        assertThat(requests.getAllValues().getFirst().toolChoice()).isEqualTo(ModelGateway.ToolChoice.REQUIRED);
+        assertThat(requests.getAllValues().getFirst().toolChoice()).isEqualTo(ModelGateway.ToolChoice.AUTO);
         assertThat(requests.getAllValues().get(1).toolChoice()).isEqualTo(ModelGateway.ToolChoice.AUTO);
         assertThat(requests.getAllValues().getFirst().messages().getFirst().content()).isEqualTo("Primary task policy");
         assertThat(executionGuidance(requests.getAllValues().getFirst()))
@@ -1321,7 +1655,8 @@ class CodingAgentLoopTest {
         return request.messages().stream()
                 .filter(message -> "system".equals(message.role()))
                 .map(ModelGateway.ModelMessage::content)
-                .filter(content -> content != null && content.contains("bounded native-tool loop"))
+                .filter(content -> content != null && (content.contains("bounded native-tool loop")
+                        || content.contains("Complete the user's request directly.")))
                 .findFirst()
                 .orElseThrow();
     }

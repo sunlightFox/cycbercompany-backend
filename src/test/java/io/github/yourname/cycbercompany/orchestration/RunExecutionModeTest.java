@@ -39,21 +39,24 @@ class RunExecutionModeTest {
 
     @Test
     void deliveryGateIsOnlyRequiredForExplicitCodingRuns() {
+        assertThat(RunExecutionMode.PLATFORM_INTERACTION.requiresDeliveryGate()).isFalse();
         assertThat(RunExecutionMode.CONVERSATIONAL.requiresDeliveryGate()).isFalse();
         assertThat(RunExecutionMode.NODE_INTERACTION.requiresDeliveryGate()).isFalse();
         assertThat(RunExecutionMode.CODING.requiresDeliveryGate()).isTrue();
     }
 
     @Test
-    void ordinaryRequestsWithoutAnExplicitNodeStayConversational() {
+    void ordinaryRequestsWithoutAnExplicitNodeUsePlatformInteractionWithoutNodeTools() {
         assertThat(RunExecutionMode.from(command("Create a snake game", List.of(), null, null)))
-                .isEqualTo(RunExecutionMode.CONVERSATIONAL);
+                .isEqualTo(RunExecutionMode.PLATFORM_INTERACTION);
+        assertThat(RunExecutionMode.PLATFORM_INTERACTION.usesNativeToolLoop()).isFalse();
+        assertThat(RunExecutionMode.PLATFORM_INTERACTION.usesToolLoop()).isTrue();
     }
 
     @Test
     void automaticNodeMarkerDoesNotSelectAnExecutor() {
         assertThat(RunExecutionMode.from(command("Create a snake game", List.of(), "auto", null)))
-                .isEqualTo(RunExecutionMode.CONVERSATIONAL);
+                .isEqualTo(RunExecutionMode.PLATFORM_INTERACTION);
     }
 
     private static CreateRunCommand command(String text, List<String> tools, String nodeId, String workingDirectory) {

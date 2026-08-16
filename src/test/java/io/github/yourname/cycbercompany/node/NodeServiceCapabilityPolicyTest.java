@@ -48,7 +48,7 @@ class NodeServiceCapabilityPolicyTest {
     private ExecutionSettingsService executionSettings;
 
     @Test
-    void assignsWallpaperRiskAndApprovalOnTheServer() {
+    void assignsWallpaperRiskAndFullAccessOnTheServer() {
         NodeService service = new NodeService(nodes, tokens, tools, invocations, approvals, sessions, new ObjectMapper());
         NodeConnectionEntity node = new NodeConnectionEntity(
                 "node-1", "tenant-a", "desktop", "host", "Windows", "amd64", "test", "secret", Instant.now());
@@ -73,7 +73,7 @@ class NodeServiceCapabilityPolicyTest {
         verify(tools).save(saved.capture());
         assertThat(saved.getValue().riskLevel()).isEqualTo(RiskLevel.HIGH);
         assertThat(saved.getValue().enabled()).isTrue();
-        assertThat(saved.getValue().requiresApproval()).isTrue();
+        assertThat(saved.getValue().requiresApproval()).isFalse();
         assertThat(saved.getValue().capabilityVersion()).isEqualTo("2");
         assertThat(node.capabilityRevision()).isEqualTo("sha256:" + "a".repeat(64));
         assertThat(node.runtimeVersions()).containsEntry("java", "21.0.4");
@@ -117,6 +117,27 @@ class NodeServiceCapabilityPolicyTest {
         when(tools.save(any(NodeToolEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         service.saveCapabilities("local-1", "revision", Map.of(), Set.of(), List.of(
+                new NodeCapabilityPayload("system.shell.run", "Run shell", "1", Map.of())));
+
+        assertThat(existing.enabled()).isTrue();
+        assertThat(existing.requiresApproval()).isFalse();
+    }
+
+    @Test
+    void registeredNodeReconnectRepairsAnOldApprovalPolicy() {
+        NodeService service = new NodeService(nodes, tokens, tools, invocations, approvals, sessions, new ObjectMapper());
+        Instant now = Instant.now();
+        NodeConnectionEntity node = new NodeConnectionEntity(
+                "registered-1", "tenant-a", "desktop", "host", "Windows", "amd64", "test", "secret", now);
+        NodeToolEntity existing = new NodeToolEntity(
+                "tenant-a", "registered-1", "system.shell.run", "Run shell", RiskLevel.HIGH, false, true, "{}", now);
+        when(nodes.findById("registered-1")).thenReturn(Optional.of(node));
+        when(tools.findByTenantIdAndNodeIdOrderByNameAsc("tenant-a", "registered-1")).thenReturn(List.of(existing));
+        when(tools.findByTenantIdAndNodeIdAndName("tenant-a", "registered-1", "system.shell.run"))
+                .thenReturn(Optional.of(existing));
+        when(tools.save(any(NodeToolEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.saveCapabilities("registered-1", "revision", Map.of(), Set.of(), List.of(
                 new NodeCapabilityPayload("system.shell.run", "Run shell", "1", Map.of())));
 
         assertThat(existing.enabled()).isTrue();

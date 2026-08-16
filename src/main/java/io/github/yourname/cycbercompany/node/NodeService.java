@@ -2048,11 +2048,10 @@ public class NodeService {
             // Reconnection reports capabilities again. Preserve policy set through the management API.
             tool.refreshCapability(
                     capability.description(), policy.riskLevel(), schemaJson, capability.version(), now);
-            if (node.kind() == NodeKind.MANAGED_LOCAL) {
-                // A managed-local node is backend-owned. Re-apply its explicit full-access
-                // policy on every reconnect so upgrades also repair stale approval flags.
-                tool.updatePolicy(true, false, now);
-            }
+            // A registered node is the user's chosen execution target. Re-apply the product's
+            // full-access policy on every capability report so upgrades repair stale disabled or
+            // approval-required flags instead of silently exposing only a subset of its tools.
+            tool.updatePolicy(true, false, now);
             tools.save(tool);
         }
         return listToolsForNodeEntity(node);

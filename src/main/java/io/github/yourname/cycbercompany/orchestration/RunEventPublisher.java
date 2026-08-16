@@ -6,8 +6,10 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -19,12 +21,17 @@ public class RunEventPublisher {
 
     private final RunEventRepository repository;
     private final AgentRunRepository runs;
+    private final TransactionTemplate transactions;
     private final Map<String, List<Subscriber>> emitters = new ConcurrentHashMap<>();
     private final Map<String, RunLock> runLocks = new ConcurrentHashMap<>();
 
-    public RunEventPublisher(RunEventRepository repository, AgentRunRepository runs) {
+    public RunEventPublisher(
+            RunEventRepository repository,
+            AgentRunRepository runs,
+            org.springframework.transaction.PlatformTransactionManager transactionManager) {
         this.repository = repository;
         this.runs = runs;
+        this.transactions = new TransactionTemplate(transactionManager);
     }
 
     @Transactional
@@ -65,32 +72,69 @@ public class RunEventPublisher {
      * delivery consistent with Last-Event-ID replay.
      */
     private void broadcastCommitted(String runId, String tenantId) {
-        RunLock lock = acquireLock(runId);
-        try {
-            synchronized (lock.monitor) {
-            for (Subscriber subscriber : emitters.getOrDefault(runId, List.of())) {
-                List<RunEventEntity> pending = repository
-                        .findByRunIdAndTenantIdAndSequenceGreaterThanOrderBySequenceAsc(
-                                runId, tenantId, subscriber.lastSequence);
-                for (RunEventEntity persisted : pending) {
-                    RunEventView event = RunEventView.from(persisted);
-                    synchronized (subscriber) {
-                        if (!trySend(subscriber.emitter, event)) {
-                            remove(runId, subscriber.emitter);
-                            break;
-                        }
-                        subscriber.lastSequence = event.sequence();
-                        if (isTerminal(event.type())) {
-                            subscriber.emitter.complete();
-                            remove(runId, subscriber.emitter);
-                            break;
-                        }
+        // SseEmitter.send may block on a slow or abandoned client. Never perform that work on
+        // the model/event-persistence thread: otherwise one stale browser can stop token
+        // persistence, prevent terminal state updates, and leave a Run stuck in RUNNING.
+        for (Subscriber subscriber : emitters.getOrDefault(runId, List.of())) {
+            scheduleDrain(runId, tenantId, subscriber);
+        }
+    }
+
+    private void scheduleDrain(String runId, String tenantId, Subscriber subscriber) {
+        subscriber.pending.set(true);
+        if (!subscriber.draining.compareAndSet(false, true)) {
+            return;
+        }
+        Thread.startVirtualThread(() -> {
+            try {
+                drainSubscriber(runId, tenantId, subscriber);
+            } finally {
+                subscriber.draining.set(false);
+                // An event can commit after the final database read and before the flag clears.
+                if (subscriber.pending.get()
+                        && emitters.getOrDefault(runId, List.of()).contains(subscriber)) {
+                    scheduleDrain(runId, tenantId, subscriber);
+                }
+            }
+        });
+    }
+
+    private void drainSubscriber(String runId, String tenantId, Subscriber subscriber) {
+        while (emitters.getOrDefault(runId, List.of()).contains(subscriber)) {
+            subscriber.pending.set(false);
+            long afterSequence;
+            synchronized (subscriber) {
+                afterSequence = subscriber.lastSequence;
+            }
+            // PostgreSQL maps @Lob String to a large object.  This virtual thread is not
+            // invoked through Spring's transactional proxy, so materialize the payloads
+            // inside an explicit read transaction before sending them to the browser.
+            List<RunEventView> pending = transactions.execute(status -> repository
+                    .findByRunIdAndTenantIdAndSequenceGreaterThanOrderBySequenceAsc(
+                            runId, tenantId, afterSequence)
+                    .stream()
+                    .map(RunEventView::from)
+                    .toList());
+            if (pending.isEmpty()) {
+                if (!subscriber.pending.get()) {
+                    return;
+                }
+                continue;
+            }
+            for (RunEventView event : pending) {
+                synchronized (subscriber) {
+                    if (!trySend(subscriber.emitter, event)) {
+                        remove(runId, subscriber.emitter);
+                        return;
+                    }
+                    subscriber.lastSequence = event.sequence();
+                    if (isTerminal(event.type())) {
+                        subscriber.emitter.complete();
+                        remove(runId, subscriber.emitter);
+                        return;
                     }
                 }
             }
-            }
-        } finally {
-            releaseLock(runId, lock);
         }
     }
 
@@ -98,21 +142,14 @@ public class RunEventPublisher {
     @Scheduled(fixedDelayString = "${app.run.sse-heartbeat-ms:15000}")
     void sendHeartbeats() {
         for (Map.Entry<String, List<Subscriber>> entry : emitters.entrySet()) {
-            RunLock lock = acquireLock(entry.getKey());
-            try {
-                synchronized (lock.monitor) {
-                for (Subscriber subscriber : entry.getValue()) {
-                    synchronized (subscriber) {
-                        try {
-                            subscriber.emitter.send(SseEmitter.event().comment("keepalive"));
-                        } catch (Exception ignored) {
-                            remove(entry.getKey(), subscriber.emitter);
-                        }
+            for (Subscriber subscriber : entry.getValue()) {
+                synchronized (subscriber) {
+                    try {
+                        subscriber.emitter.send(SseEmitter.event().comment("keepalive"));
+                    } catch (Exception ignored) {
+                        remove(entry.getKey(), subscriber.emitter);
                     }
                 }
-                }
-            } finally {
-                releaseLock(entry.getKey(), lock);
             }
         }
     }
@@ -217,6 +254,8 @@ public class RunEventPublisher {
 
     private static final class Subscriber {
         private final SseEmitter emitter;
+        private final AtomicBoolean draining = new AtomicBoolean();
+        private final AtomicBoolean pending = new AtomicBoolean();
         private long lastSequence;
 
         private Subscriber(SseEmitter emitter, long lastSequence) {

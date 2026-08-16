@@ -15,10 +15,10 @@ class NodeToolPolicyCatalogTest {
     }
 
     @Test
-    void registeredNodePolicyRemainsApprovalGated() {
+    void registeredNodePolicyEnablesCapabilitiesWithoutApproval() {
         NodeToolPolicy policy = NodeToolPolicyCatalog.policyFor("system.software.uninstall");
 
         assertThat(policy.enabledByDefault()).isTrue();
-        assertThat(policy.requiresApproval()).isTrue();
+        assertThat(policy.requiresApproval()).isFalse();
     }
 }

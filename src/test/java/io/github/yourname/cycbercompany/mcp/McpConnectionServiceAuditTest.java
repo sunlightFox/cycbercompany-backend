@@ -126,6 +126,27 @@ class McpConnectionServiceAuditTest {
     }
 
     @Test
+    void environmentReferencesAreResolvedGenericallyAndReportMissingValues() throws Exception {
+        AppProperties properties = mock(AppProperties.class);
+        when(properties.mcp()).thenReturn(new AppProperties.McpStore(Files.createTempDirectory("mcp-env-test")));
+        McpStdioClient stdio = mock(McpStdioClient.class);
+        McpConnectionService service = new McpConnectionService(
+                properties, new ObjectMapper().registerModule(new JavaTimeModule()), stdio,
+                mock(McpToolInvocationRepository.class));
+        service.ensureConfigDirectoryExists();
+        service.create(new CreateMcpConnectionCommand(
+                "credentialed", "Credentialed MCP", "", McpTransportType.STDIO, true,
+                "test-command", List.of(), null,
+                Map.of("SERVICE_TOKEN", "env:CYCBERCOMPANY_MCP_TEST_MISSING_TOKEN_8E419D"),
+                Map.of(), List.of()));
+
+        assertThatThrownBy(() -> service.refreshTools("credentialed"))
+                .hasMessageContaining("CYCBERCOMPANY_MCP_TEST_MISSING_TOKEN_8E419D")
+                .hasMessageContaining("credentialed");
+        verify(stdio, never()).listTools(any());
+    }
+
+    @Test
     void importsPastedMcpServersJsonAsEnabledConnections() throws Exception {
         AppProperties properties = mock(AppProperties.class);
         AppProperties.McpStore store = new AppProperties.McpStore(Files.createTempDirectory("mcp-import-json-test"));

@@ -24,6 +24,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.http.HttpHeaders;
@@ -44,8 +45,9 @@ import org.springframework.web.client.RestClientResponseException;
 class OpenAiCompatibleModelGateway implements ModelGateway {
 
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
-    // This applies to both response headers and the SSE body. A provider that accepts a request
-    // but never emits another event must not leave an interactive coding run blocked indefinitely.
+    // A provider that accepts a request but then goes silent must not leave a run blocked
+    // indefinitely. This is deliberately an idle timeout: a long answer that keeps producing
+    // SSE frames must be allowed to finish.
     private static final Duration READ_TIMEOUT = Duration.ofSeconds(45);
     // Creating a JDK HttpClient creates a selector manager. Reuse one process-wide client so a
     // burst of model calls, especially around provider rate limits, cannot accumulate threads.
@@ -276,29 +278,38 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
             StreamingAnswer state,
             Consumer<String> onToken) throws IOException, InterruptedException {
         var executor = Executors.newVirtualThreadPerTaskExecutor();
+        var lastActivityNanos = new AtomicLong(System.nanoTime());
         try {
             var task = executor.submit(() -> {
                 try {
-                    readStreamEvents(reader, state, onToken);
+                    readStreamEvents(reader, state, onToken, lastActivityNanos);
                 } catch (IOException ex) {
                     throw new UncheckedIOException(ex);
                 }
             });
-            try {
-                task.get(READ_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
-            } catch (TimeoutException ex) {
-                // Closing the body unblocks a virtual thread even when InputStream ignores interrupts.
-                // It must not happen on this worker: a blocked socket close previously prevented
-                // the timeout from reaching the coding loop and left runs stuck in RUNNING.
-                task.cancel(true);
-                closeReaderAsync(reader);
-                throw new IOException("Model provider stream timed out after "
-                        + READ_TIMEOUT.toSeconds() + " seconds without completing.", ex);
-            } catch (ExecutionException ex) {
-                if (ex.getCause() instanceof UncheckedIOException io) {
-                    throw io.getCause();
+            while (true) {
+                long idleNanos = System.nanoTime() - lastActivityNanos.get();
+                long remainingNanos = READ_TIMEOUT.toNanos() - idleNanos;
+                if (remainingNanos <= 0) {
+                    // Closing the body unblocks a virtual thread even when InputStream ignores interrupts.
+                    // It must not happen on this worker: a blocked socket close previously prevented
+                    // the timeout from reaching the coding loop and left runs stuck in RUNNING.
+                    task.cancel(true);
+                    closeReaderAsync(reader);
+                    throw new IOException("Model provider stream was idle for "
+                            + READ_TIMEOUT.toSeconds() + " seconds without completing.");
                 }
-                throw new IOException("Failed while reading the model provider stream.", ex.getCause());
+                try {
+                    task.get(Math.max(1, TimeUnit.NANOSECONDS.toMillis(remainingNanos)), TimeUnit.MILLISECONDS);
+                    return;
+                } catch (TimeoutException ignored) {
+                    // A frame may have arrived while this wait elapsed; recalculate the idle budget.
+                } catch (ExecutionException ex) {
+                    if (ex.getCause() instanceof UncheckedIOException io) {
+                        throw io.getCause();
+                    }
+                    throw new IOException("Failed while reading the model provider stream.", ex.getCause());
+                }
             }
         } finally {
             // ExecutorService.close() waits for every task. A provider may ignore interruption
@@ -320,11 +331,13 @@ class OpenAiCompatibleModelGateway implements ModelGateway {
     private void readStreamEvents(
             BufferedReader reader,
             StreamingAnswer state,
-            Consumer<String> onToken) throws IOException {
+            Consumer<String> onToken,
+            AtomicLong lastActivityNanos) throws IOException {
         StringBuilder data = new StringBuilder();
         String line;
         boolean stopped = false;
         while ((line = reader.readLine()) != null) {
+            lastActivityNanos.set(System.nanoTime());
             if (line.isEmpty()) {
                 if (consumeStreamEvent(data, state, onToken)) {
                     stopped = true;

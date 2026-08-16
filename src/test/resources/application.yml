@@ -10,6 +10,9 @@ spring:
       ddl-auto: create-drop
 
 app:
+  persistence:
+    # Integration tests use in-memory H2 and must not contend with a developer's running backend.
+    local-lock-enabled: false
   security:
     mode: LOCAL
     api-token: ""

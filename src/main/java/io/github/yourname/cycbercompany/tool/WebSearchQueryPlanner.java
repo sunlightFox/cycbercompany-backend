@@ -18,6 +18,18 @@ final class WebSearchQueryPlanner {
         Set<String> seen = new LinkedHashSet<>();
         add(planned, seen, query, intent, "tavily/" + categoryFor(intent));
 
+        // A question about a project, library, or product often needs the canonical
+        // repository or vendor page, not a news article describing it.  Keep this
+        // deterministic and provider-neutral so it adds no model round-trip.
+        if (primarySourceRequested(query) && maxQueries > 1) {
+            String subject = sourceSubject(topic, query);
+            add(planned, seen, subject + " official GitHub repository",
+                    WebSearchMode.TECHNICAL, "tavily/primary-source/github");
+            add(planned, seen, subject + " official website",
+                    WebSearchMode.GENERAL, "tavily/primary-source/website");
+            return List.copyOf(planned.subList(0, Math.min(maxQueries, planned.size())));
+        }
+
         if ((intent != WebSearchMode.NEWS && intent != WebSearchMode.RECENT) || maxQueries == 1) {
             return List.copyOf(planned);
         }
@@ -77,6 +89,37 @@ final class WebSearchQueryPlanner {
     private static boolean containsHan(String text) {
         return text != null && text.codePoints()
                 .anyMatch(codePoint -> Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.HAN);
+    }
+
+    static boolean primarySourceRequested(String query) {
+        String normalized = query == null ? "" : query.toLowerCase(Locale.ROOT);
+        return normalized.contains("github")
+                || normalized.contains("gitlab")
+                || normalized.contains("open source")
+                || normalized.contains("source code")
+                || normalized.contains("repository")
+                || normalized.contains(" repo")
+                || normalized.contains("official")
+                || normalized.contains("\u5f00\u6e90")
+                || normalized.contains("\u5b98\u7f51")
+                || normalized.contains("\u5b98\u65b9")
+                || normalized.contains("\u4ec0\u4e48\u662f")
+                || normalized.contains("\u662f\u4ec0\u4e48");
+    }
+
+    private static String sourceSubject(String topic, String query) {
+        String value = topic == null || topic.isBlank() ? query : topic;
+        String cleaned = value
+                .replaceAll("(?iu)\\b(what is|what's|github|gitlab|official|open source|source code|repository|repo)\\b", " ")
+                .replace("\u5f00\u6e90", " ")
+                .replace("\u5b98\u7f51", " ")
+                .replace("\u5b98\u65b9", " ")
+                .replace("\u4ec0\u4e48\u662f", " ")
+                .replace("\u662f\u4ec0\u4e48", " ")
+                .replaceAll("[?？。!！]", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+        return cleaned.isBlank() ? "project" : cleaned;
     }
 
     private static String categoryFor(WebSearchMode mode) {

@@ -28,6 +28,8 @@ class AgentManifestCompilerTest {
                 .contains("Review Partner")
                 .contains("Find material defects")
                 .contains("Do not modify code")
+                .contains("user-facing CycberCompany Agent")
+                .contains("Separate supported facts from inference")
                 .contains("Use only capabilities authorized for this run");
     }
 

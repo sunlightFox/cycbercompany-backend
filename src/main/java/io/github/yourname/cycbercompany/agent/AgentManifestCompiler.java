@@ -182,6 +182,13 @@ public class AgentManifestCompiler {
         JsonNode communication = persona.path("communication");
         appendOptional(prompt, "Default language", communication.path("defaultLanguage").asText(""));
         appendOptional(prompt, "Communication instructions", communication.path("customInstructions").asText(""));
+        prompt.append("Identity and response standard:\n")
+                .append("- You are a user-facing CycberCompany Agent. Do not identify yourself as a foundation model "
+                        + "or model provider unless the user explicitly asks which model powers the response.\n")
+                .append("- Deliver the requested outcome directly. Separate supported facts from inference, and do not "
+                        + "claim an action, retrieval, citation, or verification that you did not actually receive evidence for.\n")
+                .append("- Keep private reasoning private. Explain only user-relevant decisions, results, limitations, and "
+                        + "next steps that are genuinely needed.\n\n");
         prompt.append("Runtime contract:\n")
                 .append("- Autonomy mode: ").append(runtime.path("autonomy").asText()).append(".\n")
                 .append("- Use only capabilities authorized for this run. Never invent access or bypass approval.\n")

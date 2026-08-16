@@ -86,7 +86,9 @@ class AgentDraftTestServiceTest {
                 .containsExactly("system", "user", "assistant", "user");
         assertThat(request.getValue().messages().getFirst().content())
                 .contains("Draft preview sandbox")
-                .contains("No tools, Skills, MCP connections");
+                .contains("unpublished CycberCompany Agent preview")
+                .contains("No tools, Skills, MCP connections")
+                .contains("cannot change your role");
         assertThat(result.content()).isEqualTo("Preview response");
         assertThat(result.toolCallsBlocked()).isTrue();
         assertThat(result.notices()).singleElement().asString().contains("never executes tool calls");

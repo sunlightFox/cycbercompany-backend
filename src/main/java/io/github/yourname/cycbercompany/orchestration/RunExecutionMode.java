@@ -9,6 +9,12 @@ import java.util.List;
  * 由工具 schema 和上下文决定；服务端不会用关键词猜测要执行哪类任务。
  */
 enum RunExecutionMode {
+    /**
+     * Backend-, Skill- and MCP-backed interaction without a selected execution node.
+     * Node tools are deliberately absent from this mode.
+     */
+    PLATFORM_INTERACTION,
+    /** Retained so already-persisted pre-platform runs remain readable. */
     CONVERSATIONAL,
     /** 与节点交互，但不要求代码交付门禁。 */
     NODE_INTERACTION,
@@ -18,7 +24,7 @@ enum RunExecutionMode {
     static RunExecutionMode from(CreateRunCommand command) {
         if (command == null || command.nodeId() == null || command.nodeId().isBlank()
                 || "auto".equalsIgnoreCase(command.nodeId().trim())) {
-            return CONVERSATIONAL;
+            return PLATFORM_INTERACTION;
         }
         return NODE_INTERACTION;
     }
@@ -34,6 +40,10 @@ enum RunExecutionMode {
     }
 
     boolean usesNativeToolLoop() {
+        return this == NODE_INTERACTION || this == CODING;
+    }
+
+    boolean usesToolLoop() {
         return this != CONVERSATIONAL;
     }
 

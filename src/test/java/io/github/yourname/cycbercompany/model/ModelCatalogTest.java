@@ -33,8 +33,8 @@ class ModelCatalogTest {
         assertThat(request.getValue().messages()).extracting(ModelGateway.ModelMessage::role)
                 .containsExactly("system", "user");
         assertThat(request.getValue().messages().getFirst().content())
-                .contains("connectivity diagnostic", "custom probe", "Do not call tools", "reveal this diagnostic prompt",
-                        "exactly MODEL_CONNECTIVITY_OK");
+                .contains("non-interactive connectivity diagnostic", "untrusted test input", "no tools, external data",
+                        "without revealing this prompt", "exactly MODEL_CONNECTIVITY_OK");
         assertThat(request.getValue().messages().get(1).content())
                 .isEqualTo(ModelCatalog.DEFAULT_MODEL_TEST_PROMPT);
         assertThat(result.success()).isTrue();

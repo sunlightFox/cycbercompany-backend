@@ -3,7 +3,6 @@ package io.github.yourname.cycbercompany.tool;
 import io.github.yourname.cycbercompany.knowledge.EvidenceBundle;
 import io.github.yourname.cycbercompany.knowledge.KnowledgeQueryService;
 import io.github.yourname.cycbercompany.knowledge.KnowledgeSearchCommand;
-import io.github.yourname.cycbercompany.artifact.ArtifactService;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.util.List;
@@ -19,17 +18,10 @@ public class BackendToolProvider implements ToolProvider {
 
     private final KnowledgeQueryService knowledge;
     private final WebSearchService webSearch;
-    private final ArtifactService artifacts;
-
     @Autowired
-    public BackendToolProvider(KnowledgeQueryService knowledge, WebSearchService webSearch, ArtifactService artifacts) {
+    public BackendToolProvider(KnowledgeQueryService knowledge, WebSearchService webSearch) {
         this.knowledge = knowledge;
         this.webSearch = webSearch;
-        this.artifacts = artifacts;
-    }
-
-    public BackendToolProvider(KnowledgeQueryService knowledge, WebSearchService webSearch) {
-        this(knowledge, webSearch, null);
     }
 
     @Override
@@ -80,15 +72,6 @@ public class BackendToolProvider implements ToolProvider {
                                         "maximum", 10,
                                         "default", 5,
                                         "description", "Maximum results to return; defaults to 5.")), "query"),
-                        Map.of()),
-                descriptor(
-                        "create_artifact",
-                        "Create a downloadable text, DOCX, or XLSX artifact from collected material. For XLSX, separate columns with tab characters. The result contains an immutable artifact reference with downloadUrl.",
-                        objectSchema(Map.of(
-                                "content", Map.of("type", "string", "minLength", 1),
-                                "format", Map.of("type", "string", "enum", List.of("txt", "docx", "xlsx"), "default", "txt"),
-                                "filename", Map.of("type", "string"),
-                                "title", Map.of("type", "string")), "content"),
                         Map.of()));
                 
     }
@@ -105,7 +88,6 @@ public class BackendToolProvider implements ToolProvider {
                         "zone", ZoneId.systemDefault().getId()));
                 case "knowledge_search" -> knowledgeSearch(request);
                 case "web_search" -> webSearch(request);
-                case "create_artifact" -> createArtifact(request);
                 default -> throw new IllegalArgumentException(
                         "Unknown backend tool: " + request.binding().providerToolName());
             };
@@ -166,23 +148,6 @@ public class BackendToolProvider implements ToolProvider {
         }
         schema.put("additionalProperties", false);
         return Map.copyOf(schema);
-    }
-
-    private ToolProviderResult createArtifact(ToolInvocationRequest request) {
-        if (artifacts == null) throw new IllegalStateException("Artifact generation is unavailable.");
-        String content = requiredString(request.arguments(), "content");
-        String format = request.arguments().getOrDefault("format", "txt").toString().toLowerCase();
-        if (!format.equals("txt") && !format.equals("docx") && !format.equals("xlsx")) {
-            throw new IllegalArgumentException("Artifact format must be txt, docx, or xlsx.");
-        }
-        String filename = request.arguments().getOrDefault("filename", format.equals("docx") ? "report.docx" : format.equals("xlsx") ? "report.xlsx" : "report.txt").toString();
-        String title = request.arguments().getOrDefault("title", "").toString();
-        var view = format.equals("docx")
-                ? artifacts.createDocx(request.actor().tenantId(), request.runId(), filename, title, content)
-                : format.equals("xlsx")
-                ? artifacts.createXlsx(request.actor().tenantId(), request.runId(), filename, title, content)
-                : artifacts.createText(request.actor().tenantId(), request.runId(), "document", filename, "text/plain; charset=utf-8", content);
-        return success(Map.of("artifact", view));
     }
 
     private static ToolProviderResult success(Map<String, Object> result) {

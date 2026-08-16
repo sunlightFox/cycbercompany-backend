@@ -29,39 +29,40 @@ class ToolRouterTest {
     }
 
     @Test
-    void rejectsDuplicateBindingIdsAcrossProviders() {
+    void ignoresDescriptorsFromDisabledProviders() {
         ToolRouter router = new ToolRouter(List.of(
-                provider("node", descriptor("node", "shared-binding", "fs.read")),
-                provider("mcp", descriptor("mcp", "shared-binding", "fs.read"))));
+                provider("backend", descriptor("backend", "backend:web", "web_search")),
+                provider("mcp", descriptor("mcp", "shared-binding", "web_search"))));
 
-        assertThatThrownBy(() -> router.resolve(DISCOVERY, List.of("*"), "*"))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Duplicate tool binding ID");
+        assertThat(router.resolve(DISCOVERY, List.of("*"), "*"))
+                .extracting(ResolvedToolBinding::bindingId)
+                .containsExactly("backend:web");
     }
 
     @Test
-    void exposesEveryDiscoveredToolRegardlessOfLegacySelections() {
+    void exposesOnlyTheThreeEnabledLogicalTools() {
         ToolRouter router = new ToolRouter(List.of(provider(
-                "node",
-                descriptor("node", "node:1:fs.read", "fs.read"),
-                descriptor("node", "node:1:fs.write", "fs.write"),
-                descriptor("node", "node:1:shell.run", "shell.run"))));
+                "backend",
+                descriptor("backend", "backend:time", "local_time"),
+                descriptor("backend", "backend:knowledge", "knowledge_search"),
+                descriptor("backend", "backend:web", "web_search"),
+                descriptor("backend", "backend:shell.run", "shell.run"))));
 
         List<ResolvedToolBinding> bindings = router.resolve(DISCOVERY, List.of("fs.*"), "fs.read,shell.run");
 
         assertThat(bindings).extracting(ResolvedToolBinding::logicalName)
-                .containsExactly("fs.read", "fs.write", "shell.run");
+                .containsExactly("local_time", "knowledge_search", "web_search");
     }
 
     @Test
-    void givesSameLogicalToolDifferentStableModelNames() {
+    void generatesStableNamesForTheEnabledTools() {
         ToolRouter router = new ToolRouter(List.of(
-                provider("node", descriptor("node", "node:1:search", "search")),
-                provider("mcp", descriptor("mcp", "mcp:docs:search", "search"))));
+                provider("backend", descriptor("backend", "backend:time", "local_time")),
+                provider("backend2", descriptor("backend2", "backend2:web", "web_search"))));
 
         List<ResolvedToolBinding> bindings = router.resolve(DISCOVERY, List.of("*"), "*");
 
-        assertThat(bindings).hasSize(2);
+        assertThat(bindings).hasSize(1);
         assertThat(bindings).extracting(ResolvedToolBinding::modelName).doesNotHaveDuplicates();
     }
 

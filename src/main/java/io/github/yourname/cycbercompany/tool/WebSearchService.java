@@ -863,6 +863,17 @@ public class WebSearchService {
 
     private static double rankingScore(WebSearchResult result, String query, boolean preferFreshness) {
         double score = relevanceScore(result, query);
+        if (WebSearchQueryPlanner.primarySourceRequested(query) && isSourceHost(result.url())) {
+            // GitHub/GitLab project pages are normally the most useful answer to
+            // an open-source or official-source question. Relevance still applies,
+            // so an unrelated repository cannot outrank the requested project.
+            score += 16;
+            if (isProjectRepositoryUrl(result.url())) {
+                // Prefer the repository itself over an organisation profile or a
+                // third-party page which merely links to it.
+                score += 18;
+            }
+        }
         if (preferFreshness && result.publishedAt() != null) {
             score += 8;
         }
@@ -870,6 +881,23 @@ public class WebSearchService {
             score += 10;
         }
         return score;
+    }
+
+    private static boolean isSourceHost(String url) {
+        String domain = domainOf(url);
+        return "github.com".equals(domain) || domain.endsWith(".github.com")
+                || "gitlab.com".equals(domain) || domain.endsWith(".gitlab.com")
+                || "codeberg.org".equals(domain);
+    }
+
+    private static boolean isProjectRepositoryUrl(String url) {
+        try {
+            URI uri = URI.create(url);
+            String path = uri.getPath() == null ? "" : uri.getPath().replaceAll("^/+|/+$", "");
+            return isSourceHost(url) && path.split("/").length >= 2;
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     private static List<String> queryTokens(String query) {

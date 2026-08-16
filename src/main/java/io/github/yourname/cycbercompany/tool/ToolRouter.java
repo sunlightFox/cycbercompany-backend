@@ -23,6 +23,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 @Service
 public class ToolRouter {
 
+    private static final java.util.Set<String> ENABLED_LOGICAL_TOOLS =
+            java.util.Set.of("local_time", "web_search", "knowledge_search");
+
     private final Map<String, ToolProvider> providers;
     private final ToolApprovalService approvals;
 
@@ -52,6 +55,13 @@ public class ToolRouter {
                 .sorted(Comparator.comparing(ToolProvider::providerId))
                 .toList()) {
             for (ToolDescriptor descriptor : provider.discover(request)) {
+                // Keep the model-facing capability surface intentionally small. Other
+                // providers remain installed for future use but cannot add latency,
+                // prompt tokens, or branching to an ordinary run.
+                if (!BackendToolProvider.PROVIDER_ID.equals(descriptor.providerId())
+                        || !ENABLED_LOGICAL_TOOLS.contains(descriptor.logicalName())) {
+                    continue;
+                }
                 if (!provider.providerId().equals(descriptor.providerId())) {
                     throw new IllegalStateException(
                             "ToolProvider returned a descriptor owned by another provider: " + descriptor.bindingId());

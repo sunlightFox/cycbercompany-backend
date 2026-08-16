@@ -10,6 +10,8 @@ import java.util.Map;
  *
  * <p>For this version, tools are declared or imported as metadata. The backend
  * intentionally does not auto-run arbitrary STDIO commands during creation.
+ * Environment entries may reference the backend process environment with the
+ * {@code env:VARIABLE_NAME} form; this keeps credentials out of saved MCP JSON.
  */
 public record CreateMcpConnectionCommand(
         String id,

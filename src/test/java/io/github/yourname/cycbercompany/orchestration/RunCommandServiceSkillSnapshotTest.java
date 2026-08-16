@@ -12,6 +12,9 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.yourname.cycbercompany.artifact.ArtifactService;
+import io.github.yourname.cycbercompany.artifact.ArtifactView;
+import java.time.Instant;
 import io.github.yourname.cycbercompany.agent.AgentCatalog;
 import io.github.yourname.cycbercompany.agent.AgentCollaboratorRuntimeDefinition;
 import io.github.yourname.cycbercompany.agent.AgentDefinitionView;
@@ -43,6 +46,7 @@ import io.github.yourname.cycbercompany.security.ActorContext;
 import io.github.yourname.cycbercompany.skill.SkillCatalog;
 import io.github.yourname.cycbercompany.skill.SkillRunBinding;
 import io.github.yourname.cycbercompany.skill.SkillAnalyzer;
+import io.github.yourname.cycbercompany.skill.SkillCompatibilityException;
 import io.github.yourname.cycbercompany.skill.SkillCompatibilityService;
 import io.github.yourname.cycbercompany.skill.CompatibilityReport;
 import io.github.yourname.cycbercompany.tool.ToolRouter;
@@ -62,6 +66,116 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class RunCommandServiceSkillSnapshotTest {
+
+    @Test
+    void artifactFallbackAlwaysReturnsDownloadLinksWithoutAModelSummary() {
+        ArtifactService artifacts = mock(ArtifactService.class);
+        service.configureArtifactDelivery(artifacts);
+        when(artifacts.listRunArtifacts("run-artifact", ACTOR)).thenReturn(List.of(new ArtifactView(
+                "artifact-1", "run-artifact", "document", "new-employee-onboarding.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document", 128L,
+                "sha256:" + "a".repeat(64), "/api/v1/artifacts/artifact-1", Instant.now())));
+
+        assertThat(service.artifactDelivery("run-artifact", ACTOR))
+                .contains("The requested file is ready")
+                .contains("[new-employee-onboarding.docx](/api/v1/artifacts/artifact-1)");
+    }
+
+    @Test
+    void appendsArtifactDownloadToAModelGeneratedOfficeAnswer() {
+        ArtifactService artifacts = mock(ArtifactService.class);
+        service.configureArtifactDelivery(artifacts);
+        when(artifacts.listRunArtifacts("run-artifact", ACTOR)).thenReturn(List.of(new ArtifactView(
+                "artifact-1", "run-artifact", "document", "brief.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document", 128L,
+                "sha256:" + "a".repeat(64), "/api/v1/artifacts/artifact-1", Instant.now())));
+
+        assertThat(service.appendArtifactDelivery("run-artifact", ACTOR,
+                "项目简报已生成。下载地址：`/api/v1/artifacts/artifact-1`"))
+                .contains("项目简报已生成。")
+                .contains("[brief.docx](/api/v1/artifacts/artifact-1)");
+    }
+
+    @Test
+    void replacesAnInternalArtifactHostWithTheCurrentSiteRelativeDownloadPath() {
+        assertThat(RunCommandService.normalizeArtifactDownloadUrls(
+                "[download father.docx](http://10.61.17.252:8000/api/v1/artifacts/artifact-1)"))
+                .isEqualTo("[download father.docx](/api/v1/artifacts/artifact-1)");
+    }
+
+    @Test
+    void recoversAReadableAnswerWhenPlatformLoopReturnsOnlyFilteredContent() {
+        ResolvedToolBinding backendBinding = new ResolvedToolBinding(
+                "backend:local_time", "local_time", "local_time", "backend", "local_time",
+                "Read the current local time", RiskLevel.LOW, false, Map.of("type", "object"), Map.of());
+        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of(backendBinding));
+        when(skills.resolveForRun(List.of())).thenReturn(List.of());
+        when(skills.compileInstructions(List.of())).thenReturn("");
+        when(conversations.history("conversation-1", ACTOR)).thenReturn(List.of());
+        when(codingAgentLoop.executePlatform(anyString(), anyString(), any(), any(), any(), any(), any()))
+                .thenReturn("");
+        when(modelGateway.complete(any())).thenReturn(new ModelGateway.ModelAnswer(
+                "项目 A：陈诺，80 万，10 月 18 日；项目 B：赵强，150 万，11 月 20 日。",
+                12, 6, "model"));
+
+        service.create(commandWithText("更新项目 A 后列出两个项目。"), ACTOR);
+        ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(runs).save(runCaptor.capture());
+        AgentRunEntity persisted = runCaptor.getValue();
+        when(runs.findById(persisted.id())).thenReturn(Optional.of(persisted));
+        when(runs.findByIdAndTenantId(persisted.id(), ACTOR.tenantId())).thenReturn(Optional.of(persisted));
+
+        queuedWorker.run();
+
+        verify(modelGateway).complete(any());
+        verify(conversations).append(
+                "conversation-1", io.github.yourname.cycbercompany.conversation.MessageRole.ASSISTANT,
+                "项目 A：陈诺，80 万，10 月 18 日；项目 B：赵强，150 万，11 月 20 日。",
+                persisted.id(), ACTOR);
+    }
+
+    @Test
+    void recoversWhenANonEmptyRequestIsMistakenForAnEmptyMessage() {
+        ResolvedToolBinding backendBinding = new ResolvedToolBinding(
+                "backend:web_search", "web_search", "web_search", "backend", "web_search",
+                "Search the public web", RiskLevel.LOW, false, Map.of("type", "object"), Map.of());
+        when(toolRouter.resolve(any(), any(), anyString())).thenReturn(List.of(backendBinding));
+        when(skills.resolveForRun(List.of())).thenReturn(List.of());
+        when(skills.compileInstructions(List.of())).thenReturn("");
+        when(conversations.history("conversation-1", ACTOR)).thenReturn(List.of());
+        when(codingAgentLoop.executePlatform(anyString(), anyString(), any(), any(), any(), any(), any()))
+                .thenReturn("看起来你发送了一条空消息。请问有什么我可以帮你的吗？");
+        when(modelGateway.complete(any())).thenReturn(new ModelGateway.ModelAnswer(
+                "已根据当前请求整理了可验证的新闻结果。", 12, 6, "model"));
+
+        service.create(commandWithText("请总结当前项目状态"), ACTOR);
+        ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
+        verify(runs).save(runCaptor.capture());
+        AgentRunEntity persisted = runCaptor.getValue();
+        when(runs.findById(persisted.id())).thenReturn(Optional.of(persisted));
+        when(runs.findByIdAndTenantId(persisted.id(), ACTOR.tenantId())).thenReturn(Optional.of(persisted));
+
+        queuedWorker.run();
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ModelGateway.ModelMessage>> loopMessages = ArgumentCaptor.forClass(List.class);
+        verify(codingAgentLoop).executePlatform(
+                anyString(), anyString(), any(), loopMessages.capture(), any(), any(), any());
+        ModelGateway.ModelMessage initialCurrentRequest = loopMessages.getValue().get(loopMessages.getValue().size() - 1);
+        assertThat(initialCurrentRequest.role()).isEqualTo("user");
+        assertThat(initialCurrentRequest.content()).isEqualTo("请总结当前项目状态");
+
+        ArgumentCaptor<ModelGateway.ModelCompletionRequest> recovery =
+                ArgumentCaptor.forClass(ModelGateway.ModelCompletionRequest.class);
+        verify(modelGateway).complete(recovery.capture());
+        List<ModelGateway.ModelMessage> recoveryMessages = recovery.getValue().messages();
+        ModelGateway.ModelMessage recoveryCurrentRequest = recoveryMessages.get(recoveryMessages.size() - 1);
+        assertThat(recoveryCurrentRequest.role()).isEqualTo("user");
+        assertThat(recoveryCurrentRequest.content()).isEqualTo("请总结当前项目状态");
+        verify(conversations).append(
+                "conversation-1", io.github.yourname.cycbercompany.conversation.MessageRole.ASSISTANT,
+                "已根据当前请求整理了可验证的新闻结果。", persisted.id(), ACTOR);
+    }
 
     private static final ActorContext ACTOR =
             new ActorContext("tenant-1", "user-1", Set.of("USER"), Set.of("agent:run"));
@@ -214,11 +328,10 @@ class RunCommandServiceSkillSnapshotTest {
 
         verify(runs, never()).save(any());
         verify(modelGateway, never()).complete(any());
-        verify(conversations, never()).append(anyString(), any(), anyString(), anyString(), any());
     }
 
     @Test
-    void incompatibleSkillFailsBeforeRunPersistenceOrModelInvocation() {
+    void incompatibleSkillBlocksRunCreationBeforeItIsPersisted() {
         SkillRunBinding binding = new SkillRunBinding(
                 "python-skill", "Python Skill", "Run a Python helper", "sha256:" + "e".repeat(64),
                 "example/skills", "https://github.com/example/skills", "main", "f".repeat(40), "python");
@@ -235,14 +348,12 @@ class RunCommandServiceSkillSnapshotTest {
         when(skillCompatibility.check(any(), any(), any())).thenReturn(report);
 
         assertThatThrownBy(() -> service.create(command(List.of("python-skill")), ACTOR))
-                .isInstanceOf(io.github.yourname.cycbercompany.skill.SkillCompatibilityException.class)
-                .hasMessageContaining("compatibility check failed")
-                .hasMessageContaining("python");
+                .isInstanceOf(SkillCompatibilityException.class)
+                .hasMessageContaining("requires runtime 'python' >=3.11");
 
         verify(runs, never()).save(any());
-        verify(skills, never()).compileInstructions(any());
+        verify(skills, never()).compileInstructions(List.of(binding));
         verify(modelGateway, never()).complete(any());
-        verify(conversations, never()).append(anyString(), any(), anyString(), anyString(), any());
     }
 
     @Test
@@ -319,7 +430,7 @@ class RunCommandServiceSkillSnapshotTest {
         ArgumentCaptor<AgentRunEntity> runCaptor = ArgumentCaptor.forClass(AgentRunEntity.class);
         verify(runs).save(runCaptor.capture());
         assertThat(runCaptor.getValue().runSpecJson())
-                .contains("\"executionMode\":\"CONVERSATIONAL\"")
+                .contains("\"executionMode\":\"PLATFORM_INTERACTION\"")
                 .doesNotContain("\"nodeId\":\"in-process-local\"");
         verify(nodes, never()).validateExecutionTarget(anyString(), any());
     }
@@ -383,9 +494,7 @@ class RunCommandServiceSkillSnapshotTest {
         ArgumentCaptor<CodingRunContinuationEntity> continuationCaptor =
                 ArgumentCaptor.forClass(CodingRunContinuationEntity.class);
         verify(continuations).save(continuationCaptor.capture());
-        assertThat(continuationCaptor.getValue().evidenceJson())
-                .contains("kb-1")
-                .contains("Operations guide");
+        assertThat(continuationCaptor.getValue().evidenceJson()).contains("\"evidence\":[]");
         assertThat(continuationCaptor.getValue().webResultsJson()).isEqualTo("[]");
         assertThat(persisted.status()).isEqualTo(RunStatus.WAITING_APPROVAL);
     }
@@ -444,7 +553,7 @@ class RunCommandServiceSkillSnapshotTest {
                         "memory-1", MemoryType.PROCEDURAL, "Prefer focused changes.", 1.0, 0.9, null)));
         when(skills.resolveForRun(List.of())).thenReturn(List.of());
         when(skills.compileInstructions(List.of())).thenReturn("");
-        when(knowledge.resolveKnowledgeBaseIds(List.of("kb-agent"), ACTOR)).thenReturn(List.of("kb-agent"));
+        when(knowledge.resolveKnowledgeBaseIds(List.of(), ACTOR)).thenReturn(List.of());
 
         service.create(command(List.of()), ACTOR);
 
@@ -457,8 +566,8 @@ class RunCommandServiceSkillSnapshotTest {
         assertThat(spec.agentManifestDigest()).isEqualTo("sha256:manifest-v7");
         assertThat(spec.agentMemoryPolicySnapshot()).contains("PERSONALIZED");
         assertThat(spec.agentSystemPrompt()).isEqualTo("Published V2 prompt");
-        assertThat(spec.knowledgeBaseIds()).containsExactly("kb-agent");
-        assertThat(spec.mcpConnectionIds()).containsExactly("mcp-agent");
+        assertThat(spec.knowledgeBaseIds()).isEmpty();
+        assertThat(spec.mcpConnectionIds()).isEmpty();
         assertThat(spec.memorySnapshots()).singleElement().satisfies(memory -> {
             assertThat(memory.id()).isEqualTo("memory-1");
             assertThat(memory.content()).isEqualTo("Prefer focused changes.");
@@ -566,7 +675,9 @@ class RunCommandServiceSkillSnapshotTest {
         assertThat(requests.get(1).modelProfileId()).isEqualTo("model-1");
         assertThat(requests.get(1).messages().getFirst().content())
                 .contains("You verify evidence carefully")
-                .contains("bounded expert collaborator");
+                .contains("bounded CycberCompany expert collaborator")
+                .contains("supported conclusion")
+                .contains("private chain-of-thought");
         assertThat(requests.get(2).messages())
                 .anySatisfy(message -> assertThat(message.content())
                         .contains("The evidence supports the claim"));
@@ -619,7 +730,8 @@ class RunCommandServiceSkillSnapshotTest {
         verify(modelGateway).complete(requestCaptor.capture());
         assertThat(requestCaptor.getValue().messages().getFirst().content())
                 .contains("You verify evidence carefully")
-                .contains("You own this task as the delegated Agent");
+                .contains("You own this one delegated task as a CycberCompany Agent")
+                .contains("no tools, live retrieval, memory, workspace, or external data");
         assertThat(persisted.status()).isEqualTo(RunStatus.SUCCEEDED);
         assertThat(persisted.finalAnswer()).isEqualTo("Delegated answer from the specialist.");
         verify(events).publish(
@@ -630,7 +742,7 @@ class RunCommandServiceSkillSnapshotTest {
     }
 
     @Test
-    void createRejectsCapabilitiesOutsidePublishedAgentVersion() {
+    void createAllowsCapabilitiesOutsidePublishedAgentVersion() {
         AgentRuntimeDefinitionService runtimeDefinitions = mock(AgentRuntimeDefinitionService.class);
         when(runtimeDefinitions.resolve("agent-1", ACTOR.tenantId(), ACTOR.userId())).thenReturn(new AgentRuntimeDefinition(
                 "agent-1",
@@ -647,11 +759,11 @@ class RunCommandServiceSkillSnapshotTest {
                 true));
         service.configureAgentRuntimeDefinitions(runtimeDefinitions);
 
-        assertThatThrownBy(() -> service.create(command(List.of("unbound-skill")), ACTOR))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("not bound to the published Agent version")
-                .hasMessageContaining("unbound-skill");
-        verify(runs, never()).save(any());
+        when(skills.resolveForRun(List.of("unbound-skill"))).thenReturn(List.of());
+        when(skills.compileInstructions(List.of())).thenReturn("");
+        when(knowledge.resolveKnowledgeBaseIds(List.of(), ACTOR)).thenReturn(List.of());
+        service.create(command(List.of("unbound-skill")), ACTOR);
+        verify(runs).save(any());
     }
 
     @Test
@@ -727,7 +839,7 @@ class RunCommandServiceSkillSnapshotTest {
     }
 
     @Test
-    void streamingModelPublishesOnlyFilteredDeltasBeforeTheFinalAnswer() {
+    void streamingModelPublishesRawDeltasBeforeTheFinalAnswer() {
         List<RunEventType> eventTypes = new ArrayList<>();
         List<String> eventPayloads = new ArrayList<>();
         doAnswer(invocation -> {
@@ -766,12 +878,10 @@ class RunCommandServiceSkillSnapshotTest {
             }
         }
         assertThat(String.join("", deltas))
-                .isEqualTo("Visible  final")
-                .doesNotContain("internal reasoning")
-                .doesNotContain("<think>");
+                .isEqualTo("Visible <think>internal reasoning</think> final");
         assertThat(eventTypes.indexOf(RunEventType.TOKEN_DELTA))
                 .isLessThan(eventTypes.indexOf(RunEventType.FINAL_ANSWER));
-        assertThat(eventTypes.stream().filter(type -> type == RunEventType.TOKEN_DELTA).count()).isEqualTo(2);
+        assertThat(eventTypes.stream().filter(type -> type == RunEventType.TOKEN_DELTA).count()).isEqualTo(3);
         verify(modelGateway, never()).complete(any());
     }
 
@@ -854,7 +964,7 @@ class RunCommandServiceSkillSnapshotTest {
         verify(runs).save(runCaptor.capture());
         assertThat(runCaptor.getValue().runSpecJson())
                 .doesNotContain("node-system", "in-process-local")
-                .contains("\"executionMode\":\"CONVERSATIONAL\"");
+                .contains("\"executionMode\":\"PLATFORM_INTERACTION\"");
     }
 
     @Test
@@ -893,7 +1003,7 @@ class RunCommandServiceSkillSnapshotTest {
         verify(runs).save(runCaptor.capture());
         assertThat(runCaptor.getValue().runSpecJson())
                 .doesNotContain("in-process-local")
-                .contains("\"executionMode\":\"CONVERSATIONAL\"");
+                .contains("\"executionMode\":\"PLATFORM_INTERACTION\"");
     }
 
     @Test
@@ -921,7 +1031,7 @@ class RunCommandServiceSkillSnapshotTest {
         verify(runs).save(runCaptor.capture());
         assertThat(runCaptor.getValue().runSpecJson())
                 .doesNotContain("in-process-local")
-                .contains("\"executionMode\":\"CONVERSATIONAL\"");
+                .contains("\"executionMode\":\"PLATFORM_INTERACTION\"");
     }
 
     @Test
@@ -949,7 +1059,7 @@ class RunCommandServiceSkillSnapshotTest {
         assertThat(response.status()).isEqualTo(RunStatus.QUEUED);
         assertThat(runCaptor.getValue().runSpecJson())
                 .doesNotContain("in-process-local", "local-model-outage-fallback")
-                .contains("\"executionMode\":\"CONVERSATIONAL\"");
+                .contains("\"executionMode\":\"PLATFORM_INTERACTION\"");
     }
 
     @Test

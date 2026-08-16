@@ -71,9 +71,8 @@ class DataSeederTest {
         verify(agents).save(legacy);
         assertThat(legacy.systemPrompt())
                 .isEqualTo(DataSeeder.DEFAULT_ASSISTANT_PROMPT)
-                .contains("only the capabilities authorized", "untrusted data", "what was verified",
-                        "current run's approval mode", "successful tool result")
-                .doesNotContain("required approval before it is saved");
+                .contains("Follow the user's request directly", "Use any available tool or Skill")
+                .doesNotContain("required approval before it is saved", "node tools only");
         assertThat(legacy.toolAllowList()).isEqualTo(DataSeeder.DEFAULT_ASSISTANT_TOOLS);
     }
 
@@ -98,6 +97,53 @@ class DataSeederTest {
         verify(agents).save(original);
         assertThat(original.systemPrompt()).isEqualTo(DataSeeder.DEFAULT_ASSISTANT_PROMPT);
         assertThat(original.toolAllowList()).isEqualTo(DataSeeder.DEFAULT_ASSISTANT_TOOLS);
+    }
+
+    @Test
+    void upgradesThePreviousExecutionPromptWithoutOverwritingCustomAgents() throws Exception {
+        ModelProfileRepository models = mock(ModelProfileRepository.class);
+        AgentDefinitionRepository agents = mock(AgentDefinitionRepository.class);
+        when(models.findById("minimax-m3")).thenReturn(Optional.of(configuredProfile()));
+        AgentDefinitionEntity previous = new AgentDefinitionEntity(
+                DataSeeder.DEFAULT_ASSISTANT_ID,
+                "Default Assistant",
+                "platform default",
+                DataSeeder.PREVIOUS_DEFAULT_ASSISTANT_PROMPT,
+                "minimax-m3",
+                DataSeeder.DEFAULT_ASSISTANT_TOOLS,
+                true,
+                Instant.now());
+        when(agents.findById(DataSeeder.DEFAULT_ASSISTANT_ID)).thenReturn(Optional.of(previous));
+
+        new DataSeeder(properties(), models, agents).run(new DefaultApplicationArguments());
+
+        verify(agents).save(previous);
+        assertThat(previous.systemPrompt()).isEqualTo(DataSeeder.DEFAULT_ASSISTANT_PROMPT)
+                .contains("Follow the user's request directly", "Return the useful result directly");
+    }
+
+    @Test
+    void upgradesThePreviousRefinedPromptToTheCapabilityAgnosticDefault() throws Exception {
+        ModelProfileRepository models = mock(ModelProfileRepository.class);
+        AgentDefinitionRepository agents = mock(AgentDefinitionRepository.class);
+        when(models.findById("minimax-m3")).thenReturn(Optional.of(configuredProfile()));
+        AgentDefinitionEntity previous = new AgentDefinitionEntity(
+                DataSeeder.DEFAULT_ASSISTANT_ID,
+                "Default Assistant",
+                "platform default",
+                DataSeeder.PREVIOUS_REFINED_DEFAULT_ASSISTANT_PROMPT,
+                "minimax-m3",
+                DataSeeder.DEFAULT_ASSISTANT_TOOLS,
+                true,
+                Instant.now());
+        when(agents.findById(DataSeeder.DEFAULT_ASSISTANT_ID)).thenReturn(Optional.of(previous));
+
+        new DataSeeder(properties(), models, agents).run(new DefaultApplicationArguments());
+
+        verify(agents).save(previous);
+        assertThat(previous.systemPrompt()).isEqualTo(DataSeeder.DEFAULT_ASSISTANT_PROMPT)
+                .contains("Use any available tool or Skill")
+                .doesNotContain("Use local_time for the backend server time");
     }
 
     @Test

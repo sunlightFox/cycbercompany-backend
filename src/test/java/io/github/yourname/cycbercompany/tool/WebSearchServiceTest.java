@@ -76,6 +76,21 @@ class WebSearchServiceTest {
                 .isEqualTo(Instant.parse("2026-07-31T00:00:00Z"));
     }
 
+    @Test
+    void ranksSourceRepositoryAheadOfSecondaryCoverageForPrimarySourceQuestion() {
+        WebSearchResult repost = new WebSearchResult("DeepSeek Harness overview", "https://news.example/deepseek-harness",
+                "A secondary report about DeepSeek Harness.");
+        WebSearchResult repository = new WebSearchResult("deepseek-ai/deepseek-harness",
+                "https://github.com/deepseek-ai/deepseek-harness", "Official project source code.");
+
+        WebSearchService.RankingResult ranked = WebSearchService.rankCandidates(
+                List.of(repost, repository), "DeepSeek Harness official GitHub repository", 5, 2, 1,
+                List.of(), List.of(), WebSearchFreshness.ANY);
+
+        assertThat(ranked.results()).extracting(WebSearchResult::url)
+                .startsWith("https://github.com/deepseek-ai/deepseek-harness");
+    }
+
     private static AppProperties properties(HttpServer server, boolean allowPrivateHosts) {
         return new AppProperties(null, null, null,
                 new AppProperties.WebSearch(true, 5, "http://localhost:" + server.getAddress().getPort(), "test-key", 2, 3,

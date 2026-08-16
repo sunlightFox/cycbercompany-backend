@@ -53,6 +53,27 @@ class ExecutionIntentRouterTest {
         assertThat(router.decide("帮我部署贪吃蛇", "model-1").intent()).isEqualTo(ExecutionIntent.CLARIFY);
     }
 
+    @Test
+    void rejectsOutOfRangeConfidenceInsteadOfTrustingTheClassification() {
+        ExecutionIntentRouter router = new ExecutionIntentRouter(
+                response("{\"intent\":\"CHAT\",\"confidence\":1.2,\"reason\":\"invalid\"}"),
+                new ObjectMapper());
+
+        ExecutionIntentDecision result = router.decide("Explain dependency injection", "model-1");
+
+        assertThat(result.intent()).isEqualTo(ExecutionIntent.CLARIFY);
+        assertThat(result.source()).isEqualTo("model-invalid");
+    }
+
+    @Test
+    void routingPromptConstrainsTheModelToAJsonClassificationWithoutGrantingAuthority() {
+        assertThat(ExecutionIntentRouter.ROUTING_PROMPT)
+                .contains("Return one JSON object only")
+                .contains("confidence must be a JSON number from 0 through 1")
+                .contains("or infer authorization")
+                .contains("choose CLARIFY rather than guessing");
+    }
+
     private static ModelGateway response(String content) {
         return request -> new ModelGateway.ModelAnswer(content, 1, 1, "test", List.of(), "stop");
     }

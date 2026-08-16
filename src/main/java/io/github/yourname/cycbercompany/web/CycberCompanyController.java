@@ -75,7 +75,6 @@ import jakarta.validation.Valid;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.util.List;
-import java.util.stream.Stream;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
@@ -405,13 +404,7 @@ class CycberCompanyController {
 
     @GetMapping("/tools")
     Object listTools(HttpServletRequest request) {
-        // 前端看到的是三类工具的并集：后端内置工具、已启用 MCP 工具、在线节点工具。
-        // 真正创建 Run 时还会再经过 ToolRouter 的 Agent 白名单和 Run 选择交集过滤。
-        return Stream.concat(
-                Stream.concat(
-                        Stream.concat(tools.list().stream(), inProcessLocalTools.registeredTools().stream()),
-                        mcpConnections.enabledRegisteredTools().stream()),
-                nodes.enabledRegisteredTools(actors.current(request)).stream()).toList();
+        return tools.list();
     }
 
     @PostMapping("/web-search")

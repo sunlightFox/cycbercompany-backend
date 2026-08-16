@@ -93,6 +93,13 @@ class ApiExceptionHandler {
         var detail = ProblemDetail.forStatusAndDetail(HttpStatus.UNPROCESSABLE_CONTENT, ex.getMessage());
         detail.setProperty("code", "SKILL_INCOMPATIBLE");
         detail.setProperty("report", ex.report());
+        detail.setProperty("errors", ex.report().issues().stream()
+                .filter(issue -> "ERROR".equals(issue.severity()))
+                .map(issue -> Map.of(
+                        "code", issue.code(),
+                        "skillId", issue.skillId(),
+                        "message", issue.message()))
+                .toList());
         detail.setProperty("timestamp", Instant.now().toString());
         return detail;
     }
