@@ -4,7 +4,12 @@
 
 CycberCompany 是一个 **local-first 的 Java AI Agent 后端**。它以模块化单体的方式组织会话、模型、Agent、工具、知识库、Skill、MCP 和本机节点，在一个 Spring Boot 进程中提供持久化 Run、SSE 流式事件、审批、审计和安全的本机执行能力。
 
-项目适合用于本地开发、Agent 原型、工作流评审和学习大模型应用的工程化实现。配套前端位于独立仓库 `cycbercompany-web`。
+项目适合用于本地开发、Agent 原型、工作流评审和学习大模型应用的工程化实现。
+
+## 项目链接
+
+- [前端代码仓库](https://github.com/sunlightFox/spring-agent-studio-web)
+- [技术文档](https://cycbercompany.chat/docs)
 
 ## 主要能力
 

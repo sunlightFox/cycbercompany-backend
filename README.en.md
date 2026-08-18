@@ -4,7 +4,10 @@
 
 CycberCompany is a **local-first Java backend for AI agents**. It is a modular monolith that brings conversations, models, agents, tools, knowledge bases, Skills, MCP integrations, and local execution nodes into one Spring Boot process. Runs are durable, streamed over SSE, auditable, approval-aware, and designed for safe local development.
 
-The companion frontend lives in a separate repository named `cycbercompany-web`.
+## Project links
+
+- [Frontend repository](https://github.com/sunlightFox/spring-agent-studio-web)
+- [Technical documentation](https://cycbercompany.chat/docs)
 
 ## Highlights
 
