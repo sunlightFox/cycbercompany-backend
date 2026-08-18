@@ -6,7 +6,7 @@ CycberCompany is a **local-first Java backend for AI agents**. It is a modular m
 
 ## Project links
 
-- [Frontend repository](https://github.com/sunlightFox/spring-agent-studio-web)
+- [Frontend repository](https://github.com/sunlightFox/cycbercompany-web)
 - [Technical documentation](https://cycbercompany.chat/docs)
 
 ## Highlights

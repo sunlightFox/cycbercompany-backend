@@ -8,7 +8,7 @@ CycberCompany 是一个 **local-first 的 Java AI Agent 后端**。它以模块�
 
 ## 项目链接
 
-- [前端代码仓库](https://github.com/sunlightFox/spring-agent-studio-web)
+- [前端代码仓库](https://github.com/sunlightFox/cycbercompany-web)
 - [技术文档](https://cycbercompany.chat/docs)
 
 ## 主要能力
