@@ -43,18 +43,6 @@ CycberCompany 是一个 **local-first 的 Java AI Agent 后端**。它以模块�
 - Windows 用户可直接使用仓库内的 `gradlew.bat`；Linux/macOS 使用 `./gradlew`
 - 一个 OpenAI-compatible 模型服务。默认配置使用 MiniMax-M3；也可以替换为其他兼容服务。
 
-### 配置模型密钥
-
-不要把密钥写入代码、YAML 或提交到 Git。PowerShell 示例：
-
-```powershell
-$env:EDGEFN_API_KEY="sk-..."
-$env:EDGEFN_BASE_URL="https://api.edgefn.net/v1" # 可选
-$env:EDGEFN_MODEL="MiniMax-M3"                    # 可选
-```
-
-也可以复制 `.env.example`，再由你的启动方式加载环境变量。
-
 ### 启动后端
 
 ```powershell
